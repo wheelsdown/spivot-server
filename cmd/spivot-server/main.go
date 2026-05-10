@@ -15,7 +15,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -25,6 +27,7 @@ import (
 
 	"github.com/wheelsdown/spivot-server/internal/app"
 	"github.com/wheelsdown/spivot-server/internal/platform/buildinfo"
+	"github.com/wheelsdown/spivot-server/internal/platform/proxy"
 	"github.com/wheelsdown/spivot-server/internal/server/api"
 )
 
@@ -32,6 +35,7 @@ const (
 	defaultAddress   = "0.0.0.0"
 	defaultPort      = 8080
 	defaultLogFormat = "text"
+	envPublicURL     = "SPIVOT_PUBLIC_URL"
 )
 
 // main is intentionally minimal. It constructs the OS-level environment
@@ -170,21 +174,40 @@ func runServe(ctx context.Context, stdout io.Writer, stderr io.Writer, args []st
 	defer stopSignals()
 	defer cancel()
 
-	server := api.NewServer(cfg.address, cfg.port, logger)
+	server := api.NewServer(api.Config{
+		Address:   cfg.address,
+		Port:      cfg.port,
+		PublicURL: cfg.publicURL,
+		Proxy: proxy.Config{
+			TrustForwardedHeaders: cfg.trustProxy,
+			TrustedNetworks:       cfg.trustedProxyRanges,
+		},
+	}, logger)
 	return app.New(server, logger).Serve(ctx)
 }
 
 type serveConfig struct {
-	address   string
-	port      int
-	logFormat string
+	address            string
+	port               int
+	logFormat          string
+	publicURL          *url.URL
+	trustProxy         bool
+	trustedProxyCIDRs  []string
+	trustedProxyRanges []*net.IPNet
 }
 
 func parseServeConfig(args []string) (serveConfig, error) {
+	trustedProxyCIDRs := envString("SPIVOT_TRUSTED_PROXY_CIDRS", strings.Join(proxy.DefaultTrustedProxyCIDRs(), ","))
+	trustProxy, err := envBool("SPIVOT_TRUST_PROXY", false)
+	if err != nil {
+		return serveConfig{}, err
+	}
 	cfg := serveConfig{
-		address:   envString("SPIVOT_ADDR", defaultAddress),
-		port:      envInt("SPIVOT_PORT", defaultPort),
-		logFormat: envString("SPIVOT_LOG_FORMAT", defaultLogFormat),
+		address:           envString("SPIVOT_ADDR", defaultAddress),
+		port:              envInt("SPIVOT_PORT", defaultPort),
+		logFormat:         envString("SPIVOT_LOG_FORMAT", defaultLogFormat),
+		trustProxy:        trustProxy,
+		trustedProxyCIDRs: splitCSV(trustedProxyCIDRs),
 	}
 
 	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
@@ -192,6 +215,19 @@ func parseServeConfig(args []string) (serveConfig, error) {
 	flags.StringVar(&cfg.address, "addr", cfg.address, "listen address")
 	flags.IntVar(&cfg.port, "port", cfg.port, "listen port")
 	flags.StringVar(&cfg.logFormat, "log-format", cfg.logFormat, "log format: text or json")
+	flags.BoolVar(&cfg.trustProxy, "trust-proxy", cfg.trustProxy, "trust X-Forwarded-* headers from trusted proxy CIDRs")
+	flags.Func("public-url", "public base URL advertised by the edge proxy", func(value string) error {
+		publicURL, err := parsePublicURL(value)
+		if err != nil {
+			return err
+		}
+		cfg.publicURL = publicURL
+		return nil
+	})
+	flags.Func("trusted-proxy-cidrs", "comma-separated trusted proxy CIDRs", func(value string) error {
+		cfg.trustedProxyCIDRs = splitCSV(value)
+		return nil
+	})
 	if err := flags.Parse(args); err != nil {
 		return cfg, fmt.Errorf("parse serve flags: %w", err)
 	}
@@ -203,6 +239,17 @@ func parseServeConfig(args []string) (serveConfig, error) {
 	}
 	if cfg.logFormat != "text" && cfg.logFormat != "json" {
 		return cfg, fmt.Errorf("unknown log format: %q (expected text or json)", cfg.logFormat)
+	}
+	if cfg.publicURL == nil {
+		publicURL, err := parsePublicURL(envString(envPublicURL, ""))
+		if err != nil {
+			return cfg, err
+		}
+		cfg.publicURL = publicURL
+	}
+	cfg.trustedProxyRanges, err = proxy.ParseCIDRs(cfg.trustedProxyCIDRs)
+	if err != nil {
+		return cfg, fmt.Errorf("parse trusted proxy CIDRs: %w", err)
 	}
 	return cfg, nil
 }
@@ -278,6 +325,10 @@ Serve flags:
   -addr value        Listen address (default: SPIVOT_ADDR or 0.0.0.0)
   -port value        Listen port (default: SPIVOT_PORT or 8080)
   -log-format value  Log format: text or json (default: SPIVOT_LOG_FORMAT or text)
+  -public-url value  Public base URL served by the edge proxy (default: SPIVOT_PUBLIC_URL)
+  -trust-proxy       Trust X-Forwarded-* headers from configured proxy CIDRs
+  -trusted-proxy-cidrs value
+                    Comma-separated trusted proxy CIDRs (default: SPIVOT_TRUSTED_PROXY_CIDRS)
 `)
 	return err
 }
@@ -306,6 +357,18 @@ func envString(key, fallback string) string {
 	return fallback
 }
 
+func envBool(key string, fallback bool) (bool, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback, nil
+	}
+	b, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, fmt.Errorf("parse %s: %w", key, err)
+	}
+	return b, nil
+}
+
 func envInt(key string, fallback int) int {
 	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
 		i, err := strconv.Atoi(v)
@@ -314,4 +377,38 @@ func envInt(key string, fallback int) int {
 		}
 	}
 	return fallback
+}
+
+func parsePublicURL(value string) (*url.URL, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	publicURL, err := url.Parse(value)
+	if err != nil {
+		return nil, fmt.Errorf("parse %s: %w", envPublicURL, err)
+	}
+	if publicURL.Scheme != "http" && publicURL.Scheme != "https" {
+		return nil, fmt.Errorf("%s must use http or https: %s", envPublicURL, value)
+	}
+	if publicURL.Host == "" {
+		return nil, fmt.Errorf("%s must include a host: %s", envPublicURL, value)
+	}
+	if publicURL.RawQuery != "" || publicURL.Fragment != "" {
+		return nil, fmt.Errorf("%s must not include query or fragment: %s", envPublicURL, value)
+	}
+	publicURL.Path = strings.TrimRight(publicURL.Path, "/")
+	return publicURL, nil
+}
+
+func splitCSV(value string) []string {
+	parts := strings.Split(value, ",")
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			values = append(values, part)
+		}
+	}
+	return values
 }

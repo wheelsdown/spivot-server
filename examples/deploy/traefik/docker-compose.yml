@@ -1,0 +1,37 @@
+services:
+  traefik:
+    image: traefik:v3.5
+    command:
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --certificatesresolvers.letsencrypt.acme.email=admin@example.com
+      - --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge=true
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - letsencrypt:/letsencrypt
+
+  spivot-server:
+    image: ghcr.io/wheelsdown/spivot-server:latest
+    environment:
+      SPIVOT_ADDR: 0.0.0.0
+      SPIVOT_PORT: "8080"
+      SPIVOT_PUBLIC_URL: https://spivot.example.com
+      SPIVOT_TRUST_PROXY: "true"
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.spivot.rule: Host(`spivot.example.com`)
+      traefik.http.routers.spivot.entrypoints: websecure
+      traefik.http.routers.spivot.tls.certresolver: letsencrypt
+      traefik.http.services.spivot.loadbalancer.server.port: "8080"
+
+volumes:
+  letsencrypt:

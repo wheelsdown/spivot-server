@@ -9,28 +9,48 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 
 	"github.com/wheelsdown/spivot-server/internal/platform/buildinfo"
 	"github.com/wheelsdown/spivot-server/internal/platform/logging"
+	"github.com/wheelsdown/spivot-server/internal/platform/proxy"
 )
 
-type Server struct {
-	address string
-	port    int
-	logger  *slog.Logger
-	server  *http.Server
+// Config describes the HTTP API server's listen and deployment metadata.
+type Config struct {
+	// Address is the local TCP address to bind.
+	Address string
+	// Port is the local TCP port to bind.
+	Port int
+	// PublicURL is the canonical URL served by the edge proxy.
+	PublicURL *url.URL
+	// Proxy controls whether forwarded request metadata is trusted.
+	Proxy proxy.Config
 }
 
-func NewServer(address string, port int, logger *slog.Logger) *Server {
+// ListenAddr returns the TCP address used by the HTTP server.
+func (c Config) ListenAddr() string {
+	return net.JoinHostPort(c.Address, strconv.Itoa(c.Port))
+}
+
+// Server is the HTTP API server.
+type Server struct {
+	cfg    Config
+	logger *slog.Logger
+	server *http.Server
+}
+
+// NewServer creates a Spivot API server with the provided configuration.
+func NewServer(cfg Config, logger *slog.Logger) *Server {
 	return &Server{
-		address: address,
-		port:    port,
-		logger:  logger,
+		cfg:    cfg,
+		logger: logger,
 	}
 }
 
+// Handler returns the API HTTP handler.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", s.handleRoot)
@@ -40,10 +60,10 @@ func (s *Server) Handler() http.Handler {
 	return s.withLogging(mux)
 }
 
+// Start begins serving HTTP requests until the server shuts down.
 func (s *Server) Start(ctx context.Context) error {
-	addr := net.JoinHostPort(s.address, strconv.Itoa(s.port))
 	s.server = &http.Server{
-		Addr:              addr,
+		Addr:              s.cfg.ListenAddr(),
 		Handler:           s.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
@@ -53,11 +73,17 @@ func (s *Server) Start(ctx context.Context) error {
 		},
 	}
 
-	displayAddress := s.address
+	displayAddress := s.cfg.Address
 	if displayAddress == "" || displayAddress == "0.0.0.0" {
 		displayAddress = "0.0.0.0"
 	}
-	s.logger.Info("starting API server", "address", displayAddress, "port", s.port)
+	s.logger.Info("starting API server",
+		"address", displayAddress,
+		"port", s.cfg.Port,
+		"public_url", s.publicURLString(),
+		"trust_proxy", s.cfg.Proxy.TrustForwardedHeaders,
+		"trusted_proxy_networks", len(s.cfg.Proxy.TrustedNetworks),
+	)
 	err := s.server.ListenAndServe()
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
@@ -65,6 +91,7 @@ func (s *Server) Start(ctx context.Context) error {
 	return err
 }
 
+// Shutdown gracefully stops the server.
 func (s *Server) Shutdown(ctx context.Context) error {
 	if s.server == nil {
 		return nil
@@ -77,6 +104,7 @@ func (s *Server) withLogging(next http.Handler) http.Handler {
 		start := time.Now()
 		rw := logging.NewAccessResponseWriter(w)
 		next.ServeHTTP(rw, r)
+		reqInfo := proxy.RequestInfoFrom(r, s.cfg.Proxy)
 		s.logger.Info("request handled",
 			"kind", "http_access",
 			"method", r.Method,
@@ -84,16 +112,24 @@ func (s *Server) withLogging(next http.Handler) http.Handler {
 			"status", rw.StatusCode(),
 			"response_bytes", rw.BytesWritten(),
 			"duration_ms", time.Since(start).Milliseconds(),
+			"client_ip", reqInfo.ClientIP,
+			"scheme", reqInfo.Scheme,
+			"host", reqInfo.Host,
+			"trusted_proxy", reqInfo.TrustedProxy,
 		)
 	})
 }
 
 func (s *Server) handleRoot(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, map[string]string{
+	response := map[string]string{
 		"name":    "Spivot Server",
 		"version": buildinfo.Version,
 		"status":  "ok",
-	}, s.logger)
+	}
+	if publicURL := s.publicURLString(); publicURL != "" {
+		response["public_url"] = publicURL
+	}
+	writeJSON(w, response, s.logger)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -115,6 +151,17 @@ func writeJSON(w http.ResponseWriter, v any, logger *slog.Logger) {
 	}
 }
 
+// URL returns the public URL when configured, otherwise the local listen URL.
 func (s *Server) URL() string {
-	return fmt.Sprintf("http://%s", net.JoinHostPort(s.address, strconv.Itoa(s.port)))
+	if publicURL := s.publicURLString(); publicURL != "" {
+		return publicURL
+	}
+	return fmt.Sprintf("http://%s", s.cfg.ListenAddr())
+}
+
+func (s *Server) publicURLString() string {
+	if s.cfg.PublicURL == nil {
+		return ""
+	}
+	return s.cfg.PublicURL.String()
 }
