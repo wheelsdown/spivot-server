@@ -26,6 +26,13 @@ the Dockerfile, `just` recipes, GHCR publication, OCI labels, SBOM and
 provenance settings, and healthcheck behavior. Do not add macOS package,
 codesign, notarization, or installer workflows.
 
+`just release-github <version> [kind]` requires Docker Buildx. It builds
+and uploads a multi-architecture OCI archive, checksum, and Buildx
+metadata to the GitHub release, then relies on the tag-triggered workflow
+for GHCR publication. The archive builder defaults to a managed
+`docker-container` Buildx builder named `spivot-release`; override it with
+`SPIVOT_BUILDX_BUILDER` if needed.
+
 ## GitHub Collaboration
 
 Be a good GitHub collaborator. Review threads left open signal

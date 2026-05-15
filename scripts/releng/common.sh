@@ -35,7 +35,9 @@ die() {
 }
 
 run() {
-    step "$*"
+    local rendered
+    printf -v rendered '%q ' "$@"
+    step "${rendered% }"
     "$@"
 }
 
@@ -49,6 +51,11 @@ require_commands() {
     for cmd in "$@"; do
         require_command "$cmd"
     done
+}
+
+require_docker_buildx() {
+    require_command docker
+    docker buildx version >/dev/null 2>&1 || die "docker buildx is required"
 }
 
 normalize_version() {
@@ -84,6 +91,40 @@ resolve_prerelease_bool() {
             fi
             ;;
     esac
+}
+
+container_platform_label() {
+    local platforms="$1"
+    printf '%s' "$platforms" | tr -d '[:space:]' | tr '/,' '-_'
+}
+
+release_oci_archive_path() {
+    local version platforms label
+    version="$(normalize_version "$1")"
+    platforms="$2"
+    label="$(container_platform_label "$platforms")"
+    printf 'dist/release/spivot-server_v%s_%s.oci.tar\n' "$version" "$label"
+}
+
+release_buildx_metadata_path() {
+    local version platforms label
+    version="$(normalize_version "$1")"
+    platforms="$2"
+    label="$(container_platform_label "$platforms")"
+    printf 'dist/release/spivot-server_v%s_%s.buildx.json\n' "$version" "$label"
+}
+
+sha256_file() {
+    local file="$1"
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$file"
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$file"
+    elif command -v openssl >/dev/null 2>&1; then
+        openssl dgst -sha256 -r "$file"
+    else
+        die "required command not found: sha256sum, shasum, or openssl"
+    fi
 }
 
 worktree_dirty() {

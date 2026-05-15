@@ -16,6 +16,8 @@ handles version injection, race tests, linting, and container validation.
 just build          # Build for the current platform -> dist/
 just build-linux    # Build linux/amd64 and linux/arm64 binaries
 just container      # Build a local OCI image
+just container-archive <version>
+                    # Build a multi-arch OCI archive -> dist/release/
 just ci             # Full local gate: fmt check + tidy + lint + race tests + container check
 just test           # Tests only, always with -race
 just lint           # golangci-lint v2
@@ -76,10 +78,19 @@ Actions to catch what could have been caught locally.
 - `just container-check` should prove more than "the image builds": it
   validates required OCI labels, runs `spivot-server version`, starts the
   container, and waits for the healthcheck to become healthy.
+- `just container-archive <version>` uses Docker Buildx to build a
+  multi-architecture OCI archive for `linux/amd64` and `linux/arm64`,
+  writes Buildx metadata, and creates a SHA-256 checksum under
+  `dist/release/`. It manages a `docker-container` Buildx builder named
+  `spivot-release` by default; override with `SPIVOT_BUILDX_BUILDER`.
 - Release tags are semver tags with a leading `v`, such as `v0.1.0` or
   `v0.1.0-rc.1`.
 - GitHub Actions publishes the multi-arch GHCR image on release tags. Do
   not add macOS signing, notarization, or installer-package workflow here.
+- `just release-github <version> [kind]` runs the full local gate, builds
+  the multi-arch OCI archive, cuts the GitHub release, uploads the
+  archive/checksum/metadata as release assets, and leaves GHCR publication
+  to the tag-triggered workflow.
 - Build-time version data is injected with `ldflags`; do not hardcode
   release versions in Go source.
 
