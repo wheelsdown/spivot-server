@@ -254,8 +254,9 @@ func runServe(ctx context.Context, stdout io.Writer, stderr io.Writer, args []st
 		Port:      cfg.port,
 		PublicURL: cfg.publicURL,
 		Proxy: proxy.Config{
-			TrustForwardedHeaders: cfg.trustProxy,
-			TrustedNetworks:       cfg.trustedProxyRanges,
+			TrustForwardedHeaders:  cfg.trustProxy,
+			TrustClientCertHeaders: cfg.trustClientCertHeaders,
+			TrustedNetworks:        cfg.trustedProxyRanges,
 		},
 		Store:           store,
 		EnrollmentStore: store,
@@ -266,16 +267,17 @@ func runServe(ctx context.Context, stdout io.Writer, stderr io.Writer, args []st
 }
 
 type serveConfig struct {
-	address            string
-	port               int
-	logFormat          string
-	configDir          string
-	dataDir            string
-	databasePath       string
-	publicURL          *url.URL
-	trustProxy         bool
-	trustedProxyCIDRs  []string
-	trustedProxyRanges []*net.IPNet
+	address                string
+	port                   int
+	logFormat              string
+	configDir              string
+	dataDir                string
+	databasePath           string
+	publicURL              *url.URL
+	trustProxy             bool
+	trustClientCertHeaders bool
+	trustedProxyCIDRs      []string
+	trustedProxyRanges     []*net.IPNet
 }
 
 func parseServeConfig(args []string) (serveConfig, error) {
@@ -284,15 +286,20 @@ func parseServeConfig(args []string) (serveConfig, error) {
 	if err != nil {
 		return serveConfig{}, err
 	}
+	trustClientCertHeaders, err := envBool("SPIVOT_TRUST_CLIENT_CERT_HEADERS", false)
+	if err != nil {
+		return serveConfig{}, err
+	}
 	cfg := serveConfig{
-		address:           envString("SPIVOT_ADDR", defaultAddress),
-		port:              envInt("SPIVOT_PORT", defaultPort),
-		logFormat:         envString("SPIVOT_LOG_FORMAT", defaultLogFormat),
-		configDir:         envString("SPIVOT_CONFIG_DIR", defaultConfigDir),
-		dataDir:           envString("SPIVOT_DATA_DIR", defaultDataDir),
-		databasePath:      envString("SPIVOT_DATABASE_PATH", ""),
-		trustProxy:        trustProxy,
-		trustedProxyCIDRs: splitCSV(trustedProxyCIDRs),
+		address:                envString("SPIVOT_ADDR", defaultAddress),
+		port:                   envInt("SPIVOT_PORT", defaultPort),
+		logFormat:              envString("SPIVOT_LOG_FORMAT", defaultLogFormat),
+		configDir:              envString("SPIVOT_CONFIG_DIR", defaultConfigDir),
+		dataDir:                envString("SPIVOT_DATA_DIR", defaultDataDir),
+		databasePath:           envString("SPIVOT_DATABASE_PATH", ""),
+		trustProxy:             trustProxy,
+		trustClientCertHeaders: trustClientCertHeaders,
+		trustedProxyCIDRs:      splitCSV(trustedProxyCIDRs),
 	}
 
 	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
@@ -304,6 +311,7 @@ func parseServeConfig(args []string) (serveConfig, error) {
 	flags.StringVar(&cfg.dataDir, "data-dir", cfg.dataDir, "persistent data directory")
 	flags.StringVar(&cfg.databasePath, "database-path", cfg.databasePath, "SQLite database path")
 	flags.BoolVar(&cfg.trustProxy, "trust-proxy", cfg.trustProxy, "trust X-Forwarded-* headers from trusted proxy CIDRs")
+	flags.BoolVar(&cfg.trustClientCertHeaders, "trust-client-cert-headers", cfg.trustClientCertHeaders, "trust X-Forwarded-Tls-Client-Cert* headers from trusted proxy CIDRs")
 	flags.Func("public-url", "public base URL advertised by the edge proxy", func(value string) error {
 		publicURL, err := parsePublicURL(value)
 		if err != nil {
@@ -705,6 +713,9 @@ Serve flags:
                     SQLite database path (default: SPIVOT_DATABASE_PATH or <data-dir>/spivot.db)
   -public-url value  Public base URL served by the edge proxy (default: SPIVOT_PUBLIC_URL)
   -trust-proxy       Trust X-Forwarded-* headers from configured proxy CIDRs
+  -trust-client-cert-headers
+                     Trust X-Forwarded-Tls-Client-Cert* headers from trusted
+                     proxy CIDRs (default: SPIVOT_TRUST_CLIENT_CERT_HEADERS)
   -trusted-proxy-cidrs value
                     Comma-separated trusted proxy CIDRs (default: SPIVOT_TRUSTED_PROXY_CIDRS)
 

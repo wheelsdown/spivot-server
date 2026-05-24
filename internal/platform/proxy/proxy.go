@@ -26,6 +26,14 @@ func DefaultTrustedProxyCIDRs() []string {
 type Config struct {
 	// TrustForwardedHeaders enables X-Forwarded-* handling for trusted peers.
 	TrustForwardedHeaders bool
+	// TrustClientCertHeaders enables X-Forwarded-Tls-Client-Cert* handling
+	// for trusted peers. Kept distinct from TrustForwardedHeaders so an
+	// operator can accept proxied IP/scheme/host without also accepting
+	// proxied client identity (or vice versa). Direct mTLS extraction
+	// from [http.Request.TLS] always runs regardless of this flag,
+	// because that path is authenticated by the TLS layer rather than
+	// by trusting a peer's HTTP header.
+	TrustClientCertHeaders bool
 	// TrustedNetworks contains immediate proxy networks allowed to set headers.
 	TrustedNetworks []*net.IPNet
 }
@@ -58,10 +66,25 @@ type RequestInfo struct {
 	Host string
 	// TrustedProxy reports whether forwarded headers were accepted.
 	TrustedProxy bool
+	// ClientCert is the leaf client certificate metadata, populated when
+	// either the TLS layer presented a peer certificate directly or a
+	// trusted proxy forwarded one via X-Forwarded-Tls-Client-Cert*
+	// headers. Nil when no client cert is present or the source could
+	// not be trusted.
+	ClientCert *ClientCert
 }
 
-// RequestInfoFrom returns client-facing request metadata. Forwarded headers
-// are used only when enabled and the immediate peer is in a trusted network.
+// RequestInfoFrom returns client-facing request metadata. Forwarded
+// headers and proxied client-cert headers are used only when their
+// respective Config flags are set AND the immediate peer is in a
+// trusted network.
+//
+// Client-cert extraction has a separate precedence from the
+// IP/scheme/host fields: a cert presented over direct mTLS
+// (r.TLS.PeerCertificates) is always honored because the TLS layer
+// authenticated the peer. Proxied cert headers are only honored when
+// the peer is in TrustedNetworks AND Config.TrustClientCertHeaders is
+// set.
 func RequestInfoFrom(r *http.Request, cfg Config) RequestInfo {
 	remoteIP := remoteAddrIP(r.RemoteAddr)
 	info := RequestInfo{
@@ -70,21 +93,44 @@ func RequestInfoFrom(r *http.Request, cfg Config) RequestInfo {
 		Host:     r.Host,
 	}
 
-	if !cfg.TrustForwardedHeaders || !isTrusted(remoteIP, cfg.TrustedNetworks) {
+	// Direct mTLS path always runs: this is authenticated by TLS, not
+	// by trusting an HTTP header from a peer.
+	if cert := clientCertFromTLS(r); cert != nil {
+		info.ClientCert = cert
+	}
+
+	trustedPeer := isTrusted(remoteIP, cfg.TrustedNetworks)
+	if !cfg.TrustForwardedHeaders && !cfg.TrustClientCertHeaders {
 		return info
 	}
-	info.TrustedProxy = true
+	if !trustedPeer {
+		return info
+	}
 
-	if forwardedFor := firstForwardedValue(r.Header.Get("X-Forwarded-For")); forwardedFor != "" {
-		if ip := net.ParseIP(forwardedFor); ip != nil {
-			info.ClientIP = ip.String()
+	if cfg.TrustForwardedHeaders {
+		info.TrustedProxy = true
+		if forwardedFor := firstForwardedValue(r.Header.Get("X-Forwarded-For")); forwardedFor != "" {
+			if ip := net.ParseIP(forwardedFor); ip != nil {
+				info.ClientIP = ip.String()
+			}
+		}
+		if proto := firstForwardedValue(r.Header.Get("X-Forwarded-Proto")); proto == "http" || proto == "https" {
+			info.Scheme = proto
+		}
+		if host := firstForwardedValue(r.Header.Get("X-Forwarded-Host")); host != "" {
+			info.Host = host
 		}
 	}
-	if proto := firstForwardedValue(r.Header.Get("X-Forwarded-Proto")); proto == "http" || proto == "https" {
-		info.Scheme = proto
-	}
-	if host := firstForwardedValue(r.Header.Get("X-Forwarded-Host")); host != "" {
-		info.Host = host
+
+	if cfg.TrustClientCertHeaders && info.ClientCert == nil {
+		if pemHeader := r.Header.Get(headerForwardedClientCert); pemHeader != "" {
+			info.ClientCert = parseForwardedClientCertPEM(pemHeader)
+		}
+		if info.ClientCert == nil {
+			if infoHeader := r.Header.Get(headerForwardedClientCertInfo); infoHeader != "" {
+				info.ClientCert = parseForwardedClientCertInfo(infoHeader)
+			}
+		}
 	}
 
 	return info
