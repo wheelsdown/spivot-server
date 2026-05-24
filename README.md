@@ -161,7 +161,7 @@ the CLI (later phases will add an authenticated HTTP endpoint):
 
 ```bash
 spivot-server invite create                         # 24h server_registration invite
-spivot-server invite create -scope journey -lifetime 7d
+spivot-server invite create -scope journey -lifetime 168h    # 7 days
 ```
 
 The output includes the plaintext token, the scope, the expiration time,
