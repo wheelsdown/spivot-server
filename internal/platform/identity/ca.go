@@ -164,7 +164,7 @@ func (c *CA) Fingerprint() string {
 // Sign issues a leaf certificate over the public key in csr, valid for
 // lifetime from now. The CSR's signature is verified before signing; the
 // CSR's subject is preserved. Issued certs carry a random 128-bit serial,
-// digitalSignature + keyEncipherment usages, and ExtKeyUsage clientAuth.
+// digitalSignature key usage, and ExtKeyUsage clientAuth.
 //
 // Implementations enforce protocol-level CSR policy (algorithm,
 // subject/SAN constraints) before calling Sign; the CA itself is policy-
@@ -190,14 +190,14 @@ func (c *CA) Sign(_ context.Context, csr *x509.CertificateRequest, lifetime time
 	notAfter := now.Add(lifetime)
 
 	template := &x509.Certificate{
-		SerialNumber:          serial,
-		Subject:               csr.Subject,
-		DNSNames:              csr.DNSNames,
-		EmailAddresses:        csr.EmailAddresses,
-		IPAddresses:           csr.IPAddresses,
-		URIs:                  csr.URIs,
-		NotBefore:             notBefore,
-		NotAfter:              notAfter,
+		SerialNumber:   serial,
+		Subject:        csr.Subject,
+		DNSNames:       csr.DNSNames,
+		EmailAddresses: csr.EmailAddresses,
+		IPAddresses:    csr.IPAddresses,
+		URIs:           csr.URIs,
+		NotBefore:      notBefore,
+		NotAfter:       notAfter,
 		// KeyUsageKeyEncipherment is intentionally omitted: it applies to
 		// RSA key transport and is not meaningful for ECDSA client-auth
 		// certs. Some strict verifiers reject ECDSA certs that declare
