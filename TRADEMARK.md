@@ -1,6 +1,6 @@
 # Trademark Policy
 
-"Spivot" and the Spivot logo are trademarks of the Spivot project. The Apache
+"Spivot" and the Spivot logo are trademarks of David C. McNett. The Apache
 License 2.0 covers the source code in this repository; this policy covers the
 name and brand.
 
