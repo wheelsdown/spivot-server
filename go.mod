@@ -2,7 +2,10 @@ module github.com/wheelsdown/spivot-server
 
 go 1.26
 
-require modernc.org/sqlite v1.50.1
+require (
+	github.com/opencaravan/opencaravan-go v0.0.0-20260524173424-3473cf66bb05
+	modernc.org/sqlite v1.50.1
+)
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
