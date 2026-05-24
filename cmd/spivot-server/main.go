@@ -10,7 +10,9 @@ package main
 
 import (
 	"context"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -28,6 +30,7 @@ import (
 
 	"github.com/wheelsdown/spivot-server/internal/app"
 	"github.com/wheelsdown/spivot-server/internal/platform/buildinfo"
+	"github.com/wheelsdown/spivot-server/internal/platform/identity"
 	"github.com/wheelsdown/spivot-server/internal/platform/proxy"
 	"github.com/wheelsdown/spivot-server/internal/platform/storage"
 	"github.com/wheelsdown/spivot-server/internal/server/api"
@@ -85,6 +88,8 @@ func run(ctx context.Context, stdout io.Writer, stderr io.Writer, args []string)
 		return runServe(ctx, stdout, stderr, inv.cmdArgs)
 	case "healthcheck":
 		return runHealthcheck(ctx, inv.cmdArgs)
+	case "ca":
+		return runCA(ctx, stdout, inv.cmdArgs)
 	case "version":
 		return runVersion(stdout, inv.outputFmt)
 	case "":
@@ -407,6 +412,74 @@ func runHealthcheck(ctx context.Context, args []string) error {
 	return nil
 }
 
+func runCA(ctx context.Context, stdout io.Writer, args []string) error {
+	if len(args) == 0 {
+		return errors.New("ca requires a subcommand: init or cert")
+	}
+	sub := args[0]
+	flags := flag.NewFlagSet("ca "+sub, flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+
+	dataDir := envString("SPIVOT_DATA_DIR", defaultDataDir)
+	flags.StringVar(&dataDir, "data-dir", dataDir, "persistent data directory")
+	commonName := envString("SPIVOT_CA_COMMON_NAME", "")
+	organization := envString("SPIVOT_CA_ORGANIZATION", "")
+	flags.StringVar(&commonName, "common-name", commonName, "CA certificate subject common name (init only)")
+	flags.StringVar(&organization, "organization", organization, "CA certificate subject organization (init only)")
+	if err := flags.Parse(args[1:]); err != nil {
+		return fmt.Errorf("parse ca %s flags: %w", sub, err)
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected ca %s argument: %s", sub, flags.Arg(0))
+	}
+
+	identityDir := filepath.Join(filepath.Clean(dataDir), "identity")
+	if err := ensureWritableDir(identityDir); err != nil {
+		return fmt.Errorf("prepare identity directory %q: %w", identityDir, err)
+	}
+	keyStore, err := identity.NewFileKeyStore(identityDir)
+	if err != nil {
+		return err
+	}
+
+	switch sub {
+	case "init":
+		subject := pkix.Name{}
+		if commonName != "" {
+			subject.CommonName = commonName
+		}
+		if organization != "" {
+			subject.Organization = []string{organization}
+		}
+		ca, err := identity.LoadOrCreate(ctx, keyStore, identity.Config{
+			Dir:     identityDir,
+			Subject: subject,
+		})
+		if err != nil {
+			return err
+		}
+		cert := ca.Certificate()
+		_, err = fmt.Fprintf(stdout,
+			"CA initialized at %s\n  subject:     %s\n  not_before:  %s\n  not_after:   %s\n  fingerprint: %s\n",
+			identityDir,
+			cert.Subject,
+			cert.NotBefore.Format(time.RFC3339),
+			cert.NotAfter.Format(time.RFC3339),
+			ca.Fingerprint(),
+		)
+		return err
+	case "cert":
+		ca, err := identity.LoadOrCreate(ctx, keyStore, identity.Config{Dir: identityDir})
+		if err != nil {
+			return err
+		}
+		_, err = stdout.Write(ca.CertificatePEM())
+		return err
+	default:
+		return fmt.Errorf("unknown ca subcommand: %s (expected init or cert)", sub)
+	}
+}
+
 func runVersion(w io.Writer, outputFmt string) error {
 	info := buildinfo.BuildInfo()
 	if outputFmt == "json" {
@@ -433,6 +506,7 @@ Usage: spivot-server [flags] <command> [args]
 Commands:
   serve         Start the API server
   healthcheck   Check a running server's health endpoint
+  ca            Manage the server-local certificate authority
   version       Show version information
 
 Global flags:
@@ -450,6 +524,19 @@ Serve flags:
   -trust-proxy       Trust X-Forwarded-* headers from configured proxy CIDRs
   -trusted-proxy-cidrs value
                     Comma-separated trusted proxy CIDRs (default: SPIVOT_TRUSTED_PROXY_CIDRS)
+
+CA subcommands:
+  ca init       Generate the server-local CA keypair and self-signed root
+                certificate if they do not already exist. Re-running on an
+                existing CA loads it and prints its fingerprint.
+  ca cert       Print the CA's self-signed certificate as PEM. Useful for
+                bundling with clients so they can validate server-issued
+                leaf certificates.
+
+CA flags:
+  -data-dir value      Persistent data directory (default: SPIVOT_DATA_DIR or data)
+  -common-name value   CA subject common name (default: "Spivot Server CA")
+  -organization value  CA subject organization (default: unset)
 `)
 	return err
 }

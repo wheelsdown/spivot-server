@@ -27,6 +27,8 @@ Current foundation:
 - Structured logging with `log/slog`.
 - Health, readiness, version, and server discovery endpoints.
 - In-band server policy snapshot advertisement.
+- Server-local certificate authority (`spivot-server ca init`) that issues
+  short-lived client app certificates.
 - Container-first release engineering with OCI labels and health checks.
 - Embedded SQL migration metadata for OpenCaravan journey storage.
 
@@ -94,6 +96,28 @@ Future OpenCaravan API routes will be documented as they land. Go package
 documentation is part of the public reader experience; exported symbols and
 packages should have useful Godoc comments.
 
+## Certificate Authority
+
+Spivot Server acts as its own certificate authority for the client apps that
+enroll with it. The CA's keypair and self-signed root certificate are
+generated on demand and persisted under `<data-dir>/identity/`:
+
+```bash
+spivot-server ca init        # generate keypair + self-signed root if absent
+spivot-server ca cert        # print the CA's certificate as PEM
+```
+
+`ca init` is idempotent: re-running it loads the existing CA and prints its
+fingerprint. The key is written with 0600 permissions and is never logged.
+Subject defaults to `CN=Spivot Server CA`; override with `--common-name` and
+`--organization` flags (or `SPIVOT_CA_COMMON_NAME` / `SPIVOT_CA_ORGANIZATION`
+env vars).
+
+Phase 2a of the auth rollout adds the CA primitive and an audit table
+(`issued_certificates`) for every leaf certificate the CA signs. Later
+phases wire the CA into the enrollment HTTP endpoint and the
+identity/session middleware.
+
 ## Storage Schema
 
 The first schema foundation lives in
@@ -113,6 +137,11 @@ The initial OpenCaravan migration covers:
 - journey segments
 - telemetry batches
 - position samples
+
+The Phase 2a migration adds:
+
+- `issued_certificates` — audit trail of every leaf certificate the CA has
+  signed (serial, subject, validity window, issuance time, revocation time).
 
 The schema stores protocol-facing data conservatively: text identifiers,
 RFC3339 timestamp strings, integer-scaled coordinates, hashed invite tokens, and
@@ -173,7 +202,8 @@ hardcoded in Go source.
 cmd/spivot-server/       command entry point and CLI parsing
 internal/app/            process lifecycle wiring
 internal/server/api/     HTTP API server
-internal/platform/       build info, logging, storage, and shared platform code
+internal/platform/       build info, identity (CA + key store), logging,
+                         storage, and shared platform code
 scripts/releng/          release engineering helpers
 ```
 
