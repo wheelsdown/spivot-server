@@ -84,8 +84,13 @@ func canonicalJSON(document []byte) ([]byte, error) {
 		return nil, fmt.Errorf("decode server policy JSON: %w", err)
 	}
 	var extra any
-	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+	err := dec.Decode(&extra)
+	switch {
+	case errors.Is(err, io.EOF):
+	case err == nil:
 		return nil, errors.New("server policy JSON must contain one document")
+	default:
+		return nil, fmt.Errorf("decode trailing server policy JSON: %w", err)
 	}
 
 	canonical, err := json.Marshal(value)

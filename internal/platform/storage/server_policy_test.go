@@ -89,9 +89,32 @@ func TestEnsureServerPolicySnapshotRejectsInvalidJSON(t *testing.T) {
 		}
 	}()
 
-	_, err = store.EnsureServerPolicySnapshot(ctx, []byte(`{"version":"v1"} {"extra":true}`))
-	if err == nil {
-		t.Fatal("expected error")
+	tests := []struct {
+		name     string
+		document string
+		want     string
+	}{
+		{
+			name:     "second JSON document",
+			document: `{"version":"v1"} {"extra":true}`,
+			want:     "server policy JSON must contain one document",
+		},
+		{
+			name:     "malformed trailing JSON",
+			document: `{"version":"v1"} {`,
+			want:     "decode trailing server policy JSON",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := store.EnsureServerPolicySnapshot(ctx, []byte(tt.document))
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want %q", err, tt.want)
+			}
+		})
 	}
 }
 

@@ -179,7 +179,7 @@ func runServe(ctx context.Context, stdout io.Writer, stderr io.Writer, args []st
 	}
 	storedPolicy, err := store.EnsureServerPolicySnapshot(ctx, policyDocument)
 	if err != nil {
-		return err
+		return fmt.Errorf("ensure default server policy snapshot: %w", err)
 	}
 	policySnapshot := api.ServerPolicySnapshot{
 		ID:          storedPolicy.ID,
