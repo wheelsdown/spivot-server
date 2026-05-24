@@ -171,6 +171,9 @@ func (s *FileKeyStore) save(name string, signer crypto.Signer) error {
 		cleanup()
 		return fmt.Errorf("identity: persist key %q: %w", name, err)
 	}
+	if err := syncDir(s.dir); err != nil {
+		return fmt.Errorf("identity: fsync key store dir after persisting %q: %w", name, err)
+	}
 	return nil
 }
 

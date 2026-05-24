@@ -320,5 +320,30 @@ func atomicWrite(dir, finalPath string, data []byte, perm os.FileMode) error {
 		cleanup()
 		return err
 	}
+	return syncDir(dir)
+}
+
+// syncDir fsyncs the directory at path so that its directory entries
+// (newly-created files, renames) are durably persisted. Without this,
+// a crash or power loss between the rename and the kernel flushing the
+// directory metadata can leave the file invisible on remount even though
+// its contents were sync'd.
+//
+// On platforms where fsync on a directory is not supported the kernel
+// returns an error; we surface that to the caller for visibility rather
+// than silently swallowing it.
+func syncDir(path string) error {
+	d, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("identity: open dir for fsync: %w", err)
+	}
+	syncErr := d.Sync()
+	closeErr := d.Close()
+	if syncErr != nil {
+		return fmt.Errorf("identity: fsync dir %q: %w", path, syncErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("identity: close dir %q: %w", path, closeErr)
+	}
 	return nil
 }
