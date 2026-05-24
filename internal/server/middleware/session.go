@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -14,55 +15,64 @@ import (
 )
 
 // Session is the server-side view of a verified session macaroon
-// attached to a request by [AttachSession]. It is the structured
-// projection of [macaroon.Verified] onto the convenience fields
-// downstream handlers actually consume.
+// attached to a request by [AttachSession]. It carries the raw
+// verified macaroon view (which security gates use through
+// [RequireSession] -> [SessionVerifier.CheckConstraints]) plus a
+// few convenience fields the access log emits for observability.
 //
-// All fields are populated from the verified macaroon's caveats.
-// The macaroons spivot-server issues always carry user=,
-// client_app=, action=, and time<expiration caveats; journey= is
-// present for journey-scoped sessions and absent for journey-less
-// actions (admin / invite.create). Sessions presented by a future
-// client that omits one of the always-present caveats are still
-// attached — the per-handler [RequireSession] guard is the place
-// that decides whether the missing field matters for the route.
+// Important: the convenience fields (UserID, ClientAppID,
+// JourneyID, Action) are derived from caveat singletons. If the
+// presented macaroon carries zero or multiple caveats of a kind
+// (a legitimate macaroon will not, but an attenuator can append
+// caveats without the key), the corresponding convenience field
+// is left empty. Security decisions MUST go through Verified.Caveats
+// — typically by letting [RequireSession] drive
+// [SessionVerifier.CheckConstraints], which enforces the macaroon's
+// AND-of-caveats semantics so duplicate caveats with conflicting
+// values are unsatisfiable (the way macaroon attenuation is
+// supposed to work).
 //
 // Session is safe to share across goroutines: every field is a
-// value type and no post-construction mutation happens.
+// value type or an immutable slice and no post-construction
+// mutation happens.
 type Session struct {
+	// Verified is the raw structural view returned by
+	// [SessionVerifier.VerifySignature]. RequireSession passes
+	// this to CheckConstraints; handlers that need to introspect
+	// caveats beyond the convenience fields walk Verified.Caveats
+	// directly.
+	Verified macaroon.Verified
+
 	// RootID is the macaroon root id this session was signed
 	// against. Stable across rotation: macaroons signed by a
 	// since-rotated root still verify (storage retains rotated
-	// rows) and surface here unchanged.
+	// rows).
 	RootID string
-	// UserID is the user the session belongs to (user= caveat).
+	// UserID is the user= caveat value when the macaroon carries
+	// exactly one such caveat; otherwise empty. Observability
+	// only — do not gate on this field.
 	UserID opencaravan.UUID
-	// ClientAppID is the client app the session was issued to
-	// (client_app= caveat). The mTLS identity that requested the
-	// session will have the same id.
+	// ClientAppID is the client_app= caveat value, with the same
+	// singleton-or-empty contract as UserID.
 	ClientAppID opencaravan.UUID
-	// JourneyID is the journey the session is scoped to (journey=
-	// caveat) or empty when the macaroon is journey-less.
+	// JourneyID is the journey= caveat value, with the same
+	// singleton-or-empty contract as UserID.
 	JourneyID opencaravan.UUID
-	// Action is the single action this session authorizes
-	// (action= caveat) or empty when the macaroon is action-less
-	// (no current issue path produces such a macaroon; reserved
-	// for future "any action" sessions).
+	// Action is the action= caveat value, with the same
+	// singleton-or-empty contract as UserID.
 	Action opencaravan.SessionAction
-	// Expiration is the macaroon's time<T caveat; the session is
-	// invalid at or after this instant.
+	// Expiration is the effective expiration of the macaroon —
+	// the earliest time<T caveat across the whole list. Always
+	// non-zero in an attached Session because VerifySignature
+	// rejects macaroons that don't carry a time<T caveat.
 	Expiration time.Time
-	// Caveats is the full structured caveat list for handlers
-	// that need to introspect attenuations beyond the convenience
-	// fields above.
-	Caveats []opencaravan.Caveat
 }
 
 // SessionVerifier is the narrow [macaroon.Verifier] surface
-// [AttachSession] depends on. Defined here so tests can pass an
-// in-memory fake without standing up the full storage-backed
-// resolver. The concrete production implementation is
-// *[macaroon.Verifier].
+// [AttachSession] and [RequireSession] depend on. Defined here so
+// tests can pass an in-memory fake without standing up the full
+// storage-backed resolver. The concrete production implementation
+// is *[macaroon.Verifier].
 type SessionVerifier interface {
 	VerifySignature(ctx context.Context, serialized []byte) (macaroon.Verified, error)
 	CheckConstraints(verified macaroon.Verified, c macaroon.Constraints) error
@@ -77,38 +87,57 @@ type sessionKey struct{}
 //
 // Behavior:
 //
-//   - No Authorization header, or a header that does not use the
-//     Macaroon scheme: pass through with no session attached.
-//   - Header present but malformed (bad base64, unknown root,
-//     signature mismatch, malformed caveats): WARN log + pass
-//     through with no session attached. The per-handler
-//     [RequireSession] guard will 401 the request.
-//   - Header present and verifies: attach Session to context and
-//     continue.
+//   - No Authorization header at all: pass through silently with
+//     no session attached. (Health probes and the enrollment
+//     endpoint flow this way; logging "no auth header" would
+//     spam the access log.)
+//   - Header present but malformed (wrong scheme, bad base64):
+//     WARN log + pass through with no session attached.
+//   - Header present and decodes, but signature verification
+//     fails (unknown root, bad signature, malformed caveats,
+//     missing time<T): WARN log + pass through.
 //   - Verifier transport error (e.g. the storage-backed root
-//     resolver fails): ERROR log + pass through. Same operational
-//     property as AttachIdentity: a storage outage does not 5xx
-//     the read-only health probe.
+//     resolver failed): ERROR log + pass through. Distinguished
+//     from auth-level failures via
+//     [macaroon.ErrTransportFailure] so a database outage shows
+//     up loudly without being confused with bad client input.
+//   - Header verifies cleanly: attach Session to context and
+//     continue.
 //
 // The pass-through-on-failure stance matches AttachIdentity. The
-// per-handler guard is responsible for translating "no session"
-// into the right user-facing status.
+// per-handler guard ([RequireSession]) translates "no attached
+// session" into 401.
 func AttachSession(verifier SessionVerifier, logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			serialized, ok := extractMacaroonHeader(r)
-			if !ok {
+			serialized, headerErr := extractMacaroonHeader(r)
+			if headerErr != nil {
+				if !errors.Is(headerErr, errNoAuthHeader) {
+					logger.Warn("rejected Authorization header",
+						"error", headerErr,
+					)
+				}
 				next.ServeHTTP(w, r)
 				return
 			}
 			verified, err := verifier.VerifySignature(r.Context(), serialized)
 			if err != nil {
-				if errors.Is(err, macaroon.ErrVerifyFailed) {
+				switch {
+				case errors.Is(err, macaroon.ErrTransportFailure):
+					logger.Error("verify macaroon signature: resolver transport error",
+						"error", err,
+					)
+				case errors.Is(err, macaroon.ErrVerifyFailed):
 					logger.Warn("rejected presented macaroon",
 						"error", err,
 					)
-				} else {
-					logger.Error("verify macaroon signature failed",
+				default:
+					// Defensive: VerifySignature contract says
+					// failures wrap either ErrVerifyFailed or
+					// ErrTransportFailure. If a future code path
+					// added an un-classified error, treat as ERROR
+					// so it doesn't disappear silently.
+					logger.Error("verify macaroon signature: unclassified failure",
 						"error", err,
 					)
 				}
@@ -121,36 +150,56 @@ func AttachSession(verifier SessionVerifier, logger *slog.Logger) func(http.Hand
 	}
 }
 
-// SessionConstraint is a per-request check the [RequireSession]
-// middleware runs against an attached [Session]. The check sees
-// the original request so constraints can extract path parameters
-// (e.g. a journey id from the route), and returns nil when the
-// constraint is satisfied or a descriptive error otherwise.
+// ConstraintsForRequest is a per-route builder that produces the
+// [macaroon.Constraints] [RequireSession] passes to
+// [SessionVerifier.CheckConstraints]. The builder reads the
+// request (typically for path parameters via [http.Request.PathValue])
+// and returns the runtime constraints the route imposes.
 //
-// Helpers [RequireSessionAction] and [RequireSessionJourneyParam]
-// cover the common cases; ad-hoc constraints can be defined
-// inline at the registration site.
-type SessionConstraint func(r *http.Request, s Session) error
+// Returning an error signals a configuration mistake (e.g. the
+// route declared a path parameter the builder relies on, but the
+// mux didn't populate it). RequireSession treats builder errors
+// as 500 so the operator notices, not as 401.
+type ConstraintsForRequest func(r *http.Request) (macaroon.Constraints, error)
 
-// RequireSession returns a middleware that 401s the request unless
-// it carries a verified [Session] in its context AND every
-// supplied [SessionConstraint] passes. The macaroon's
-// time<expiration caveat is always checked first, before any
-// custom constraint, so an expired macaroon is always rejected
-// regardless of which constraints the route registers.
+// RequireSession returns a middleware that 401s the request
+// unless it carries a [Session] in its context AND the macaroon's
+// caveats are satisfied by the constraints the supplied
+// [ConstraintsForRequest] builder produces for this request.
 //
-// Constraints are evaluated in supplied order. The first failure
-// short-circuits and 401s the request; the logger receives a
-// WARN with the reason so an operator can debug authorization
-// failures without exposing the detail to the client.
+// Critically, the per-handler check delegates to
+// [SessionVerifier.CheckConstraints] rather than reading the
+// convenience fields off [Session]. CheckConstraints walks
+// [Session.Verified.Caveats] under macaroon AND semantics: every
+// caveat must be satisfied independently. An attenuator who
+// appended an extra journey= or action= caveat (the standard
+// way to attenuate a macaroon, requiring no key) makes the
+// resulting macaroon unsatisfiable for any concrete request
+// rather than letting the last caveat win — which is exactly the
+// invariant macaroons promise.
 //
-// The constraint set is intentionally policy-light: each route
-// names the action / journey / user it expects, and any deeper
-// permission gating happens in the handler itself. v0's
-// macaroons carry a single action= caveat, so a route asserting
-// a different action via [RequireSessionAction] correctly fails
-// against a wrong-action macaroon.
-func RequireSession(logger *slog.Logger, constraints ...SessionConstraint) func(http.Handler) http.Handler {
+// Identity caveats (user=, client_app=) are auto-overlaid from
+// the request's context Identity (set by AttachIdentity) when
+// the route's builder leaves them empty. Routes don't have to
+// repeat the identity scoping — it's universal and the
+// AttachIdentity step already resolved it from mTLS.
+//
+// Failures map to:
+//
+//   - 401 "no_session" — no Session attached
+//   - 500 "constraints_builder_failed" — builder returned an error
+//   - 401 "session_constraint_failed" — CheckConstraints rejected
+func RequireSession(verifier SessionVerifier, logger *slog.Logger, build ConstraintsForRequest) func(http.Handler) http.Handler {
+	if verifier == nil {
+		// Construction-time defensive panic — a nil verifier means
+		// RequireSession can never accept a request and any wrapped
+		// handler is dead code. Surface during route registration
+		// rather than at the first protected request.
+		panic("middleware: RequireSession verifier must be non-nil")
+	}
+	if build == nil {
+		panic("middleware: RequireSession builder must be non-nil")
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			session, ok := SessionFrom(r.Context())
@@ -159,68 +208,66 @@ func RequireSession(logger *slog.Logger, constraints ...SessionConstraint) func(
 					"This endpoint requires a session macaroon (Authorization: Macaroon ...).")
 				return
 			}
-			now := time.Now()
-			if !session.Expiration.IsZero() && !now.Before(session.Expiration) {
-				logger.Warn("session expired",
-					"user_id", session.UserID,
-					"client_app_id", session.ClientAppID,
-					"expiration", session.Expiration.Format(time.RFC3339Nano),
+			c, err := build(r)
+			if err != nil {
+				logger.Error("session constraints builder failed",
+					"error", err,
 				)
-				writeProblem(w, logger, http.StatusUnauthorized, "session_expired",
-					"The presented session macaroon has expired; request a new one.")
+				writeProblem(w, logger, http.StatusInternalServerError, "constraints_builder_failed",
+					"Could not build session constraints for this request.")
 				return
 			}
-			for _, constraint := range constraints {
-				if err := constraint(r, session); err != nil {
-					logger.Warn("session constraint failed",
-						"user_id", session.UserID,
-						"client_app_id", session.ClientAppID,
-						"error", err,
-					)
-					writeProblem(w, logger, http.StatusUnauthorized, "session_constraint_failed",
-						"The presented session macaroon does not authorize this request.")
-					return
+			// Overlay identity caveats from the request's context
+			// Identity. The mTLS-resolved identity is the
+			// authoritative source for user= / client_app=; routes
+			// don't have to repeat it in every builder.
+			if id, ok := IdentityFrom(r.Context()); ok {
+				if c.UserID == "" {
+					c.UserID = opencaravan.UUID(id.UserID)
 				}
+				if c.ClientAppID == "" {
+					c.ClientAppID = opencaravan.UUID(id.ClientAppID)
+				}
+			}
+			if err := verifier.CheckConstraints(session.Verified, c); err != nil {
+				logger.Warn("session constraint check failed",
+					"root_id", session.RootID,
+					"error", err,
+				)
+				writeProblem(w, logger, http.StatusUnauthorized, "session_constraint_failed",
+					"The presented session macaroon does not authorize this request.")
+				return
 			}
 			next.ServeHTTP(w, r)
 		})
 	}
 }
 
-// RequireSessionAction returns a [SessionConstraint] that
-// requires the session's Action to equal the supplied value.
-// Used by handlers that gate on a specific
-// [opencaravan.SessionAction] — typically every protected route,
-// since v0 issues one action per macaroon.
-func RequireSessionAction(want opencaravan.SessionAction) SessionConstraint {
-	return func(_ *http.Request, s Session) error {
-		if s.Action != want {
-			return errSessionActionMismatch{want: want, got: s.Action}
-		}
-		return nil
+// SessionAction returns a [ConstraintsForRequest] that constrains
+// only the action. Identity caveats (user=, client_app=) are
+// overlaid from the context Identity by RequireSession.
+func SessionAction(action opencaravan.SessionAction) ConstraintsForRequest {
+	return func(_ *http.Request) (macaroon.Constraints, error) {
+		return macaroon.Constraints{Action: action}, nil
 	}
 }
 
-// RequireSessionJourneyParam returns a [SessionConstraint] that
-// requires the session's JourneyID to equal the [http.Request]
-// path value named by pathParam. The pathParam is the same name
-// the route declared in its mux pattern (e.g. "id" for a
-// "/v1/journeys/{id}" route). When the path value is empty the
-// constraint fails closed.
-//
-// This is the typical journey-scoped guard: the route knows the
-// journey it's about to act on, and the macaroon's journey=
-// caveat must point at the same journey.
-func RequireSessionJourneyParam(pathParam string) SessionConstraint {
-	return func(r *http.Request, s Session) error {
-		want := opencaravan.UUID(r.PathValue(pathParam))
-		if want == "" {
-			return errSessionJourneyParamEmpty{param: pathParam}
+// SessionActionJourneyFromPath returns a [ConstraintsForRequest]
+// that constrains the action and pulls the journey id from the
+// request's named path value (e.g. "id" for a route declared as
+// "GET /v1/journeys/{id}"). Returns an error when the path
+// value is missing, surfacing as 500 from [RequireSession] so an
+// operator notices the route is misconfigured.
+func SessionActionJourneyFromPath(action opencaravan.SessionAction, pathParam string) ConstraintsForRequest {
+	return func(r *http.Request) (macaroon.Constraints, error) {
+		journey := opencaravan.UUID(r.PathValue(pathParam))
+		if journey == "" {
+			return macaroon.Constraints{}, fmt.Errorf("path value %q is empty", pathParam)
 		}
-		if s.JourneyID != want {
-			return errSessionJourneyMismatch{want: want, got: s.JourneyID}
-		}
-		return nil
+		return macaroon.Constraints{
+			Action:    action,
+			JourneyID: journey,
+		}, nil
 	}
 }
 
@@ -245,100 +292,82 @@ func withSession(ctx context.Context, s Session) context.Context {
 }
 
 // sessionFromVerified projects a verified macaroon onto the
-// convenience-field Session shape. Walks the caveats once and
-// picks out the well-known kinds; the structured Caveats slice
-// is preserved verbatim for handlers that need to introspect
-// further.
+// convenience-field Session shape. Singleton caveats populate the
+// convenience field; zero or multiple caveats of a kind leave the
+// field empty. See [Session]'s doc for why this is safe — the
+// security gate is CheckConstraints, not the convenience fields.
 func sessionFromVerified(v macaroon.Verified) Session {
 	session := Session{
+		Verified:   v,
 		RootID:     v.RootID,
 		Expiration: v.Expiration,
-		Caveats:    v.Caveats,
 	}
 	for _, c := range v.Caveats {
 		switch c.Kind {
 		case opencaravan.CaveatKindUser:
-			session.UserID = c.UUID
+			if session.UserID == "" {
+				session.UserID = c.UUID
+			} else {
+				session.UserID = "" // duplicate kind; null out and stop
+			}
 		case opencaravan.CaveatKindClientApp:
-			session.ClientAppID = c.UUID
+			if session.ClientAppID == "" {
+				session.ClientAppID = c.UUID
+			} else {
+				session.ClientAppID = ""
+			}
 		case opencaravan.CaveatKindJourney:
-			session.JourneyID = c.UUID
+			if session.JourneyID == "" {
+				session.JourneyID = c.UUID
+			} else {
+				session.JourneyID = ""
+			}
 		case opencaravan.CaveatKindAction:
-			session.Action = c.Action
+			if session.Action == "" {
+				session.Action = c.Action
+			} else {
+				session.Action = ""
+			}
 		}
 	}
 	return session
 }
 
+// errNoAuthHeader is the sentinel [extractMacaroonHeader] returns
+// when the Authorization header is missing entirely. AttachSession
+// distinguishes this case (silent pass-through) from other
+// extraction failures (WARN log + pass-through), since requests
+// to unauthenticated routes shouldn't spam the log.
+var errNoAuthHeader = errors.New("no Authorization header")
+
 // extractMacaroonHeader pulls the Authorization header and
-// base64url-decodes the macaroon value when present and well-
-// formed. Returns ok=false on any of:
+// base64url-decodes the Macaroon-scheme value. Returns the
+// decoded bytes on success, or an error describing the failure
+// mode:
 //
-//   - Missing Authorization header.
-//   - Header does not start with the "Macaroon " scheme prefix
-//     (case-insensitive — RFC 7235 scheme tokens are
-//     case-insensitive).
-//   - Token portion does not decode as unpadded base64url
-//     (the encoding [opencaravan.SessionResponse] specifies).
+//   - [errNoAuthHeader] when the header is absent (AttachSession
+//     stays silent on this case).
+//   - Other errors describe specific malformed conditions and
+//     surface as WARN-level audit log lines.
 //
-// Ok=false is the correct response in all of these — the
-// AttachSession middleware passes through unauthenticated and
-// the per-handler RequireSession guard 401s. We don't surface a
-// log here because the broad attach pass also runs against
-// unauthenticated requests (health probes, enrollment) and we
-// don't want to spam logs with "no auth header" for every such
-// request.
-func extractMacaroonHeader(r *http.Request) ([]byte, bool) {
+// The Macaroon scheme token is matched case-insensitively per
+// RFC 7235.
+func extractMacaroonHeader(r *http.Request) ([]byte, error) {
 	header := r.Header.Get("Authorization")
 	if header == "" {
-		return nil, false
+		return nil, errNoAuthHeader
 	}
 	const prefix = "Macaroon "
 	if len(header) < len(prefix) || !strings.EqualFold(header[:len(prefix)], prefix) {
-		return nil, false
+		return nil, errors.New("authorization scheme is not Macaroon")
 	}
 	token := strings.TrimSpace(header[len(prefix):])
 	if token == "" {
-		return nil, false
+		return nil, errors.New("macaroon token is empty")
 	}
 	decoded, err := base64.RawURLEncoding.DecodeString(token)
 	if err != nil {
-		return nil, false
+		return nil, fmt.Errorf("macaroon token is not unpadded base64url: %w", err)
 	}
-	return decoded, true
-}
-
-// errSessionActionMismatch is a typed error so tests and the
-// audit log can match on the specific failure mode without
-// string-matching the human-readable message.
-type errSessionActionMismatch struct {
-	want, got opencaravan.SessionAction
-}
-
-func (e errSessionActionMismatch) Error() string {
-	return "session action " + string(e.got) + " does not match required " + string(e.want)
-}
-
-// errSessionJourneyMismatch is the typed error counterpart for
-// [RequireSessionJourneyParam] when the path's journey id does
-// not match the macaroon's journey= caveat.
-type errSessionJourneyMismatch struct {
-	want, got opencaravan.UUID
-}
-
-func (e errSessionJourneyMismatch) Error() string {
-	return "session journey " + string(e.got) + " does not match request journey " + string(e.want)
-}
-
-// errSessionJourneyParamEmpty is the typed error counterpart for
-// [RequireSessionJourneyParam] when the named path parameter is
-// empty on the request. Surfaces as a routing-configuration bug
-// (the route was registered with a different parameter name)
-// rather than as a permission failure.
-type errSessionJourneyParamEmpty struct {
-	param string
-}
-
-func (e errSessionJourneyParamEmpty) Error() string {
-	return "session journey constraint: request has no PathValue(" + e.param + ")"
+	return decoded, nil
 }

@@ -475,6 +475,125 @@ func TestCheckConstraintsEnforcesExpiration(t *testing.T) {
 	}
 }
 
+func TestVerifySignatureRejectsMacaroonWithoutTimeCaveat(t *testing.T) {
+	key := randomKey(t)
+	issuer, _ := NewIssuer("verify-root", key)
+	// Issue with just user/journey caveats — no time<T. Every
+	// spivot-issued macaroon has one, but a presented macaroon
+	// could be hand-crafted to omit it.
+	_, serialized, err := issuer.Issue([]string{
+		opencaravan.CaveatUser(testUser),
+		opencaravan.CaveatJourney(testJourney),
+	})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	verifier := newTestVerifier(t, "verify-root", key, time.Now())
+	_, err = verifier.VerifySignature(context.Background(), serialized)
+	if !errors.Is(err, ErrVerifyFailed) {
+		t.Fatalf("err = %v, want ErrVerifyFailed", err)
+	}
+	if !strings.Contains(err.Error(), "time<T") {
+		t.Fatalf("err = %v, want time<T-caveat message", err)
+	}
+}
+
+func TestVerifySignatureTransportErrorIsDistinguishable(t *testing.T) {
+	// Resolver returns a non-ErrUnknownRoot error — typically a
+	// database outage. VerifySignature must wrap with
+	// ErrTransportFailure, NOT ErrVerifyFailed, so AttachSession
+	// can log ERROR vs WARN.
+	key := randomKey(t)
+	issuer, _ := NewIssuer("verify-root", key)
+	_, serialized, err := issuer.IssueSession(SessionParams{
+		UserID:      testUser,
+		ClientAppID: testApp,
+		JourneyID:   testJourney,
+		Action:      opencaravan.SessionActionJourneyRead,
+		Expiration:  time.Now().Add(time.Hour),
+		Now:         time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("IssueSession: %v", err)
+	}
+
+	verifier, err := NewVerifier(func(_ context.Context, _ string) ([]byte, error) {
+		return nil, errors.New("simulated database outage")
+	})
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	_, err = verifier.VerifySignature(context.Background(), serialized)
+	if !errors.Is(err, ErrTransportFailure) {
+		t.Fatalf("err = %v, want errors.Is(_, ErrTransportFailure)", err)
+	}
+	if errors.Is(err, ErrVerifyFailed) {
+		t.Fatalf("transport error must NOT also wrap ErrVerifyFailed; got %v", err)
+	}
+}
+
+func TestVerifyConvenienceWrapperReWrapsTransport(t *testing.T) {
+	// Verify (single-shot convenience wrapper) must re-wrap
+	// transport errors in ErrVerifyFailed so existing callers'
+	// errors.Is(err, ErrVerifyFailed) keeps working — that's the
+	// contract the convenience wrapper documents.
+	key := randomKey(t)
+	issuer, _ := NewIssuer("verify-root", key)
+	_, serialized, err := issuer.IssueSession(SessionParams{
+		UserID:      testUser,
+		ClientAppID: testApp,
+		JourneyID:   testJourney,
+		Action:      opencaravan.SessionActionJourneyRead,
+		Expiration:  time.Now().Add(time.Hour),
+		Now:         time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("IssueSession: %v", err)
+	}
+	verifier, err := NewVerifier(func(_ context.Context, _ string) ([]byte, error) {
+		return nil, errors.New("simulated outage")
+	})
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	_, err = verifier.Verify(context.Background(), serialized, Constraints{
+		JourneyID:   testJourney,
+		Action:      opencaravan.SessionActionJourneyRead,
+		UserID:      testUser,
+		ClientAppID: testApp,
+	})
+	if !errors.Is(err, ErrVerifyFailed) {
+		t.Fatalf("Verify err = %v, want ErrVerifyFailed wrap", err)
+	}
+}
+
+func TestParseCaveatsTracksEarliestExpiration(t *testing.T) {
+	// A macaroon attenuated to a shorter expiration must surface
+	// the SHORTER time as Verified.Expiration, since macaroon AND
+	// semantics make the effective expiration the earliest
+	// time<T caveat.
+	key := randomKey(t)
+	issuer, _ := NewIssuer("verify-root", key)
+	now := time.Now().UTC()
+	later := now.Add(time.Hour)
+	earlier := now.Add(15 * time.Minute)
+	_, serialized, err := issuer.Issue([]string{
+		opencaravan.CaveatTimeBefore(later),
+		opencaravan.CaveatTimeBefore(earlier),
+	})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	verifier := newTestVerifier(t, "verify-root", key, now)
+	verified, err := verifier.VerifySignature(context.Background(), serialized)
+	if err != nil {
+		t.Fatalf("VerifySignature: %v", err)
+	}
+	if !verified.Expiration.Equal(earlier) {
+		t.Fatalf("Expiration = %s, want earlier (%s)", verified.Expiration, earlier)
+	}
+}
+
 func TestVerifierWithClockNilRestoresDefault(t *testing.T) {
 	v, err := NewVerifier(func(context.Context, string) ([]byte, error) { return nil, ErrUnknownRoot })
 	if err != nil {

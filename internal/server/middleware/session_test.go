@@ -1,10 +1,12 @@
 package middleware
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"github.com/opencaravan/opencaravan-go"
+	macaroonv2 "gopkg.in/macaroon.v2"
 
 	"github.com/wheelsdown/spivot-server/internal/platform/auth/macaroon"
 )
@@ -24,13 +27,11 @@ const (
 )
 
 // sessionFixture bundles an issuer/verifier pair with a fresh
-// random root key so every test gets an isolated signing key. The
-// verifier's resolver is a closure over the test's rootKey/rootID
-// — no storage layer involved.
+// random root key so every test gets an isolated signing key.
 type sessionFixture struct {
-	rootKey  []byte
 	issuer   *macaroon.Issuer
 	verifier *macaroon.Verifier
+	rootKey  []byte
 }
 
 func newSessionFixture(t *testing.T) *sessionFixture {
@@ -52,16 +53,11 @@ func newSessionFixture(t *testing.T) *sessionFixture {
 	if err != nil {
 		t.Fatalf("NewVerifier: %v", err)
 	}
-	return &sessionFixture{
-		rootKey:  key,
-		issuer:   issuer,
-		verifier: verifier,
-	}
+	return &sessionFixture{issuer: issuer, verifier: verifier, rootKey: key}
 }
 
 // issueAndEncode mints a session macaroon for the supplied params
-// and returns its unpadded-base64url encoding (the form
-// Authorization: Macaroon clients send).
+// and returns its unpadded-base64url encoding.
 func (f *sessionFixture) issueAndEncode(t *testing.T, params macaroon.SessionParams) string {
 	t.Helper()
 	_, serialized, err := f.issuer.IssueSession(params)
@@ -98,8 +94,7 @@ func TestAttachSessionAttachesVerifiedSession(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/journeys/x", nil)
 	req.Header.Set("Authorization", "Macaroon "+encoded)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
+	handler.ServeHTTP(httptest.NewRecorder(), req)
 
 	if captured.RootID != testRootID {
 		t.Fatalf("RootID = %q, want %q", captured.RootID, testRootID)
@@ -119,12 +114,19 @@ func TestAttachSessionAttachesVerifiedSession(t *testing.T) {
 	if captured.Expiration.IsZero() {
 		t.Fatal("Expiration is zero")
 	}
+	// The raw caveats must be exposed for RequireSession to drive
+	// CheckConstraints against the full list.
+	if len(captured.Verified.Caveats) == 0 {
+		t.Fatal("Verified.Caveats is empty")
+	}
 }
 
-func TestAttachSessionPassesThroughNoHeader(t *testing.T) {
+func TestAttachSessionSilentOnNoHeader(t *testing.T) {
 	fix := newSessionFixture(t)
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
 	called := false
-	handler := AttachSession(fix.verifier, discardLogger())(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+	handler := AttachSession(fix.verifier, logger)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		called = true
 		if _, ok := SessionFrom(r.Context()); ok {
 			t.Error("SessionFrom ok=true with no header")
@@ -134,11 +136,36 @@ func TestAttachSessionPassesThroughNoHeader(t *testing.T) {
 	if !called {
 		t.Fatal("downstream handler not invoked")
 	}
+	if buf.Len() != 0 {
+		t.Fatalf("expected silent pass-through with no header, got log: %s", buf.String())
+	}
+}
+
+func TestAttachSessionWarnsOnMalformedHeader(t *testing.T) {
+	fix := newSessionFixture(t)
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	handler := AttachSession(fix.verifier, logger)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		if _, ok := SessionFrom(r.Context()); ok {
+			t.Error("SessionFrom ok=true with malformed header")
+		}
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Macaroon !!!not-base64!!!")
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+	if !strings.Contains(buf.String(), "rejected Authorization header") {
+		t.Fatalf("expected WARN log for malformed header, got: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "level=WARN") {
+		t.Fatalf("expected WARN level, got: %s", buf.String())
+	}
 }
 
 func TestAttachSessionPassesThroughWrongScheme(t *testing.T) {
 	fix := newSessionFixture(t)
-	handler := AttachSession(fix.verifier, discardLogger())(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	handler := AttachSession(fix.verifier, logger)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		if _, ok := SessionFrom(r.Context()); ok {
 			t.Error("SessionFrom ok=true with Bearer header")
 		}
@@ -146,6 +173,9 @@ func TestAttachSessionPassesThroughWrongScheme(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer some-token")
 	handler.ServeHTTP(httptest.NewRecorder(), req)
+	if !strings.Contains(buf.String(), "not Macaroon") {
+		t.Fatalf("expected log mentioning non-Macaroon scheme, got: %s", buf.String())
+	}
 }
 
 func TestAttachSessionAcceptsCaseInsensitiveScheme(t *testing.T) {
@@ -167,23 +197,9 @@ func TestAttachSessionAcceptsCaseInsensitiveScheme(t *testing.T) {
 	}
 }
 
-func TestAttachSessionPassesThroughMalformedBase64(t *testing.T) {
+func TestAttachSessionWarnsOnBadSignature(t *testing.T) {
 	fix := newSessionFixture(t)
-	handler := AttachSession(fix.verifier, discardLogger())(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		if _, ok := SessionFrom(r.Context()); ok {
-			t.Error("SessionFrom ok=true with malformed base64")
-		}
-	}))
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("Authorization", "Macaroon !!!not-base64!!!")
-	handler.ServeHTTP(httptest.NewRecorder(), req)
-}
-
-func TestAttachSessionPassesThroughBadSignature(t *testing.T) {
-	fix := newSessionFixture(t)
-	// Issue with one key, but the verifier the test uses resolves
-	// the id to a different key — simulating either tampering or
-	// signing under a key the server doesn't know.
+	// Issue with a different key the verifier won't know.
 	otherKey := make([]byte, macaroon.RootKeyLen)
 	if _, err := rand.Read(otherKey); err != nil {
 		t.Fatalf("rand.Read: %v", err)
@@ -198,7 +214,9 @@ func TestAttachSessionPassesThroughBadSignature(t *testing.T) {
 	}
 	encoded := base64.RawURLEncoding.EncodeToString(serialized)
 
-	handler := AttachSession(fix.verifier, discardLogger())(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	handler := AttachSession(fix.verifier, logger)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		if _, ok := SessionFrom(r.Context()); ok {
 			t.Error("SessionFrom ok=true with bad signature")
 		}
@@ -206,10 +224,56 @@ func TestAttachSessionPassesThroughBadSignature(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Macaroon "+encoded)
 	handler.ServeHTTP(httptest.NewRecorder(), req)
+	if !strings.Contains(buf.String(), "rejected presented macaroon") {
+		t.Fatalf("expected WARN log for bad sig, got: %s", buf.String())
+	}
+	if strings.Contains(buf.String(), "level=ERROR") {
+		t.Fatalf("bad sig should be WARN, not ERROR; log: %s", buf.String())
+	}
+}
+
+func TestAttachSessionLogsErrorOnTransportFailure(t *testing.T) {
+	// Resolver returns a transport error (not ErrUnknownRoot) — the
+	// kind of thing a database outage would produce. AttachSession
+	// must log this at ERROR, not WARN, because it's a
+	// server-side failure.
+	verifier, err := macaroon.NewVerifier(func(_ context.Context, _ string) ([]byte, error) {
+		return nil, errors.New("simulated database outage")
+	})
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+
+	// Need a syntactically-valid macaroon so the resolver gets called.
+	key := make([]byte, macaroon.RootKeyLen)
+	rand.Read(key)
+	issuer, err := macaroon.NewIssuer(testRootID, key)
+	if err != nil {
+		t.Fatalf("NewIssuer: %v", err)
+	}
+	_, serialized, err := issuer.IssueSession(standardParams(time.Now()))
+	if err != nil {
+		t.Fatalf("IssueSession: %v", err)
+	}
+	encoded := base64.RawURLEncoding.EncodeToString(serialized)
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	handler := AttachSession(verifier, logger)(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {}))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Macaroon "+encoded)
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+	if !strings.Contains(buf.String(), "resolver transport error") {
+		t.Fatalf("expected transport error log, got: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "level=ERROR") {
+		t.Fatalf("transport failure must be ERROR not WARN; log: %s", buf.String())
+	}
 }
 
 func TestRequireSessionRejectsWithoutSession(t *testing.T) {
-	guard := RequireSession(discardLogger())(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+	fix := newSessionFixture(t)
+	guard := RequireSession(fix.verifier, discardLogger(), SessionAction(opencaravan.SessionActionJourneyRead))(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		t.Fatal("guarded handler ran without session")
 	}))
 	rec := httptest.NewRecorder()
@@ -217,61 +281,132 @@ func TestRequireSessionRejectsWithoutSession(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", rec.Code)
 	}
-	if got := rec.Header().Get("Content-Type"); got != "application/problem+json" {
-		t.Fatalf("Content-Type = %q", got)
+	if !strings.Contains(rec.Body.String(), "no_session") {
+		t.Fatalf("body missing no_session: %s", rec.Body.String())
 	}
 }
 
-func TestRequireSessionAcceptsValidSession(t *testing.T) {
-	called := false
-	guard := RequireSession(discardLogger())(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-		called = true
-	}))
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req = req.WithContext(WithSession(req.Context(), Session{
+func TestRequireSessionAcceptsValidMacaroon(t *testing.T) {
+	fix := newSessionFixture(t)
+	// Journey-less macaroon for a non-journey action (invite.create);
+	// the route only constrains on action.
+	now := time.Now()
+	encoded := fix.issueAndEncode(t, macaroon.SessionParams{
 		UserID:      testUser,
 		ClientAppID: testApp,
-		Expiration:  time.Now().Add(time.Hour),
+		Action:      opencaravan.SessionActionInviteCreate,
+		Expiration:  now.Add(time.Hour),
+		Now:         now,
+	})
+
+	called := false
+	chain := AttachSession(fix.verifier, discardLogger())(
+		RequireSession(fix.verifier, discardLogger(),
+			SessionAction(opencaravan.SessionActionInviteCreate),
+		)(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+			called = true
+		})),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Macaroon "+encoded)
+	// Overlay identity so CheckConstraints' user= / client_app=
+	// caveat checks pass.
+	req = req.WithContext(WithIdentity(req.Context(), Identity{
+		UserID:      string(testUser),
+		ClientAppID: string(testApp),
 	}))
 	rec := httptest.NewRecorder()
-	guard.ServeHTTP(rec, req)
+	chain.ServeHTTP(rec, req)
 	if !called {
-		t.Fatal("guarded handler not invoked")
-	}
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d", rec.Code)
+		t.Fatalf("handler not invoked; status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 
-func TestRequireSessionRejectsExpiredSession(t *testing.T) {
-	guard := RequireSession(discardLogger())(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-		t.Fatal("guarded handler ran with expired session")
-	}))
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req = req.WithContext(WithSession(req.Context(), Session{
-		Expiration: time.Now().Add(-time.Minute),
+func TestRequireSessionAcceptsJourneyScopedMacaroon(t *testing.T) {
+	// Companion happy-path test using a journey-scoped macaroon
+	// against a SessionActionJourneyFromPath constraint.
+	fix := newSessionFixture(t)
+	encoded := fix.issueAndEncode(t, standardParams(time.Now()))
+
+	mux := http.NewServeMux()
+	called := false
+	mux.Handle("GET /v1/journeys/{id}",
+		AttachSession(fix.verifier, discardLogger())(
+			RequireSession(fix.verifier, discardLogger(),
+				SessionActionJourneyFromPath(opencaravan.SessionActionJourneyRead, "id"),
+			)(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+				called = true
+			})),
+		),
+	)
+	req := httptest.NewRequest(http.MethodGet, "/v1/journeys/"+string(testJourney), nil)
+	req.Header.Set("Authorization", "Macaroon "+encoded)
+	req = req.WithContext(WithIdentity(req.Context(), Identity{
+		UserID:      string(testUser),
+		ClientAppID: string(testApp),
 	}))
 	rec := httptest.NewRecorder()
-	guard.ServeHTTP(rec, req)
+	mux.ServeHTTP(rec, req)
+	if !called {
+		t.Fatalf("handler not invoked despite valid journey-scoped session: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRequireSessionRejectsExpiredMacaroon(t *testing.T) {
+	fix := newSessionFixture(t)
+	now := time.Now()
+	encoded := fix.issueAndEncode(t, macaroon.SessionParams{
+		UserID:      testUser,
+		ClientAppID: testApp,
+		JourneyID:   testJourney,
+		Action:      opencaravan.SessionActionJourneyRead,
+		Expiration:  now.Add(time.Minute),
+		Now:         now,
+	})
+
+	// Roll the verifier's clock forward past the expiration.
+	expiredVerifier := fix.verifier.WithClock(func() time.Time { return now.Add(time.Hour) })
+
+	chain := AttachSession(expiredVerifier, discardLogger())(
+		RequireSession(expiredVerifier, discardLogger(),
+			SessionAction(opencaravan.SessionActionJourneyRead),
+		)(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+			t.Fatal("handler ran with expired macaroon")
+		})),
+	)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Macaroon "+encoded)
+	req = req.WithContext(WithIdentity(req.Context(), Identity{
+		UserID:      string(testUser),
+		ClientAppID: string(testApp),
+	}))
+	rec := httptest.NewRecorder()
+	chain.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "session_expired") {
-		t.Fatalf("body missing session_expired: %s", rec.Body.String())
-	}
 }
 
-func TestRequireSessionActionConstraint(t *testing.T) {
-	guard := RequireSession(discardLogger(), RequireSessionAction(opencaravan.SessionActionTelemetryWrite))(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-		t.Fatal("guarded handler ran with wrong action")
-	}))
+func TestRequireSessionRejectsWrongAction(t *testing.T) {
+	fix := newSessionFixture(t)
+	encoded := fix.issueAndEncode(t, standardParams(time.Now()))
+
+	chain := AttachSession(fix.verifier, discardLogger())(
+		RequireSession(fix.verifier, discardLogger(),
+			SessionAction(opencaravan.SessionActionTelemetryWrite), // mismatch
+		)(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+			t.Fatal("handler ran with wrong action")
+		})),
+	)
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req = req.WithContext(WithSession(req.Context(), Session{
-		Action:     opencaravan.SessionActionJourneyRead,
-		Expiration: time.Now().Add(time.Hour),
+	req.Header.Set("Authorization", "Macaroon "+encoded)
+	req = req.WithContext(WithIdentity(req.Context(), Identity{
+		UserID:      string(testUser),
+		ClientAppID: string(testApp),
 	}))
 	rec := httptest.NewRecorder()
-	guard.ServeHTTP(rec, req)
+	chain.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", rec.Code)
 	}
@@ -280,80 +415,130 @@ func TestRequireSessionActionConstraint(t *testing.T) {
 	}
 }
 
-func TestRequireSessionActionConstraintPasses(t *testing.T) {
-	called := false
-	guard := RequireSession(discardLogger(), RequireSessionAction(opencaravan.SessionActionJourneyRead))(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-		called = true
-	}))
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req = req.WithContext(WithSession(req.Context(), Session{
-		Action:     opencaravan.SessionActionJourneyRead,
-		Expiration: time.Now().Add(time.Hour),
-	}))
-	guard.ServeHTTP(httptest.NewRecorder(), req)
-	if !called {
-		t.Fatal("guarded handler not invoked despite matching action")
+func TestRequireSessionRejectsAppendedJourneyCaveatAttack(t *testing.T) {
+	// CRITICAL: macaroons attenuate by appending caveats without
+	// needing the root key. An attacker holding a macaroon scoped
+	// to journey A could append journey=evil and try to use it
+	// against the evil journey's route. Macaroon AND semantics
+	// say both caveats must be satisfied — impossible for any
+	// single request. RequireSession must reject because of
+	// CheckConstraints, not because a projected field happened
+	// to be "evil".
+	fix := newSessionFixture(t)
+	now := time.Now()
+	_, serialized, err := fix.issuer.IssueSession(standardParams(now))
+	if err != nil {
+		t.Fatalf("IssueSession: %v", err)
 	}
-}
+	// Attenuate by appending a second journey= caveat.
+	var m macaroonv2.Macaroon
+	if err := m.UnmarshalBinary(serialized); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	evilJourney := opencaravan.UUID("44444444-4444-4444-8444-444444444444")
+	if err := m.AddFirstPartyCaveat([]byte(opencaravan.CaveatJourney(evilJourney))); err != nil {
+		t.Fatalf("AddFirstPartyCaveat: %v", err)
+	}
+	tampered, err := m.MarshalBinary()
+	if err != nil {
+		t.Fatalf("marshal tampered: %v", err)
+	}
+	encoded := base64.RawURLEncoding.EncodeToString(tampered)
 
-func TestRequireSessionJourneyParamMismatch(t *testing.T) {
-	// Build a mux so PathValue is populated.
 	mux := http.NewServeMux()
-	mux.Handle("GET /v1/journeys/{id}", RequireSession(discardLogger(), RequireSessionJourneyParam("id"))(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-		t.Fatal("handler ran with mismatched journey")
-	})))
+	mux.Handle("GET /v1/journeys/{id}",
+		AttachSession(fix.verifier, discardLogger())(
+			RequireSession(fix.verifier, discardLogger(),
+				SessionActionJourneyFromPath(opencaravan.SessionActionJourneyRead, "id"),
+			)(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+				t.Fatal("handler ran despite attenuator-appended journey caveat")
+			})),
+		),
+	)
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/journeys/44444444-4444-4444-8444-444444444444", nil)
-	req = req.WithContext(WithSession(req.Context(), Session{
-		JourneyID:  testJourney,
-		Expiration: time.Now().Add(time.Hour),
+	// The attacker targets the evil journey, hoping the appended
+	// caveat overrides the original.
+	req := httptest.NewRequest(http.MethodGet, "/v1/journeys/"+string(evilJourney), nil)
+	req.Header.Set("Authorization", "Macaroon "+encoded)
+	req = req.WithContext(WithIdentity(req.Context(), Identity{
+		UserID:      string(testUser),
+		ClientAppID: string(testApp),
 	}))
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", rec.Code)
+		t.Fatalf("appended journey caveat let request through: status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 
-func TestRequireSessionJourneyParamMatches(t *testing.T) {
-	mux := http.NewServeMux()
-	called := false
-	mux.Handle("GET /v1/journeys/{id}", RequireSession(discardLogger(), RequireSessionJourneyParam("id"))(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-		called = true
-	})))
+func TestRequireSessionRejectsAppendedActionCaveatAttack(t *testing.T) {
+	// Companion to the journey attack: appending a second action=
+	// caveat for a different verb must not let the macaroon
+	// authorize the appended action.
+	fix := newSessionFixture(t)
+	_, serialized, err := fix.issuer.IssueSession(standardParams(time.Now()))
+	if err != nil {
+		t.Fatalf("IssueSession: %v", err)
+	}
+	var m macaroonv2.Macaroon
+	if err := m.UnmarshalBinary(serialized); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if err := m.AddFirstPartyCaveat([]byte(opencaravan.CaveatAction(opencaravan.SessionActionTelemetryWrite))); err != nil {
+		t.Fatalf("AddFirstPartyCaveat: %v", err)
+	}
+	tampered, err := m.MarshalBinary()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	encoded := base64.RawURLEncoding.EncodeToString(tampered)
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/journeys/"+string(testJourney), nil)
-	req = req.WithContext(WithSession(req.Context(), Session{
-		JourneyID:  testJourney,
-		Expiration: time.Now().Add(time.Hour),
+	chain := AttachSession(fix.verifier, discardLogger())(
+		RequireSession(fix.verifier, discardLogger(),
+			SessionAction(opencaravan.SessionActionTelemetryWrite), // matches the appended caveat
+		)(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+			t.Fatal("handler ran despite attenuator-appended action caveat")
+		})),
+	)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Macaroon "+encoded)
+	req = req.WithContext(WithIdentity(req.Context(), Identity{
+		UserID:      string(testUser),
+		ClientAppID: string(testApp),
 	}))
-	mux.ServeHTTP(httptest.NewRecorder(), req)
-	if !called {
-		t.Fatal("handler not invoked despite matching journey")
+	rec := httptest.NewRecorder()
+	chain.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("appended action caveat let request through: status=%d", rec.Code)
 	}
 }
 
-func TestRequireSessionEndToEnd(t *testing.T) {
-	// Verifier-backed attach + guard composed, identical to the
-	// production middleware chain.
+func TestRequireSessionConstraintsBuilderError(t *testing.T) {
 	fix := newSessionFixture(t)
 	encoded := fix.issueAndEncode(t, standardParams(time.Now()))
 
-	called := false
-	handler := AttachSession(fix.verifier, discardLogger())(
-		RequireSession(discardLogger(),
-			RequireSessionAction(opencaravan.SessionActionJourneyRead),
+	// Use SessionActionJourneyFromPath but don't register a mux
+	// pattern declaring the {id} parameter; PathValue returns
+	// empty and the builder returns an error.
+	chain := AttachSession(fix.verifier, discardLogger())(
+		RequireSession(fix.verifier, discardLogger(),
+			SessionActionJourneyFromPath(opencaravan.SessionActionJourneyRead, "id"),
 		)(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-			called = true
+			t.Fatal("handler ran despite builder error")
 		})),
 	)
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/journeys/foo", nil)
 	req.Header.Set("Authorization", "Macaroon "+encoded)
+	req = req.WithContext(WithIdentity(req.Context(), Identity{
+		UserID: string(testUser), ClientAppID: string(testApp),
+	}))
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-	if !called {
-		t.Fatalf("handler not invoked; status=%d body=%s", rec.Code, rec.Body.String())
+	chain.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "constraints_builder_failed") {
+		t.Fatalf("body missing constraints_builder_failed: %s", rec.Body.String())
 	}
 }
 
@@ -363,16 +548,25 @@ func TestSessionFromMissingReturnsFalse(t *testing.T) {
 	}
 }
 
-// Compile-time guard that *macaroon.Verifier satisfies the narrow
-// SessionVerifier interface AttachSession depends on. If this
-// breaks, the production wiring would fail at runtime.
-var _ SessionVerifier = (*macaroon.Verifier)(nil)
-
-// errors.Is sentinel test — middleware should match against
-// macaroon.ErrVerifyFailed via errors.Is from outside this file.
-// Smoke-test the import path here.
-func TestErrVerifyFailedReachable(t *testing.T) {
-	if !errors.Is(macaroon.ErrVerifyFailed, macaroon.ErrVerifyFailed) {
-		t.Fatal("errors.Is reflexive failed; macaroon package import wrong?")
-	}
+func TestRequireSessionPanicOnNilVerifier(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on nil verifier")
+		}
+	}()
+	RequireSession(nil, discardLogger(), SessionAction(opencaravan.SessionActionJourneyRead))
 }
+
+func TestRequireSessionPanicOnNilBuilder(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on nil builder")
+		}
+	}()
+	fix := newSessionFixture(t)
+	RequireSession(fix.verifier, discardLogger(), nil)
+}
+
+// Compile-time guard that *macaroon.Verifier satisfies the narrow
+// SessionVerifier interface AttachSession depends on.
+var _ SessionVerifier = (*macaroon.Verifier)(nil)
