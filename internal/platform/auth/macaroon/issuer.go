@@ -167,28 +167,37 @@ type SessionParams struct {
 	Now         time.Time
 }
 
+// ErrInvalidSessionParams is the sentinel every
+// [SessionParams.validate] failure wraps. Callers (notably the
+// Phase 4b POST /v1/sessions handler) compare against it via
+// [errors.Is] to map caller-fixable session shape errors to 422
+// without conflating them against the issuer's internal
+// failures (marshal, AddCaveat, etc.) which carry the same
+// "macaroon:" message prefix.
+var ErrInvalidSessionParams = errors.New("macaroon: invalid session params")
+
 func (p SessionParams) validate() error {
 	if !p.UserID.Valid() {
-		return errors.New("macaroon: user id must be a valid UUID")
+		return fmt.Errorf("%w: user id must be a valid UUID", ErrInvalidSessionParams)
 	}
 	if !p.ClientAppID.Valid() {
-		return errors.New("macaroon: client app id must be a valid UUID")
+		return fmt.Errorf("%w: client app id must be a valid UUID", ErrInvalidSessionParams)
 	}
 	if p.JourneyID != "" && !p.JourneyID.Valid() {
-		return errors.New("macaroon: journey id must be a valid UUID when set")
+		return fmt.Errorf("%w: journey id must be a valid UUID when set", ErrInvalidSessionParams)
 	}
 	if !p.Action.Valid() {
-		return fmt.Errorf("macaroon: action %q is not a known OpenCaravan value", p.Action)
+		return fmt.Errorf("%w: action %q is not a known OpenCaravan value", ErrInvalidSessionParams, p.Action)
 	}
 	if requiresJourney(p.Action) && p.JourneyID == "" {
-		return fmt.Errorf("macaroon: action %q requires a journey id", p.Action)
+		return fmt.Errorf("%w: action %q requires a journey id", ErrInvalidSessionParams, p.Action)
 	}
 	now := p.Now
 	if now.IsZero() {
 		now = time.Now()
 	}
 	if !p.Expiration.After(now) {
-		return errors.New("macaroon: expiration must be in the future")
+		return fmt.Errorf("%w: expiration must be in the future", ErrInvalidSessionParams)
 	}
 	return nil
 }

@@ -2,6 +2,7 @@ package macaroon
 
 import (
 	"crypto/rand"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -130,6 +131,54 @@ func TestIssueSessionRejectsInvalidUUID(t *testing.T) {
 	}
 	if _, _, err := issuer.IssueSession(params); err == nil {
 		t.Fatal("err = nil, want rejection of invalid user id")
+	}
+}
+
+func TestIssueSessionValidationErrorsWrapSentinel(t *testing.T) {
+	issuer := mustIssuer(t)
+	cases := map[string]SessionParams{
+		"invalid user id": {
+			UserID:      opencaravan.UUID("not-a-uuid"),
+			ClientAppID: opencaravan.UUID("22222222-2222-4222-8222-222222222222"),
+			Action:      opencaravan.SessionActionInviteCreate,
+			Expiration:  time.Now().Add(time.Hour),
+		},
+		"invalid client app id": {
+			UserID:      opencaravan.UUID("11111111-1111-4111-8111-111111111111"),
+			ClientAppID: opencaravan.UUID("not-a-uuid"),
+			Action:      opencaravan.SessionActionInviteCreate,
+			Expiration:  time.Now().Add(time.Hour),
+		},
+		"unknown action": {
+			UserID:      opencaravan.UUID("11111111-1111-4111-8111-111111111111"),
+			ClientAppID: opencaravan.UUID("22222222-2222-4222-8222-222222222222"),
+			Action:      opencaravan.SessionAction("ransom.demand"),
+			Expiration:  time.Now().Add(time.Hour),
+		},
+		"journey action without journey": {
+			UserID:      opencaravan.UUID("11111111-1111-4111-8111-111111111111"),
+			ClientAppID: opencaravan.UUID("22222222-2222-4222-8222-222222222222"),
+			Action:      opencaravan.SessionActionJourneyRead,
+			Expiration:  time.Now().Add(time.Hour),
+		},
+		"expired expiration": {
+			UserID:      opencaravan.UUID("11111111-1111-4111-8111-111111111111"),
+			ClientAppID: opencaravan.UUID("22222222-2222-4222-8222-222222222222"),
+			Action:      opencaravan.SessionActionInviteCreate,
+			Expiration:  time.Now().Add(-time.Minute),
+			Now:         time.Now(),
+		},
+	}
+	for name, params := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, _, err := issuer.IssueSession(params)
+			if err == nil {
+				t.Fatal("err = nil, want validation error")
+			}
+			if !errors.Is(err, ErrInvalidSessionParams) {
+				t.Fatalf("err = %v, want errors.Is(_, ErrInvalidSessionParams)", err)
+			}
+		})
 	}
 }
 
