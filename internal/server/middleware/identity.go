@@ -69,7 +69,17 @@ type identityKey struct{}
 func AttachIdentity(store IdentityStore, proxyCfg proxy.Config, logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			cert := proxy.RequestInfoFrom(r, proxyCfg).ClientCert
+			// Prefer the RequestInfo already cached on the context by
+			// the outer withRequestInfo middleware so we don't repeat
+			// the PEM decode + x509 parse + SHA-256 work that
+			// RequestInfoFrom performs. Falls back to a direct parse
+			// when tests (or any caller that hasn't wired the cache
+			// pass) invoke this middleware in isolation.
+			info, ok := proxy.RequestInfoFromContext(r.Context())
+			if !ok {
+				info = proxy.RequestInfoFrom(r, proxyCfg)
+			}
+			cert := info.ClientCert
 			if cert == nil || cert.Serial == "" {
 				next.ServeHTTP(w, r)
 				return
@@ -113,14 +123,16 @@ func AttachIdentity(store IdentityStore, proxyCfg proxy.Config, logger *slog.Log
 // the registration site so the route table makes the auth
 // requirement visible:
 //
-//	mux.Handle("POST /v1/sessions", middleware.RequireIdentity(http.HandlerFunc(handleSession)))
+//	mux.Handle("POST /v1/sessions", middleware.RequireIdentity(logger, http.HandlerFunc(handleSession)))
 //
-// Public routes (health, version, enrollment) skip the wrap and
-// remain reachable to unauthenticated callers.
-func RequireIdentity(next http.Handler) http.Handler {
+// The logger receives an ERROR if writing the problem+json body
+// fails (rare, but worth recording so an operator notices). Public
+// routes (health, version, enrollment) skip the wrap and remain
+// reachable to unauthenticated callers.
+func RequireIdentity(logger *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := IdentityFrom(r.Context()); !ok {
-			writeProblem(w, http.StatusUnauthorized, "unauthenticated",
+			writeProblem(w, logger, http.StatusUnauthorized, "unauthenticated",
 				"This endpoint requires a client certificate that resolves to an enrolled client app.")
 			return
 		}
@@ -159,7 +171,12 @@ func withIdentity(ctx context.Context, id Identity) context.Context {
 // kept here so the middleware package does not have to import api.
 // When the shape evolves (e.g., to include a request-id field), both
 // call sites should track together.
-func writeProblem(w http.ResponseWriter, status int, code, detail string) {
+//
+// Encode failures (rare — the body is a tiny static map) are logged
+// at ERROR for operator diagnostics. A nil logger is tolerated so
+// callers without one (legacy tests) don't have to manufacture one;
+// in that case encode failures are silently dropped.
+func writeProblem(w http.ResponseWriter, logger *slog.Logger, status int, code, detail string) {
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(status)
 	body := map[string]any{
@@ -167,5 +184,10 @@ func writeProblem(w http.ResponseWriter, status int, code, detail string) {
 		"code":   code,
 		"detail": detail,
 	}
-	_ = json.NewEncoder(w).Encode(body)
+	if err := json.NewEncoder(w).Encode(body); err != nil && logger != nil {
+		// Body already half-written; the logger sees the encode failure
+		// for operator diagnostics but the client gets whatever made it
+		// onto the wire.
+		logger.Error("middleware: write problem response", "error", err)
+	}
 }

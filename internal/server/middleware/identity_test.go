@@ -138,7 +138,7 @@ func TestAttachIdentityPassesThroughOnStorageError(t *testing.T) {
 }
 
 func TestRequireIdentityRejectsWithoutIdentity(t *testing.T) {
-	handler := RequireIdentity(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+	handler := RequireIdentity(discardLogger(), http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		t.Fatal("guarded handler ran without identity")
 	}))
 
@@ -155,7 +155,7 @@ func TestRequireIdentityRejectsWithoutIdentity(t *testing.T) {
 
 func TestRequireIdentityPassesWithIdentity(t *testing.T) {
 	called := false
-	handler := RequireIdentity(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+	handler := RequireIdentity(discardLogger(), http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 		called = true
 	}))
 

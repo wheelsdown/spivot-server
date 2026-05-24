@@ -1,10 +1,11 @@
 // Package middleware wires the HTTP authentication boundary for
 // spivot-server: it lifts whatever client identity the lower layers
 // presented (direct mTLS or trusted-proxy-forwarded cert headers,
-// extracted by [internal/platform/proxy.RequestInfoFrom]), resolves it
-// to a server-side [Identity] via the issued-certificates audit table,
-// attaches that Identity to the request context, and provides a
-// per-handler guard that 401s when an Identity is required but absent.
+// extracted by [github.com/wheelsdown/spivot-server/internal/platform/proxy.RequestInfoFrom]),
+// resolves it to a server-side [Identity] via the issued-certificates
+// audit table, attaches that Identity to the request context, and
+// provides a per-handler guard that 401s when an Identity is required
+// but absent.
 //
 // # Two-tier shape
 //
@@ -14,11 +15,12 @@
 // single chain to enforce everything implicitly:
 //
 //   - [AttachIdentity] runs once at the top of the chain. When the
-//     inbound [proxy.RequestInfo.ClientCert] carries a serial that
-//     matches a non-revoked row in issued_certificates, the resolved
-//     [Identity] is attached to the request context. The attach pass
-//     never rejects: unauthenticated requests pass through, and
-//     downstream handlers (or [RequireIdentity]) decide what to do.
+//     inbound [github.com/wheelsdown/spivot-server/internal/platform/proxy.RequestInfo.ClientCert]
+//     carries a serial that matches a non-revoked row in
+//     issued_certificates, the resolved [Identity] is attached to the
+//     request context. The attach pass never rejects: unauthenticated
+//     requests pass through, and downstream handlers (or
+//     [RequireIdentity]) decide what to do.
 //   - [RequireIdentity] wraps individual handlers. It reads the
 //     context-attached Identity and returns 401 with an
 //     application/problem+json body when one is missing. Used at the

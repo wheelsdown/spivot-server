@@ -11,9 +11,11 @@ import (
 // ErrCertNotEnrolled is returned by [Store.IdentityBySerial] when no
 // active (non-revoked) issued_certificates row matches the supplied
 // serial. The middleware that consumes this lookup treats this
-// sentinel as "the client presented a cert this server did not
-// issue (or no longer recognizes)" and rejects the request with 401.
-// Detected via [errors.Is].
+// sentinel as "the client presented a cert this server did not issue
+// (or no longer recognizes)" and leaves the request unauthenticated:
+// the broad AttachIdentity pass never rejects on its own, and any
+// handler wrapped in RequireIdentity will subsequently 401. Detected
+// via [errors.Is].
 var ErrCertNotEnrolled = errors.New("storage: cert serial not enrolled")
 
 // CertIdentity is the resolved identity backing a presented client
