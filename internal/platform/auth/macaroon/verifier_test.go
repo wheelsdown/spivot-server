@@ -337,6 +337,144 @@ func TestVerifyNoResolverRejected(t *testing.T) {
 	}
 }
 
+func TestVerifySignatureRejectsUnknownCaveat(t *testing.T) {
+	key := randomKey(t)
+	issuer, _ := NewIssuer("verify-root", key)
+	now := time.Now().UTC()
+	_, serialized, err := issuer.Issue([]string{
+		opencaravan.CaveatTimeBefore(now.Add(time.Hour)),
+		"this-predicate-does-not-parse",
+	})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+
+	verifier := newTestVerifier(t, "verify-root", key, now)
+	if _, err := verifier.VerifySignature(context.Background(), serialized); !errors.Is(err, ErrVerifyFailed) {
+		t.Fatalf("VerifySignature err = %v, want ErrVerifyFailed", err)
+	}
+}
+
+func TestVerifySignatureReturnsParsedCaveats(t *testing.T) {
+	key := randomKey(t)
+	issuer, _ := NewIssuer("verify-root", key)
+	now := time.Now().UTC()
+	exp := now.Add(time.Hour)
+	_, serialized, err := issuer.IssueSession(SessionParams{
+		UserID:      testUser,
+		ClientAppID: testApp,
+		JourneyID:   testJourney,
+		Action:      opencaravan.SessionActionJourneyRead,
+		Expiration:  exp,
+		Now:         now,
+	})
+	if err != nil {
+		t.Fatalf("IssueSession: %v", err)
+	}
+
+	verifier := newTestVerifier(t, "verify-root", key, now)
+	got, err := verifier.VerifySignature(context.Background(), serialized)
+	if err != nil {
+		t.Fatalf("VerifySignature: %v", err)
+	}
+	if got.RootID != "verify-root" {
+		t.Fatalf("RootID = %q", got.RootID)
+	}
+	if !got.Expiration.Equal(exp) {
+		t.Fatalf("Expiration = %s, want %s", got.Expiration, exp)
+	}
+	wantKinds := []opencaravan.CaveatKind{
+		opencaravan.CaveatKindUser,
+		opencaravan.CaveatKindClientApp,
+		opencaravan.CaveatKindJourney,
+		opencaravan.CaveatKindAction,
+		opencaravan.CaveatKindTimeBefore,
+	}
+	if len(got.Caveats) != len(wantKinds) {
+		t.Fatalf("len(Caveats) = %d, want %d", len(got.Caveats), len(wantKinds))
+	}
+	for i, kind := range wantKinds {
+		if got.Caveats[i].Kind != kind {
+			t.Fatalf("Caveats[%d].Kind = %q, want %q", i, got.Caveats[i].Kind, kind)
+		}
+	}
+}
+
+func TestVerifySignaturePassesEvenWhenCaveatsWouldFail(t *testing.T) {
+	// VerifySignature must NOT evaluate runtime constraints. A
+	// macaroon scoped to one journey must pass VerifySignature
+	// regardless of what journey the request is targeting; the
+	// per-handler CheckConstraints is the place that rejects.
+	key := randomKey(t)
+	issuer, _ := NewIssuer("verify-root", key)
+	now := time.Now().UTC()
+	_, serialized, err := issuer.IssueSession(SessionParams{
+		UserID:      testUser,
+		ClientAppID: testApp,
+		JourneyID:   testJourney,
+		Action:      opencaravan.SessionActionJourneyRead,
+		Expiration:  now.Add(time.Hour),
+		Now:         now,
+	})
+	if err != nil {
+		t.Fatalf("IssueSession: %v", err)
+	}
+	verifier := newTestVerifier(t, "verify-root", key, now)
+	verified, err := verifier.VerifySignature(context.Background(), serialized)
+	if err != nil {
+		t.Fatalf("VerifySignature: %v", err)
+	}
+
+	// Now CheckConstraints with a mismatched journey — this is the
+	// layer that should fail.
+	differentJourney := opencaravan.UUID("44444444-4444-4444-8444-444444444444")
+	if err := verifier.CheckConstraints(verified, Constraints{
+		JourneyID:   differentJourney,
+		Action:      opencaravan.SessionActionJourneyRead,
+		UserID:      testUser,
+		ClientAppID: testApp,
+	}); !errors.Is(err, ErrVerifyFailed) {
+		t.Fatalf("CheckConstraints err = %v, want ErrVerifyFailed", err)
+	}
+}
+
+func TestCheckConstraintsEnforcesExpiration(t *testing.T) {
+	key := randomKey(t)
+	issuer, _ := NewIssuer("verify-root", key)
+	now := time.Now().UTC()
+	_, serialized, err := issuer.IssueSession(SessionParams{
+		UserID:      testUser,
+		ClientAppID: testApp,
+		JourneyID:   testJourney,
+		Action:      opencaravan.SessionActionJourneyRead,
+		Expiration:  now.Add(time.Minute),
+		Now:         now,
+	})
+	if err != nil {
+		t.Fatalf("IssueSession: %v", err)
+	}
+
+	// VerifySignature passes regardless of clock; CheckConstraints
+	// is where the expiration check fires.
+	verifier := newTestVerifier(t, "verify-root", key, now.Add(2*time.Minute))
+	verified, err := verifier.VerifySignature(context.Background(), serialized)
+	if err != nil {
+		t.Fatalf("VerifySignature: %v", err)
+	}
+	err = verifier.CheckConstraints(verified, Constraints{
+		JourneyID:   testJourney,
+		Action:      opencaravan.SessionActionJourneyRead,
+		UserID:      testUser,
+		ClientAppID: testApp,
+	})
+	if !errors.Is(err, ErrVerifyFailed) {
+		t.Fatalf("err = %v, want ErrVerifyFailed", err)
+	}
+	if !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("err = %v, want expiration message", err)
+	}
+}
+
 func TestVerifierWithClockNilRestoresDefault(t *testing.T) {
 	v, err := NewVerifier(func(context.Context, string) ([]byte, error) { return nil, ErrUnknownRoot })
 	if err != nil {

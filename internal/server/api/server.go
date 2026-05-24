@@ -87,6 +87,14 @@ type Config struct {
 	// when not wired so a misconfigured deployment surfaces
 	// explicitly rather than silently 401-ing.
 	MacaroonIssuer *macaroon.Issuer
+	// MacaroonVerifier backs the [middleware.AttachSession] broad
+	// attach pass. When nil, [Server.Handler] omits the attach
+	// pass and no request ever carries a context-attached
+	// session; future [middleware.RequireSession]-guarded handlers
+	// (Phase 5 will add the first) would always 401. Production
+	// wires a verifier whose root resolver delegates to
+	// [*storage.Store.MacaroonRootByID].
+	MacaroonVerifier *macaroon.Verifier
 	// PolicySnapshot is captured by value at server startup and advertised to
 	// clients until the process restarts. Runtime policy rotation should make
 	// that lifecycle explicit rather than mutating this value in place.
@@ -126,16 +134,19 @@ func NewServer(cfg Config, logger *slog.Logger) *Server {
 //     any inbound client cert (via the cached RequestInfo) to a
 //     server-side Identity and attaches it to the request context.
 //     Never rejects; unauthenticated requests pass through.
-//  3. withLogging — emits the per-request access log. Runs inside
-//     AttachIdentity (not outside) because http.Request context
-//     mutations only flow inward: only the inner handler sees the
-//     attached Identity. By being inside AttachIdentity, withLogging
-//     receives a request whose context already carries both the
-//     cached RequestInfo and (when present) the resolved Identity,
-//     so the access log line names the caller.
-//  4. The route mux. Individual handlers wrap themselves in
-//     [middleware.RequireIdentity] at the registration site when they
-//     require an Identity to be present.
+//  3. AttachSession — when [Config.MacaroonVerifier] is set, lifts
+//     any inbound Authorization: Macaroon header, verifies the
+//     macaroon signature, and attaches a server-side Session to
+//     the request context. Never rejects; the per-handler
+//     [middleware.RequireSession] guard is the place that 401s.
+//  4. withLogging — emits the per-request access log. Runs inside
+//     the two attach passes so withLogging's request context
+//     carries the cached RequestInfo, the resolved Identity, and
+//     (when present) the verified Session — every observable
+//     dimension surfaces on the access log line.
+//  5. The route mux. Individual handlers wrap themselves in
+//     [middleware.RequireIdentity] or [middleware.RequireSession]
+//     at the registration site when they require those layers.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", s.handleRoot)
@@ -152,8 +163,11 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /v1/sessions", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleSessionCreate)))
 
 	h := s.withLogging(mux)
+	if s.cfg.MacaroonVerifier != nil {
+		h = middleware.AttachSession(s.cfg.MacaroonVerifier, s.logger)(h)
+	}
 	if s.cfg.IdentityStore != nil {
-		return s.withRequestInfo(middleware.AttachIdentity(s.cfg.IdentityStore, s.cfg.Proxy, s.logger)(h))
+		h = middleware.AttachIdentity(s.cfg.IdentityStore, s.cfg.Proxy, s.logger)(h)
 	}
 	return s.withRequestInfo(h)
 }
@@ -238,6 +252,15 @@ func (s *Server) withLogging(next http.Handler) http.Handler {
 				"identity_client_app_id", id.ClientAppID,
 				"identity_subject_cn", id.SubjectCN,
 			)
+		}
+		if session, ok := middleware.SessionFrom(r.Context()); ok {
+			attrs = append(attrs,
+				"session_root_id", session.RootID,
+				"session_action", string(session.Action),
+			)
+			if session.JourneyID != "" {
+				attrs = append(attrs, "session_journey_id", string(session.JourneyID))
+			}
 		}
 		s.logger.Info("request handled", attrs...)
 	})
