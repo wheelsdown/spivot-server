@@ -3,9 +3,9 @@ package api
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/opencaravan/opencaravan-go"
@@ -66,8 +66,8 @@ const maxSessionLifetime = 60 * time.Minute
 // model open question) record this as a deliberate v0.0.1 choice.
 // Phase 5 (the first journey-bearing endpoint) is where membership
 // gating will start to bite, and Phase 4c's session middleware
-// already validates that a presented macaroon names the journey
-// the request is operating on.
+// will validate that a presented macaroon names the journey
+// the request is operating on (Phase 4c is not part of this PR).
 //
 // Failures map to:
 //
@@ -168,7 +168,7 @@ func (s *Server) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	_, serialized, err := s.cfg.MacaroonIssuer.IssueSession(params)
 	if err != nil {
-		if isSessionParamsValidationError(err) {
+		if errors.Is(err, macaroon.ErrInvalidSessionParams) {
 			// macaroon.SessionParams.validate surfaces all of:
 			// invalid UUIDs (already caught above), unknown action,
 			// journey-scoped action without a JourneyID, and
@@ -199,35 +199,31 @@ func (s *Server) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
 	writeJSONStatus(w, http.StatusCreated, resp, s.logger)
 }
 
+// maxSessionLifetimeSeconds is the integer-seconds projection of
+// [maxSessionLifetime], precomputed so the lifetime-clamp path
+// can compare against the client's request without ever
+// constructing a [time.Duration] from the untrusted value.
+// Multiplying a large request-side `int` by [time.Second] (1e9 ns)
+// risks overflowing time.Duration's int64 range — comparing in
+// seconds first sidesteps that entirely.
+const maxSessionLifetimeSeconds = int(maxSessionLifetime / time.Second)
+
 // normalizeSessionLifetime clamps the client-supplied hint to the
 // server's policy window. Returns [defaultSessionLifetime] when
 // requested is non-positive (the wire format permits zero), and
 // [maxSessionLifetime] when requested exceeds it. Otherwise
 // returns the requested duration unchanged.
+//
+// The clamp is performed in seconds before any time.Duration
+// arithmetic so a malicious client supplying an enormous
+// LifetimeSeconds cannot trigger int64 overflow in the
+// time.Duration multiplication.
 func normalizeSessionLifetime(requestedSeconds int) time.Duration {
 	if requestedSeconds <= 0 {
 		return defaultSessionLifetime
 	}
-	requested := time.Duration(requestedSeconds) * time.Second
-	if requested > maxSessionLifetime {
+	if requestedSeconds >= maxSessionLifetimeSeconds {
 		return maxSessionLifetime
 	}
-	return requested
-}
-
-// isSessionParamsValidationError reports whether err looks like a
-// validation failure from [macaroon.SessionParams.validate].
-// macaroon's validate returns plain errors created via errors.New
-// / fmt.Errorf without a wrapping sentinel, so we string-match on
-// the "macaroon:" prefix the package uses. Phase 4c can promote
-// this to a proper exported sentinel once the same kind of mapping
-// is needed in the session-validation middleware.
-func isSessionParamsValidationError(err error) bool {
-	if err == nil {
-		return false
-	}
-	// errors.Is for the umbrella ErrVerifyFailed handles verifier
-	// failures elsewhere; the issuer's validate path doesn't have
-	// an equivalent sentinel yet. Until it does, prefix-match.
-	return strings.HasPrefix(err.Error(), "macaroon: ")
+	return time.Duration(requestedSeconds) * time.Second
 }

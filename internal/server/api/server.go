@@ -77,9 +77,10 @@ type Config struct {
 	CA *identity.CA
 	// IdentityStore backs the [middleware.AttachIdentity] pass. When
 	// nil, [Server.Handler] omits the attach pass and no request ever
-	// carries a context-attached identity; [middleware.RequireIdentity]-
-	// guarded handlers (none exist today, Phase 4 will add the first)
-	// would always 401. Production wires [*storage.Store] here.
+	// carries a context-attached identity; every
+	// [middleware.RequireIdentity]-guarded handler (POST /v1/sessions
+	// today, more in later phases) would always 401. Production wires
+	// [*storage.Store] here.
 	IdentityStore IdentityStore
 	// MacaroonIssuer backs POST /v1/sessions. May be nil with the
 	// same semantics as EnrollmentStore: the handler responds 503

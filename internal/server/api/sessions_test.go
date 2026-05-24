@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -384,6 +385,10 @@ func TestNormalizeSessionLifetime(t *testing.T) {
 		{"in-range pass-through", 600, 10 * time.Minute},
 		{"clamped to max", int(maxSessionLifetime/time.Second) + 9999, maxSessionLifetime},
 		{"exactly max", int(maxSessionLifetime / time.Second), maxSessionLifetime},
+		// MaxInt would overflow time.Duration when multiplied by
+		// time.Second (1e9 ns); the seconds-first clamp must
+		// short-circuit before the multiplication happens.
+		{"max int does not overflow", math.MaxInt, maxSessionLifetime},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
