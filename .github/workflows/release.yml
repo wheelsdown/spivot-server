@@ -50,7 +50,6 @@ jobs:
       contents: read
       packages: write
       id-token: write
-      attestations: write
 
     steps:
       - uses: actions/checkout@v6
@@ -110,10 +109,3 @@ jobs:
             BUILD_COMMIT=${{ github.sha }}
             BUILD_BRANCH=${{ github.ref_name }}
             BUILD_TIME=${{ steps.build_meta.outputs.build_time }}
-
-      - name: Attest container image
-        uses: actions/attest-build-provenance@v4
-        with:
-          subject-name: ghcr.io/${{ github.repository }}
-          subject-digest: ${{ steps.build.outputs.digest }}
-          push-to-registry: true
