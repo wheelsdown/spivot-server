@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
 // ErrKeyNotFound is the sentinel error returned (wrapped via fmt.Errorf
@@ -45,8 +46,8 @@ var ErrKeyNotFound = errors.New("identity: key not found")
 //     key material is the same.
 //   - Be safe for concurrent calls from multiple goroutines. Concurrent
 //     [LoadOrGenerate] calls for the *same* name must coalesce to a
-//     single gen invocation; the simplest way to achieve this is via the
-//     underlying file system's create-with-O_EXCL semantics.
+//     single gen invocation. ([FileKeyStore] enforces this with an
+//     internal mutex.)
 //
 // Implementations may impose additional name restrictions (allowed
 // character set, maximum length). [FileKeyStore] accepts
@@ -100,7 +101,15 @@ type KeyStore interface {
 // path; RSA and Ed25519 keys round-trip through PKCS#8 fine, but no
 // caller produces them today and the explicit reject keeps the format
 // matrix small.
+//
+// Concurrent calls are safe. Load runs under no lock (reads see the
+// committed file via atomic rename); LoadOrGenerate holds a mutex
+// around the load-then-maybe-generate-and-save sequence so a single
+// gen runs even if multiple goroutines arrive for the same uninitialized
+// key. The mutex is process-local; cross-process concurrency against
+// the same directory is the operator's responsibility.
 type FileKeyStore struct {
+	mu  sync.Mutex
 	dir string
 }
 
@@ -142,15 +151,14 @@ func (s *FileKeyStore) Dir() string {
 // LoadOrGenerate implements [KeyStore.LoadOrGenerate]. See the
 // interface documentation for the contract.
 //
-// FileKeyStore's implementation calls [FileKeyStore.Load] first; on
-// [ErrKeyNotFound] it invokes gen, persists the result via an atomic
-// temp+rename+fsync sequence, and returns the freshly-generated signer.
-// Concurrent first-time generation of the same key by multiple
-// goroutines is currently serialized by gen producing a new key per
-// call (the last writer wins on the rename); a future implementation
-// may add explicit locking if a concrete caller needs strict
-// at-most-once-generation semantics.
+// The load-then-maybe-generate-and-save sequence runs under a mutex
+// so concurrent first-call goroutines for the same uninitialized key
+// coalesce to a single gen invocation. After persistence, the mutex is
+// released and subsequent callers observe the persisted key via Load.
 func (s *FileKeyStore) LoadOrGenerate(ctx context.Context, name string, gen func() (crypto.Signer, error)) (crypto.Signer, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	signer, err := s.Load(ctx, name)
 	if err == nil {
 		return signer, nil

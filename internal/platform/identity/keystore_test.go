@@ -9,7 +9,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestFileKeyStoreGeneratesAndReusesKey(t *testing.T) {
@@ -104,6 +107,58 @@ func TestFileKeyStoreRejectsInvalidKeyNames(t *testing.T) {
 				t.Fatal("Load() error = nil, want validation error")
 			}
 		})
+	}
+}
+
+func TestFileKeyStoreLoadOrGenerateCoalescesConcurrentCallers(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewFileKeyStore(dir)
+	if err != nil {
+		t.Fatalf("NewFileKeyStore: %v", err)
+	}
+
+	const racers = 8
+	var (
+		calls atomic.Int64
+		wg    sync.WaitGroup
+		start sync.WaitGroup
+	)
+	start.Add(1)
+
+	gen := func() (crypto.Signer, error) {
+		calls.Add(1)
+		// Slow the generator so multiple goroutines have time to all
+		// observe ErrKeyNotFound under the racy implementation. With the
+		// mutex in place, only one of them ever reaches this line.
+		time.Sleep(10 * time.Millisecond)
+		return ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	}
+
+	signers := make([]crypto.Signer, racers)
+	wg.Add(racers)
+	for i := range racers {
+		go func() {
+			defer wg.Done()
+			start.Wait()
+			signer, err := store.LoadOrGenerate(context.Background(), "ca", gen)
+			if err != nil {
+				t.Errorf("racer %d LoadOrGenerate: %v", i, err)
+				return
+			}
+			signers[i] = signer
+		}()
+	}
+	start.Done()
+	wg.Wait()
+
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("gen invocations = %d, want 1 (concurrent callers must coalesce)", got)
+	}
+	first := signers[0].Public().(*ecdsa.PublicKey)
+	for i, s := range signers[1:] {
+		if !first.Equal(s.Public()) {
+			t.Fatalf("racer %d observed a different key than racer 0", i+1)
+		}
 	}
 }
 

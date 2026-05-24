@@ -104,8 +104,9 @@
 // reader is safe under concurrency, and the cert and key are not mutated
 // after construction. [FileKeyStore] is similarly safe for concurrent
 // reads; concurrent first-time generation of the same key is serialized
-// by the file system's create-with-O_EXCL semantics inside
-// [os.CreateTemp].
+// by an internal mutex on the [FileKeyStore] so a single gen runs
+// across racing callers in the same process. Cross-process concurrency
+// against the same directory is the operator's responsibility.
 //
 // # Future Evolution
 //
