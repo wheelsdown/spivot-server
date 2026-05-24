@@ -3,10 +3,36 @@
 package proxy
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"strings"
 )
+
+// requestInfoKey is the unexported context key under which
+// [WithRequestInfo] / [RequestInfoFromContext] store and retrieve a
+// per-request [RequestInfo]. A typed-zero-size key prevents collisions
+// with other context value keys.
+type requestInfoKey struct{}
+
+// WithRequestInfo returns a copy of ctx carrying the supplied
+// RequestInfo. The intended caller is a top-of-chain middleware that
+// parses forwarded headers exactly once per request; downstream
+// consumers (identity middleware, access logging, future handlers) then
+// recover the value via [RequestInfoFromContext] instead of repeating
+// the PEM decode + x509 parse + SHA-256 work in [RequestInfoFrom].
+func WithRequestInfo(ctx context.Context, info RequestInfo) context.Context {
+	return context.WithValue(ctx, requestInfoKey{}, info)
+}
+
+// RequestInfoFromContext returns the [RequestInfo] previously attached
+// to ctx by [WithRequestInfo], plus a bool indicating whether one was
+// present. The zero value is returned when ok is false; callers that
+// must always have a value should fall back to [RequestInfoFrom].
+func RequestInfoFromContext(ctx context.Context) (RequestInfo, bool) {
+	info, ok := ctx.Value(requestInfoKey{}).(RequestInfo)
+	return info, ok
+}
 
 // DefaultTrustedProxyCIDRs returns the private and loopback ranges commonly
 // used between a reverse proxy and an application container.

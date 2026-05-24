@@ -18,6 +18,7 @@ import (
 	"github.com/wheelsdown/spivot-server/internal/platform/logging"
 	"github.com/wheelsdown/spivot-server/internal/platform/proxy"
 	"github.com/wheelsdown/spivot-server/internal/platform/storage"
+	"github.com/wheelsdown/spivot-server/internal/server/middleware"
 )
 
 // Store is the narrow database behavior the API server needs for the
@@ -44,6 +45,12 @@ type EnrollmentStore interface {
 	RegisterClientApp(ctx context.Context, reg storage.ClientAppRegistration) (storage.Invite, error)
 }
 
+// IdentityStore is the narrow subset of storage operations the
+// identity middleware needs to resolve a client certificate to the
+// enrolled identity it authorizes. Satisfied by [*storage.Store] via
+// duck-typing; the same separation rationale as EnrollmentStore.
+type IdentityStore = middleware.IdentityStore
+
 // Config describes the HTTP API server's listen and deployment metadata.
 type Config struct {
 	// Address is the local TCP address to bind.
@@ -67,6 +74,12 @@ type Config struct {
 	// handler. May be nil with the same semantics as EnrollmentStore;
 	// both must be set for enrollment to succeed.
 	CA *identity.CA
+	// IdentityStore backs the [middleware.AttachIdentity] pass. When
+	// nil, [Server.Handler] omits the attach pass and no request ever
+	// carries a context-attached identity; [middleware.RequireIdentity]-
+	// guarded handlers (none exist today, Phase 4 will add the first)
+	// would always 401. Production wires [*storage.Store] here.
+	IdentityStore IdentityStore
 	// PolicySnapshot is captured by value at server startup and advertised to
 	// clients until the process restarts. Runtime policy rotation should make
 	// that lifecycle explicit rather than mutating this value in place.
@@ -94,6 +107,28 @@ func NewServer(cfg Config, logger *slog.Logger) *Server {
 }
 
 // Handler returns the API HTTP handler.
+//
+// Middleware composition (outermost first):
+//
+//  1. withRequestInfo — parses forwarded headers and TLS peer state
+//     into a [proxy.RequestInfo] exactly once per request and stashes
+//     it on the context. Downstream middleware reads from the cache
+//     instead of repeating the PEM decode + x509 parse + SHA-256
+//     work.
+//  2. AttachIdentity — when [Config.IdentityStore] is set, resolves
+//     any inbound client cert (via the cached RequestInfo) to a
+//     server-side Identity and attaches it to the request context.
+//     Never rejects; unauthenticated requests pass through.
+//  3. withLogging — emits the per-request access log. Runs inside
+//     AttachIdentity (not outside) because http.Request context
+//     mutations only flow inward: only the inner handler sees the
+//     attached Identity. By being inside AttachIdentity, withLogging
+//     receives a request whose context already carries both the
+//     cached RequestInfo and (when present) the resolved Identity,
+//     so the access log line names the caller.
+//  4. The route mux. Individual handlers wrap themselves in
+//     [middleware.RequireIdentity] at the registration site when they
+//     require an Identity to be present.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", s.handleRoot)
@@ -102,7 +137,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/server", s.handleServerInfo)
 	mux.HandleFunc("GET /v1/version", s.handleVersion)
 	mux.HandleFunc("POST /v1/client-apps/enroll", s.handleClientAppEnroll)
-	return s.withLogging(mux)
+
+	h := s.withLogging(mux)
+	if s.cfg.IdentityStore != nil {
+		return s.withRequestInfo(middleware.AttachIdentity(s.cfg.IdentityStore, s.cfg.Proxy, s.logger)(h))
+	}
+	return s.withRequestInfo(h)
 }
 
 // Start begins serving HTTP requests until the server shuts down.
@@ -144,13 +184,30 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return s.server.Shutdown(ctx)
 }
 
+// withRequestInfo parses the forwarded request metadata once per
+// request and stashes the resulting [proxy.RequestInfo] on the
+// context. Subsequent middleware ([middleware.AttachIdentity]) and
+// the access log read from the cache via [proxy.RequestInfoFromContext]
+// rather than repeating the parse, which previously included an x509
+// parse + SHA-256 fingerprint on every request when client-cert
+// headers were present.
+func (s *Server) withRequestInfo(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		info := proxy.RequestInfoFrom(r, s.cfg.Proxy)
+		next.ServeHTTP(w, r.WithContext(proxy.WithRequestInfo(r.Context(), info)))
+	})
+}
+
 func (s *Server) withLogging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rw := logging.NewAccessResponseWriter(w)
 		next.ServeHTTP(rw, r)
-		reqInfo := proxy.RequestInfoFrom(r, s.cfg.Proxy)
-		s.logger.Info("request handled",
+		reqInfo, ok := proxy.RequestInfoFromContext(r.Context())
+		if !ok {
+			reqInfo = proxy.RequestInfoFrom(r, s.cfg.Proxy)
+		}
+		attrs := []any{
 			"kind", "http_access",
 			"method", r.Method,
 			"path", r.URL.Path,
@@ -161,7 +218,15 @@ func (s *Server) withLogging(next http.Handler) http.Handler {
 			"scheme", reqInfo.Scheme,
 			"host", reqInfo.Host,
 			"trusted_proxy", reqInfo.TrustedProxy,
-		)
+		}
+		if id, ok := middleware.IdentityFrom(r.Context()); ok {
+			attrs = append(attrs,
+				"identity_user_id", id.UserID,
+				"identity_client_app_id", id.ClientAppID,
+				"identity_subject_cn", id.SubjectCN,
+			)
+		}
+		s.logger.Info("request handled", attrs...)
 	})
 }
 
