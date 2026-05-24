@@ -45,6 +45,12 @@ Current foundation:
   an authenticated client app. One macaroon authorizes one
   `SessionAction` against an optional journey; multi-action
   sessions are deferred to a future protocol extension.
+- Session validation middleware (`AttachSession` + `RequireSession`)
+  that lifts the `Authorization: Macaroon ...` header, verifies
+  the macaroon signature once per request, and provides
+  composable per-handler constraints (action match, journey path
+  parameter match, custom). Mirrors the two-tier shape of the
+  identity middleware.
 - Container-first release engineering with OCI labels and health checks.
 - Embedded SQL migration metadata for OpenCaravan journey storage.
 

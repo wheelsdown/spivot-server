@@ -115,31 +115,73 @@ type Verified struct {
 // like a signature mismatch and respond 401.
 var ErrUnknownRoot = errors.New("macaroon: unknown root id")
 
-// ErrVerifyFailed is the umbrella error every [Verifier.Verify]
-// failure wraps. The wrapped error narrates the underlying reason
-// (unknown root, signature mismatch, caveat violation,
-// malformed bytes); handlers compare against this via [errors.Is]
-// to decide whether to 401 the request.
+// ErrVerifyFailed is the umbrella error every auth-level
+// verification failure wraps. The wrapped error narrates the
+// underlying reason (unknown root, signature mismatch, caveat
+// violation, malformed bytes); handlers compare against this via
+// [errors.Is] to decide whether to 401 the request.
+//
+// [Verifier.VerifySignature] surfaces auth failures (including
+// the resolver-returned-ErrUnknownRoot case) wrapped in
+// ErrVerifyFailed and surfaces resolver transport failures
+// wrapped in [ErrTransportFailure] only. [Verifier.Verify] (the
+// convenience wrapper) re-wraps transport failures so every
+// failure path through Verify is reachable via
+// errors.Is(err, ErrVerifyFailed) — backward-compat for single-shot
+// callers that don't need to distinguish.
 var ErrVerifyFailed = errors.New("macaroon: verify failed")
 
-// Verify decodes the binary macaroon, looks up its root key, checks
-// the HMAC signature, and evaluates every first-party caveat
-// against the supplied [Constraints]. Returns a [Verified] view on
-// success or an error wrapping [ErrVerifyFailed] on any rejection.
+// ErrTransportFailure wraps errors from the [RootKeyResolver] that
+// are not [ErrUnknownRoot] — i.e. infrastructure problems like a
+// SQLite outage or an HSM timeout. Middleware that wants to log
+// these at ERROR rather than WARN (because they reflect a server
+// issue, not a client one) detects them via
+// errors.Is(err, ErrTransportFailure). The wrapped error remains
+// accessible via [errors.Unwrap] for diagnostic logging.
+//
+// ErrTransportFailure does NOT also wrap [ErrVerifyFailed]: a
+// caller seeing this sentinel can tell with a single
+// errors.Is check that the failure is infrastructure-side. For
+// callers that don't care about the distinction (anything using
+// [Verifier.Verify]), the convenience wrapper re-wraps so
+// errors.Is(err, ErrVerifyFailed) still works.
+var ErrTransportFailure = errors.New("macaroon: resolver transport failure")
+
+// VerifySignature decodes the binary macaroon, looks up its root
+// key, validates the HMAC signature, and parses every first-party
+// caveat into a structured [opencaravan.Caveat]. It deliberately
+// does NOT evaluate caveats against runtime constraints — that's
+// [Verifier.CheckConstraints]'s job, called per-request once the
+// handler knows what journey / action it expects.
+//
+// This split exists so the broad attach-pass middleware that runs
+// at the top of the HTTP chain (see internal/server/middleware's
+// AttachSession) can sign-check every presented macaroon once,
+// surfacing the verified caveat structure on the request context,
+// while per-handler guards re-evaluate the caveats against the
+// route-specific constraints they care about.
 //
 // Failure modes:
 //
-//   - Malformed binary: [encoding.BinaryUnmarshaler] decode error.
-//   - Wrong location: macaroon was issued by another service.
-//   - Unknown root id: resolver returned [ErrUnknownRoot] (or
-//     equivalent via errors.Is).
-//   - Signature mismatch: macaroon.v2's Verify returned an error.
-//   - Caveat violation: an OpenCaravan-known caveat failed against
-//     the constraints, or an unknown caveat was present (fail-closed
-//     on attenuations this server cannot evaluate).
-//
-// All five wrap [ErrVerifyFailed].
-func (v *Verifier) Verify(ctx context.Context, serialized []byte, c Constraints) (Verified, error) {
+//   - Malformed binary → wraps [ErrVerifyFailed]
+//   - Wrong location (macaroon issued by another service) → wraps
+//     [ErrVerifyFailed]
+//   - Unknown root id (resolver returned [ErrUnknownRoot]) → wraps
+//     [ErrVerifyFailed]
+//   - Resolver transport error (database outage, HSM timeout,
+//     etc. — anything that isn't ErrUnknownRoot) → wraps
+//     [ErrTransportFailure] only, NOT [ErrVerifyFailed], so
+//     callers can tell auth failures from infrastructure failures
+//     with a single errors.Is check
+//   - Signature mismatch → wraps [ErrVerifyFailed]
+//   - Unknown / unparseable / third-party caveat (rejected
+//     fail-closed regardless of the runtime route) → wraps
+//     [ErrVerifyFailed]
+//   - Macaroon missing a time<T caveat → wraps [ErrVerifyFailed]
+//     (every spivot-server-issued macaroon carries one; a presented
+//     macaroon without one is structurally invalid and would
+//     otherwise be non-expiring at the middleware layer)
+func (v *Verifier) VerifySignature(ctx context.Context, serialized []byte) (Verified, error) {
 	var m macaroonv2.Macaroon
 	if err := m.UnmarshalBinary(serialized); err != nil {
 		return Verified{}, fmt.Errorf("%w: unmarshal: %v", ErrVerifyFailed, err)
@@ -156,23 +198,33 @@ func (v *Verifier) Verify(ctx context.Context, serialized []byte, c Constraints)
 		if errors.Is(err, ErrUnknownRoot) {
 			return Verified{}, fmt.Errorf("%w: %v", ErrVerifyFailed, err)
 		}
-		return Verified{}, fmt.Errorf("%w: resolve root: %v", ErrVerifyFailed, err)
+		// Transport errors get only the ErrTransportFailure wrap so
+		// AttachSession can log them at ERROR instead of WARN.
+		return Verified{}, fmt.Errorf("%w: resolve root: %v", ErrTransportFailure, err)
 	}
 
-	// Capture "now" once at the start of Verify so the standalone
-	// caveat parse pass and the macaroon.v2 signature-verifying
-	// predicate callback observe the same instant. Without this,
-	// time<T evaluation could go one way in parseCaveats and the
-	// other way inside the macaroon.v2 check loop for a macaroon
-	// expiring within the verification window.
-	now := v.now()
-
-	parsed, latestExpiry, caveatErr := parseCaveats(m.Caveats(), now, c)
+	// macaroon.v2's Verify wants a per-caveat predicate callback;
+	// since we're skipping runtime-constraint checks here, the
+	// callback's only job is to enforce the "predicate must
+	// structurally parse into a known caveat kind" rule. Third-
+	// party caveats are surfaced as an empty predicate (Id != "" but
+	// Location != ""); macaroon.v2 invokes the callback only for
+	// first-party caveats, so we still need the loop below to
+	// surface third-party ones.
 	if err := m.Verify(key, func(predicate string) error {
-		return evaluatePredicate(predicate, now, c)
+		caveat, err := opencaravan.ParseCaveat(predicate)
+		if err != nil {
+			return fmt.Errorf("parse caveat %q: %w", predicate, err)
+		}
+		if caveat.Kind == opencaravan.CaveatKindUnknown {
+			return fmt.Errorf("unknown caveat predicate %q", predicate)
+		}
+		return nil
 	}, nil); err != nil {
 		return Verified{}, fmt.Errorf("%w: %v", ErrVerifyFailed, err)
 	}
+
+	parsed, latestExpiry, caveatErr := parseCaveats(m.Caveats())
 	if caveatErr != nil {
 		return Verified{}, fmt.Errorf("%w: %v", ErrVerifyFailed, caveatErr)
 	}
@@ -185,63 +237,123 @@ func (v *Verifier) Verify(ctx context.Context, serialized []byte, c Constraints)
 	}, nil
 }
 
-// parseCaveats walks every first-party caveat in the macaroon,
-// builds the structured slice that surfaces on [Verified], records
-// the latest time<T expiry, and runs each predicate through
-// [evaluatePredicate] so any caveat violation is surfaced as a
-// stable error. Returning the structured view + the first caveat
-// error in a single pass lets [Verifier.Verify] decide which to
-// surface to the caller without re-parsing the predicate strings.
-func parseCaveats(caveats []macaroonv2.Caveat, now time.Time, c Constraints) ([]opencaravan.Caveat, time.Time, error) {
+// CheckConstraints evaluates the caveats in a previously-verified
+// macaroon against runtime constraints. Returns nil when every
+// caveat is satisfied, an error wrapping [ErrVerifyFailed]
+// otherwise. The supplied [Verified] must come from
+// [Verifier.VerifySignature]; passing a hand-rolled value
+// bypasses the signature guard and is unsupported.
+//
+// The clock used for time<T evaluation is the [Verifier]'s
+// injected clock (default [time.Now]), captured once per call so
+// every caveat in the macaroon sees the same instant.
+func (v *Verifier) CheckConstraints(verified Verified, c Constraints) error {
+	now := v.now()
+	for _, caveat := range verified.Caveats {
+		if err := evaluateCaveat(caveat, now, c); err != nil {
+			return fmt.Errorf("%w: %v", ErrVerifyFailed, err)
+		}
+	}
+	return nil
+}
+
+// Verify decodes the binary macaroon, looks up its root key, checks
+// the HMAC signature, parses caveats, and evaluates each caveat
+// against the supplied [Constraints]. Returns a [Verified] view on
+// success or an error wrapping [ErrVerifyFailed] on any rejection.
+//
+// Convenience wrapper around [Verifier.VerifySignature] +
+// [Verifier.CheckConstraints]; single-shot callers (typically
+// tests, or future endpoints that do not split attach/require)
+// use this. The middleware path uses the two halves separately
+// so signature work happens once and constraint work happens
+// per-handler.
+//
+// Every Verify failure wraps [ErrVerifyFailed], including
+// [VerifySignature]'s transport errors that are otherwise wrapped
+// only in [ErrTransportFailure] — Verify re-wraps so the
+// errors.Is(err, ErrVerifyFailed) contract holds for callers that
+// don't need to distinguish infrastructure from auth.
+func (v *Verifier) Verify(ctx context.Context, serialized []byte, c Constraints) (Verified, error) {
+	verified, err := v.VerifySignature(ctx, serialized)
+	if err != nil {
+		if errors.Is(err, ErrVerifyFailed) {
+			return Verified{}, err
+		}
+		// VerifySignature returned a transport error (wrapped only
+		// in ErrTransportFailure). Re-wrap so the convenience
+		// caller's errors.Is(err, ErrVerifyFailed) keeps working.
+		return Verified{}, fmt.Errorf("%w: %v", ErrVerifyFailed, err)
+	}
+	if err := v.CheckConstraints(verified, c); err != nil {
+		return Verified{}, err
+	}
+	return verified, nil
+}
+
+// parseCaveats walks every first-party caveat in the macaroon and
+// builds the structured slice that surfaces on [Verified],
+// recording the macaroon's effective expiration (the EARLIEST
+// time<T caveat — see below).
+//
+// Caveat well-formedness is enforced by VerifySignature's predicate
+// callback during macaroon.v2's Verify, so by the time parseCaveats
+// runs every first-party caveat is guaranteed to parse into a
+// known [opencaravan.CaveatKind]. The remaining error paths are:
+//
+//   - Third-party caveats — macaroon.v2 does not surface them to
+//     the predicate callback, so we walk the list and reject
+//     fail-closed.
+//   - Missing time<T caveat — every spivot-server-issued macaroon
+//     carries one. A presented macaroon without one would be
+//     non-expiring at the middleware layer, which is unsafe;
+//     reject as structurally invalid.
+//
+// Multiple time<T caveats compose under macaroon AND semantics: a
+// macaroon attenuated with `time<earlier` on top of an existing
+// `time<later` is valid only when now is before BOTH — i.e. the
+// EARLIEST of the two. The Verified.Expiration field surfaces
+// that effective expiration so callers logging "session expires
+// at" see the tightest bound the caveat list imposes, not a
+// loose upper bound. [CheckConstraints] still evaluates every
+// time<T caveat individually so this convenience field has no
+// security weight.
+func parseCaveats(caveats []macaroonv2.Caveat) ([]opencaravan.Caveat, time.Time, error) {
 	parsed := make([]opencaravan.Caveat, 0, len(caveats))
-	var latest time.Time
-	var firstErr error
+	var earliest time.Time
 	for _, raw := range caveats {
-		// Third-party caveats are out of scope for v0; this server
-		// never issues them, so any non-empty Location on a presented
-		// caveat means the macaroon was constructed by something
-		// outside our protocol. Reject fail-closed.
 		if raw.Location != "" {
-			if firstErr == nil {
-				firstErr = fmt.Errorf("third-party caveat from %q not supported", raw.Location)
-			}
-			continue
+			return nil, time.Time{}, fmt.Errorf("third-party caveat from %q not supported", raw.Location)
 		}
 		predicate := string(raw.Id)
 		caveat, err := opencaravan.ParseCaveat(predicate)
 		if err != nil {
-			if firstErr == nil {
-				firstErr = fmt.Errorf("parse caveat %q: %w", predicate, err)
-			}
-			continue
+			return nil, time.Time{}, fmt.Errorf("parse caveat %q: %w", predicate, err)
 		}
 		if caveat.Kind == opencaravan.CaveatKindUnknown {
-			if firstErr == nil {
-				firstErr = fmt.Errorf("unknown caveat predicate %q", predicate)
-			}
-			continue
+			return nil, time.Time{}, fmt.Errorf("unknown caveat predicate %q", predicate)
 		}
 		parsed = append(parsed, caveat)
-		if caveat.Kind == opencaravan.CaveatKindTimeBefore && caveat.Time.After(latest) {
-			latest = caveat.Time
-		}
-		if err := evaluatePredicate(predicate, now, c); err != nil && firstErr == nil {
-			firstErr = err
+		if caveat.Kind == opencaravan.CaveatKindTimeBefore {
+			if earliest.IsZero() || caveat.Time.Before(earliest) {
+				earliest = caveat.Time
+			}
 		}
 	}
-	return parsed, latest, firstErr
+	if earliest.IsZero() {
+		return nil, time.Time{}, errors.New("macaroon has no time<T caveat")
+	}
+	return parsed, earliest, nil
 }
 
-// evaluatePredicate runs the OpenCaravan caveat evaluation rules for
-// a single predicate. Returns nil when the caveat is satisfied by
-// the supplied constraints; otherwise returns a descriptive error
-// (which macaroon.v2's Verify will surface as a verification
-// failure). Unknown predicates are rejected fail-closed.
-func evaluatePredicate(predicate string, now time.Time, c Constraints) error {
-	caveat, err := opencaravan.ParseCaveat(predicate)
-	if err != nil {
-		return fmt.Errorf("parse caveat %q: %w", predicate, err)
-	}
+// evaluateCaveat runs the OpenCaravan evaluation rule for a single
+// parsed caveat against runtime constraints. Returns nil when
+// the caveat is satisfied. The single evaluator used by
+// [Verifier.CheckConstraints]; [VerifySignature]'s predicate
+// callback does only well-formedness checks (macaroon.v2's API is
+// string-based) and leaves runtime evaluation to this function
+// once the caveats are in their parsed [opencaravan.Caveat] form.
+func evaluateCaveat(caveat opencaravan.Caveat, now time.Time, c Constraints) error {
 	switch caveat.Kind {
 	case opencaravan.CaveatKindTimeBefore:
 		if !now.Before(caveat.Time) {
@@ -281,7 +393,7 @@ func evaluatePredicate(predicate string, now time.Time, c Constraints) error {
 		}
 		return nil
 	case opencaravan.CaveatKindUnknown:
-		return fmt.Errorf("unknown caveat predicate %q", predicate)
+		return fmt.Errorf("unknown caveat predicate %q", caveat.Raw)
 	default:
 		// Defensive: a future CaveatKind that the parser knows about
 		// but this function does not. Fail-closed.

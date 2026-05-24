@@ -227,6 +227,19 @@ func runServe(ctx context.Context, stdout io.Writer, stderr io.Writer, args []st
 	if err != nil {
 		return fmt.Errorf("init macaroon issuer: %w", err)
 	}
+	macaroonVerifier, err := macaroon.NewVerifier(func(ctx context.Context, id string) ([]byte, error) {
+		root, err := store.MacaroonRootByID(ctx, id)
+		if err != nil {
+			if errors.Is(err, storage.ErrMacaroonRootNotFound) {
+				return nil, macaroon.ErrUnknownRoot
+			}
+			return nil, err
+		}
+		return root.Key, nil
+	})
+	if err != nil {
+		return fmt.Errorf("init macaroon verifier: %w", err)
+	}
 
 	parentCtx := ctx
 	ctx, cancel := context.WithCancel(parentCtx)
@@ -264,12 +277,13 @@ func runServe(ctx context.Context, stdout io.Writer, stderr io.Writer, args []st
 			TrustClientCertHeaders: cfg.trustClientCertHeaders,
 			TrustedNetworks:        cfg.trustedProxyRanges,
 		},
-		Store:           store,
-		EnrollmentStore: store,
-		IdentityStore:   store,
-		CA:              ca,
-		MacaroonIssuer:  macaroonIssuer,
-		PolicySnapshot:  policySnapshot,
+		Store:            store,
+		EnrollmentStore:  store,
+		IdentityStore:    store,
+		CA:               ca,
+		MacaroonIssuer:   macaroonIssuer,
+		MacaroonVerifier: macaroonVerifier,
+		PolicySnapshot:   policySnapshot,
 	}, logger)
 	return app.New(server, logger).Serve(ctx)
 }
