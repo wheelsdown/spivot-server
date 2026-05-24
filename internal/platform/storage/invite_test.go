@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strconv"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -203,6 +206,105 @@ func TestUnconsumedInviteCountByScope(t *testing.T) {
 	}
 	if got != 1 {
 		t.Fatalf("journey count = %d, want 1", got)
+	}
+}
+
+// TestIssueInviteConcurrentCallsProduceDistinctTokens verifies the
+// concurrent-issuance claim in IssueInvite's docstring: parallel callers
+// each generate independent random tokens, each successfully persists,
+// and every TokenHash is distinct.
+func TestIssueInviteConcurrentCallsProduceDistinctTokens(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	const racers = 8
+	var (
+		wg     sync.WaitGroup
+		start  sync.WaitGroup
+		mu     sync.Mutex
+		hashes = make(map[string]struct{}, racers)
+		errs   []error
+	)
+	start.Add(1)
+
+	wg.Add(racers)
+	for range racers {
+		go func() {
+			defer wg.Done()
+			start.Wait()
+			_, invite, err := store.IssueInvite(ctx, opencaravan.InviteScopeServerRegistration, time.Hour)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				errs = append(errs, err)
+				return
+			}
+			hashes[invite.TokenHash] = struct{}{}
+		}()
+	}
+	start.Done()
+	wg.Wait()
+
+	if len(errs) > 0 {
+		t.Fatalf("%d concurrent IssueInvite calls failed: %v", len(errs), errs)
+	}
+	if got := len(hashes); got != racers {
+		t.Fatalf("distinct token hashes = %d, want %d (concurrent issuance must produce unique tokens)", got, racers)
+	}
+}
+
+// TestConsumeInviteConcurrentExactlyOneWinner verifies the atomicity
+// claim in ConsumeInvite's docstring: among N goroutines redeeming the
+// same token, exactly one observes a successful update; the rest get
+// ErrInviteAlreadyUsed.
+func TestConsumeInviteConcurrentExactlyOneWinner(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	token, _, err := store.IssueInvite(ctx, opencaravan.InviteScopeServerRegistration, time.Hour)
+	if err != nil {
+		t.Fatalf("IssueInvite: %v", err)
+	}
+
+	const racers = 8
+	var (
+		wg       sync.WaitGroup
+		start    sync.WaitGroup
+		wins     atomic.Int64
+		conflict atomic.Int64
+		others   atomic.Int64
+	)
+	start.Add(1)
+
+	wg.Add(racers)
+	for i := range racers {
+		go func() {
+			defer wg.Done()
+			start.Wait()
+			clientAppID := "client-app-" + strconv.Itoa(i)
+			_, err := store.ConsumeInvite(ctx, token.Value, clientAppID)
+			switch {
+			case err == nil:
+				wins.Add(1)
+			case errors.Is(err, ErrInviteAlreadyUsed):
+				conflict.Add(1)
+			default:
+				others.Add(1)
+				t.Errorf("racer %d unexpected error: %v", i, err)
+			}
+		}()
+	}
+	start.Done()
+	wg.Wait()
+
+	if wins.Load() != 1 {
+		t.Fatalf("winners = %d, want exactly 1 (ConsumeInvite must be atomic single-use)", wins.Load())
+	}
+	if conflict.Load() != racers-1 {
+		t.Fatalf("losers with ErrInviteAlreadyUsed = %d, want %d", conflict.Load(), racers-1)
+	}
+	if others.Load() != 0 {
+		t.Fatalf("unexpected non-AlreadyUsed errors = %d", others.Load())
 	}
 }
 

@@ -424,16 +424,41 @@ func runHealthcheck(ctx context.Context, args []string) error {
 // that a leaked log line that nobody notices for a day stops mattering.
 const bootstrapInviteLifetime = 24 * time.Hour
 
-// emitBootstrapInviteIfNeeded inspects the runtime state. When the server
-// has no registered users and no active server_registration invites, it
-// mints a single-use 24-hour invite, prints a fenced human-readable banner
-// to stdout (intentionally hard to miss in container logs), and emits a
-// structured audit event recording the issuance.
+// emitBootstrapInviteIfNeeded mints and announces a fresh
+// server_registration invite when the server has never registered a
+// user and has no active bootstrap invite outstanding. It is the
+// operator-facing "first run" UX for unattended container deployments:
+// the operator runs the container, watches stdout (or `docker logs`),
+// copies the printed token, and uses it to enroll the first
+// administrator.
 //
-// Subsequent restarts with the bootstrap invite still active see a
-// non-zero UnconsumedInviteCount and stay silent; subsequent restarts
-// after the bootstrap invite has expired without being consumed re-emit
-// a fresh banner.
+// The function makes two storage observations (AccountCount,
+// UnconsumedInviteCount) and one mutation (IssueInvite). When the
+// observations both return zero it mints a single-use invite of
+// [bootstrapInviteLifetime] duration, writes a fenced banner to stdout,
+// and emits a structured slog audit record naming the token hash and
+// expiry.
+//
+// Lifecycle invariants:
+//
+//   - When the accounts table is non-empty (some user has registered)
+//     this is a no-op for the lifetime of the deployment.
+//   - When a server_registration invite is already active, a single
+//     informational slog event ("bootstrap invite already active") is
+//     emitted and stdout is untouched, so operator restarts during the
+//     24-hour window stay quiet.
+//   - When the previous bootstrap invite has expired unconsumed,
+//     UnconsumedInviteCount returns zero again and a fresh banner is
+//     emitted on the next call.
+//
+// The check-then-act sequence (read counts, then mint) is not
+// transactional. Two processes starting concurrently against the same
+// database could each pass both checks and each call IssueInvite,
+// producing two bootstrap invites instead of one. This is intentional:
+// both invites are single-use, both expire in 24 hours, and the
+// duplicate is operator-visible noise rather than a correctness bug.
+// Production deployments run a single spivot-server process per
+// database, so the race is not actually reachable today.
 func emitBootstrapInviteIfNeeded(ctx context.Context, store *storage.Store, stdout io.Writer, logger *slog.Logger) error {
 	accountCount, err := store.AccountCount(ctx)
 	if err != nil {
