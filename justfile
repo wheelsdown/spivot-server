@@ -151,7 +151,7 @@ publish-release version release_kind="auto":
     release_kind="{{release_kind}}"
     metadata_path="{{release-dir}}/.spivot_${version}_prepared.env"
     head_commit="$(git rev-parse HEAD)"
-    prerelease_flag=()
+    prerelease=false
 
     if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'; then
         echo "Version must look like 0.1.0 or 0.1.0-rc.1" >&2
@@ -160,9 +160,9 @@ publish-release version release_kind="auto":
 
     case "$release_kind" in
         auto)
-            if printf '%s' "$version" | grep -q -- '-'; then prerelease_flag=(--prerelease --latest=false); fi
+            if printf '%s' "$version" | grep -q -- '-'; then prerelease=true; fi
             ;;
-        prerelease) prerelease_flag=(--prerelease --latest=false) ;;
+        prerelease) prerelease=true ;;
         release) ;;
         *) echo "release_kind must be one of: auto, prerelease, release" >&2; exit 1 ;;
     esac
@@ -173,6 +173,13 @@ publish-release version release_kind="auto":
     test "${SPIVOT_RELEASE_PREPARED_VERSION:-}" = "$version" || { echo "Prepared version mismatch; run 'just prepare-release ${version}' again." >&2; exit 1; }
     test "${SPIVOT_RELEASE_PREPARED_COMMIT:-}" = "$head_commit" || { echo "Prepared commit mismatch; run 'just prepare-release ${version}' again." >&2; exit 1; }
     release_platforms="${SPIVOT_RELEASE_CONTAINER_PLATFORMS:-{{container_platforms}}}"
+    release_platform_label="$(printf '%s' "$release_platforms" | tr -d '[:space:]' | tr '/,' '-_')"
+    archive_path="{{release-dir}}/spivot-server_v${version}_${release_platform_label}.oci.tar"
+    checksum_path="${archive_path}.sha256"
+    buildx_metadata_path="{{release-dir}}/spivot-server_v${version}_${release_platform_label}.buildx.json"
+    test -f "$archive_path" || { echo "Missing OCI archive: $archive_path. Run 'just prepare-release ${version}' again." >&2; exit 1; }
+    test -f "$checksum_path" || { echo "Missing OCI archive checksum: $checksum_path. Run 'just prepare-release ${version}' again." >&2; exit 1; }
+    test -f "$buildx_metadata_path" || { echo "Missing Buildx metadata: $buildx_metadata_path. Run 'just prepare-release ${version}' again." >&2; exit 1; }
 
     git fetch origin main --tags
     test "$(git rev-parse --abbrev-ref HEAD)" = "main" || { echo "Release tags must be cut from main" >&2; exit 1; }
@@ -197,11 +204,14 @@ publish-release version release_kind="auto":
 
     if gh release view "$tag" >/dev/null 2>&1; then
         echo "GitHub release $tag already exists."
+        scripts/releng/upload-release-assets.sh "v${version}" "$release_platforms"
     else
-        gh release create "$tag" --title "$tag" --generate-notes "${prerelease_flag[@]}"
+        if [ "$prerelease" = true ]; then
+            gh release create "$tag" "$archive_path" "$checksum_path" "$buildx_metadata_path" --title "$tag" --generate-notes --prerelease --latest=false
+        else
+            gh release create "$tag" "$archive_path" "$checksum_path" "$buildx_metadata_path" --title "$tag" --generate-notes
+        fi
     fi
-
-    scripts/releng/upload-release-assets.sh "v${version}" "$release_platforms"
 
     echo "Published $tag. GitHub Actions will publish OCI tags for {{image}}; the local OCI archive was uploaded to the GitHub release."
 
