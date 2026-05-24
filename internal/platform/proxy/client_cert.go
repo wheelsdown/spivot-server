@@ -5,6 +5,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/pem"
+	"math/big"
 	"net/http"
 	"net/url"
 	"strings"
@@ -122,7 +123,9 @@ func parseForwardedClientCertInfo(headerValue string) *ClientCert {
 		case "subject":
 			out.SubjectCN = subjectCommonName(v)
 		case "serialnumber", "sn":
-			out.Serial = strings.ToLower(v)
+			if normalized, ok := canonicalSerial(v); ok {
+				out.Serial = normalized
+			}
 		case "notafter":
 			if t, err := time.Parse(time.RFC3339, v); err == nil {
 				out.NotAfter = t.UTC()
@@ -210,4 +213,37 @@ func subjectCommonName(rdnString string) string {
 func certFingerprint(cert *x509.Certificate) string {
 	sum := sha256.Sum256(cert.Raw)
 	return hex.EncodeToString(sum[:])
+}
+
+// canonicalSerial parses a hex-encoded certificate serial number that
+// may carry incidental formatting and re-encodes it in the canonical
+// form Spivot Server uses everywhere else (lowercase hex, no leading
+// zeros, no separators, no 0x prefix — matching cert.SerialNumber.Text(16)).
+//
+// Accepted input variants:
+//   - Plain lowercase or uppercase hex: "abcdef123" or "ABCDEF123"
+//   - "0x" or "0X" prefix
+//   - Hyphen or colon separators (used by some OpenSSL outputs)
+//   - Surrounding whitespace
+//
+// The big.Int round-trip is the key: it produces the same string the
+// direct-TLS and forwarded-PEM paths produce via cert.SerialNumber.Text(16),
+// so the Phase 3c identity middleware can look up issued_certificates
+// keyed by serial regardless of which extraction path produced the
+// ClientCert. Returns ok=false for inputs that don't parse as a
+// positive hex integer; the caller treats that as "no serial."
+func canonicalSerial(raw string) (string, bool) {
+	trimmed := strings.TrimSpace(raw)
+	trimmed = strings.TrimPrefix(trimmed, "0x")
+	trimmed = strings.TrimPrefix(trimmed, "0X")
+	trimmed = strings.ReplaceAll(trimmed, ":", "")
+	trimmed = strings.ReplaceAll(trimmed, "-", "")
+	if trimmed == "" {
+		return "", false
+	}
+	n, ok := new(big.Int).SetString(trimmed, 16)
+	if !ok || n.Sign() <= 0 {
+		return "", false
+	}
+	return n.Text(16), true
 }

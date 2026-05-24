@@ -11,10 +11,10 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"math/big"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 )
@@ -101,7 +101,7 @@ func TestClientCertFromForwardedPEM(t *testing.T) {
 	req.RemoteAddr = "127.0.0.1:54321"
 	req.Header.Set(headerForwardedClientCert, encoded)
 
-	cfg := configWithLocalhost(true, true)
+	cfg := configWithLocalhost(t, true, true)
 	got := RequestInfoFrom(req, cfg).ClientCert
 	if got == nil {
 		t.Fatal("ClientCert = nil, want populated from forwarded PEM")
@@ -120,7 +120,7 @@ func TestClientCertFromForwardedInfoFallback(t *testing.T) {
 	req.Header.Set(headerForwardedClientCertInfo,
 		`Subject="CN=client-app-info,O=Example";SerialNumber="DEADBEEF";NotAfter="2026-06-01T00:00:00Z"`)
 
-	cfg := configWithLocalhost(true, true)
+	cfg := configWithLocalhost(t, true, true)
 	got := RequestInfoFrom(req, cfg).ClientCert
 	if got == nil {
 		t.Fatal("ClientCert = nil, want populated from forwarded info")
@@ -149,7 +149,7 @@ func TestClientCertPEMTakesPrecedenceOverInfo(t *testing.T) {
 	req.Header.Set(headerForwardedClientCert, url.QueryEscape(string(pemBytes)))
 	req.Header.Set(headerForwardedClientCertInfo, `Subject="CN=should-be-ignored"`)
 
-	cfg := configWithLocalhost(true, true)
+	cfg := configWithLocalhost(t, true, true)
 	got := RequestInfoFrom(req, cfg).ClientCert
 	if got == nil || got.SubjectCN != "client-app-prefer-pem" {
 		t.Fatalf("PEM path lost precedence; got = %+v", got)
@@ -164,7 +164,7 @@ func TestClientCertHeadersIgnoredFromUntrustedPeer(t *testing.T) {
 	req.RemoteAddr = "8.8.8.8:443" // not in trusted CIDR
 	req.Header.Set(headerForwardedClientCert, url.QueryEscape(string(pemBytes)))
 
-	cfg := configWithLocalhost(true, true)
+	cfg := configWithLocalhost(t, true, true)
 	if got := RequestInfoFrom(req, cfg).ClientCert; got != nil {
 		t.Fatalf("ClientCert populated from untrusted peer: %+v", got)
 	}
@@ -178,7 +178,7 @@ func TestClientCertHeadersIgnoredWhenTrustDisabled(t *testing.T) {
 	req.RemoteAddr = "127.0.0.1:54321"
 	req.Header.Set(headerForwardedClientCert, url.QueryEscape(string(pemBytes)))
 
-	cfg := configWithLocalhost(true, false) // TrustClientCertHeaders=false
+	cfg := configWithLocalhost(t, true, false) // TrustClientCertHeaders=false
 	if got := RequestInfoFrom(req, cfg).ClientCert; got != nil {
 		t.Fatalf("ClientCert populated despite TrustClientCertHeaders=false: %+v", got)
 	}
@@ -190,7 +190,7 @@ func TestClientCertMalformedHeadersDegrade(t *testing.T) {
 	req.Header.Set(headerForwardedClientCert, "%%not-url-encoded%%")
 	req.Header.Set(headerForwardedClientCertInfo, ";;;not=info=here;;")
 
-	cfg := configWithLocalhost(true, true)
+	cfg := configWithLocalhost(t, true, true)
 	if got := RequestInfoFrom(req, cfg).ClientCert; got != nil {
 		t.Fatalf("ClientCert populated from malformed headers: %+v", got)
 	}
@@ -217,6 +217,71 @@ func TestSubjectCommonNameExtraction(t *testing.T) {
 	}
 }
 
+func TestCanonicalSerialNormalizesFormatting(t *testing.T) {
+	// big.Int.Text(16)'s canonical form is the target: lowercase hex,
+	// no separators, no 0x prefix, no leading zeros. canonicalSerial
+	// should produce that regardless of incidental formatting Traefik
+	// (or any other proxy) might add.
+	canonical := "abcdef12"
+	cases := []struct {
+		name string
+		in   string
+		want string
+		ok   bool
+	}{
+		{"plain lowercase", "abcdef12", canonical, true},
+		{"plain uppercase", "ABCDEF12", canonical, true},
+		{"with 0x prefix", "0xabcdef12", canonical, true},
+		{"with 0X prefix uppercase", "0XABCDEF12", canonical, true},
+		{"with colons", "ab:cd:ef:12", canonical, true},
+		{"with hyphens", "ab-cd-ef-12", canonical, true},
+		{"surrounding whitespace", "  abcdef12  ", canonical, true},
+		{"leading zeros dropped", "0000abcdef12", canonical, true},
+		{"empty rejected", "", "", false},
+		{"non-hex rejected", "not-a-hex-value-xyz", "", false},
+		{"zero rejected", "0", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := canonicalSerial(tc.in)
+			if ok != tc.ok {
+				t.Fatalf("ok = %v, want %v", ok, tc.ok)
+			}
+			if got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestClientCertInfoSerialMatchesPEMPath(t *testing.T) {
+	// The Phase 3c identity middleware will look up cert serials in
+	// issued_certificates, which stores cert.SerialNumber.Text(16).
+	// Whether the cert came in via direct TLS, the forwarded PEM
+	// header, or the forwarded Info header, the Serial field must
+	// match that canonical form so the lookup succeeds.
+	cert := makeClientCert(t, "serial-canonicalization")
+	canonical := cert.SerialNumber.Text(16)
+
+	// Info header with the serial formatted differently than the
+	// canonical big.Int representation.
+	uppercase := strings.ToUpper(canonical)
+	header := `Subject="CN=foo";SerialNumber="0x` + uppercase + `"`
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "127.0.0.1:54321"
+	req.Header.Set(headerForwardedClientCertInfo, header)
+
+	cfg := configWithLocalhost(t, true, true)
+	got := RequestInfoFrom(req, cfg).ClientCert
+	if got == nil {
+		t.Fatal("ClientCert = nil")
+	}
+	if got.Serial != canonical {
+		t.Fatalf("Serial = %q, want %q (must match cert.SerialNumber.Text(16))", got.Serial, canonical)
+	}
+}
+
 func TestSplitInfoFieldsRespectsQuotedSemicolons(t *testing.T) {
 	header := `Subject="CN=foo;bar,O=Org";SerialNumber="ABC123";NotAfter="2026-06-01T00:00:00Z"`
 	fields := splitInfoFields(header)
@@ -231,18 +296,18 @@ func TestSplitInfoFieldsRespectsQuotedSemicolons(t *testing.T) {
 // configWithLocalhost returns a Config that trusts 127.0.0.0/8 with the
 // requested combination of TrustForwardedHeaders / TrustClientCertHeaders
 // flags. Used by the proxy-path tests so the trust-CIDR check accepts
-// the synthetic 127.0.0.1 RemoteAddr.
-func configWithLocalhost(forwarded, clientCert bool) Config {
-	nets, _ := ParseCIDRs([]string{"127.0.0.0/8"})
+// the synthetic 127.0.0.1 RemoteAddr. Fails the test if the CIDR list
+// somehow refuses to parse — a regression there would mask trust-gate
+// failures elsewhere in this file.
+func configWithLocalhost(t *testing.T, forwarded, clientCert bool) Config {
+	t.Helper()
+	nets, err := ParseCIDRs([]string{"127.0.0.0/8"})
+	if err != nil {
+		t.Fatalf("ParseCIDRs: %v", err)
+	}
 	return Config{
 		TrustForwardedHeaders:  forwarded,
 		TrustClientCertHeaders: clientCert,
 		TrustedNetworks:        nets,
 	}
 }
-
-// helper for tests in other files that synthesize a forwarded-cert
-// request; tucked at the bottom because it's only useful in this test
-// file but keeping it in the same package keeps the export surface
-// minimal.
-var _ = net.ParseCIDR // ensure import stays even after refactors
