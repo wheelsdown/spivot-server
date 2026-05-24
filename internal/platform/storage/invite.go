@@ -56,6 +56,23 @@ func (i Invite) Active(now time.Time) bool {
 	return now.Before(i.ExpirationTime)
 }
 
+// sqliteTimeFormat is a fixed-width RFC3339 layout for persisting
+// timestamps as TEXT in SQLite. SQLite compares TEXT lexicographically;
+// time.RFC3339Nano produces variable-width fractional seconds (a
+// timestamp with zero nanoseconds renders without any fractional part
+// at all), which breaks string ordering against timestamps with finer
+// precision. Nine fractional digits + a literal Z suffix make every
+// stored value the same width, so `expiration_time > ?` comparisons
+// behave correctly across the entire valid timestamp range.
+const sqliteTimeFormat = "2006-01-02T15:04:05.000000000Z"
+
+// formatSQLiteTime renders t for storage in or comparison against a
+// SQLite TEXT timestamp column. Always uses UTC and a fixed-width
+// nanosecond representation; see [sqliteTimeFormat].
+func formatSQLiteTime(t time.Time) string {
+	return t.UTC().Format(sqliteTimeFormat)
+}
+
 // ErrInviteNotFound is returned (wrapped via [fmt.Errorf] with %w where
 // the call site has helpful context) when no row in client_app_invites
 // matches the supplied token's hash. Callers detect this via [errors.Is].
@@ -115,7 +132,7 @@ func (s *Store) IssueInvite(ctx context.Context, scope opencaravan.InviteScope, 
 	if _, err := s.db.ExecContext(ctx, `
 INSERT INTO client_app_invites (token_hash, scope, created_time, expiration_time)
 VALUES (?, ?, ?, ?)
-`, hash, string(scope), now.Format(time.RFC3339Nano), expiration.Format(time.RFC3339Nano)); err != nil {
+`, hash, string(scope), formatSQLiteTime(now), formatSQLiteTime(expiration)); err != nil {
 		return opencaravan.InviteToken{}, Invite{}, fmt.Errorf("storage: record invite: %w", err)
 	}
 
@@ -183,7 +200,7 @@ func (s *Store) ConsumeInvite(ctx context.Context, tokenValue string, clientAppI
 
 	hash := hashInviteToken(tokenValue)
 	now := time.Now().UTC()
-	nowStr := now.Format(time.RFC3339Nano)
+	nowStr := formatSQLiteTime(now)
 
 	res, err := s.db.ExecContext(ctx, `
 UPDATE client_app_invites
@@ -228,7 +245,7 @@ func (s *Store) UnconsumedInviteCount(ctx context.Context, scope opencaravan.Inv
 		return 0, errors.New("storage: database is not open")
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	now := formatSQLiteTime(time.Now())
 	var count int
 	err := s.db.QueryRowContext(ctx, `
 SELECT COUNT(*) FROM client_app_invites
@@ -288,11 +305,11 @@ WHERE token_hash = ?
 		return Invite{}, fmt.Errorf("storage: load invite: %w", err)
 	}
 
-	created, err := time.Parse(time.RFC3339Nano, createdTime)
+	created, err := time.Parse(sqliteTimeFormat,createdTime)
 	if err != nil {
 		return Invite{}, fmt.Errorf("storage: parse invite created_time: %w", err)
 	}
-	expiration, err := time.Parse(time.RFC3339Nano, expirationTime)
+	expiration, err := time.Parse(sqliteTimeFormat,expirationTime)
 	if err != nil {
 		return Invite{}, fmt.Errorf("storage: parse invite expiration_time: %w", err)
 	}
@@ -303,7 +320,7 @@ WHERE token_hash = ?
 		ExpirationTime: expiration,
 	}
 	if usedTime.Valid {
-		used, err := time.Parse(time.RFC3339Nano, usedTime.String)
+		used, err := time.Parse(sqliteTimeFormat,usedTime.String)
 		if err != nil {
 			return Invite{}, fmt.Errorf("storage: parse invite used_time: %w", err)
 		}
