@@ -272,12 +272,20 @@ func generateSelfSignedCA(subject pkix.Name, key crypto.Signer, lifetime time.Du
 }
 
 func randomSerial() (*big.Int, error) {
+	// rand.Int returns a value in [0, limit). x509.CreateCertificate
+	// requires a positive serial number, so loop until we sample a non-zero
+	// value. The probability of zero is 1 / 2^caSerialBits — astronomically
+	// small, but never zero, so we guard explicitly rather than ignore it.
 	limit := new(big.Int).Lsh(big.NewInt(1), caSerialBits)
-	serial, err := rand.Int(rand.Reader, limit)
-	if err != nil {
-		return nil, fmt.Errorf("identity: generate serial: %w", err)
+	for {
+		serial, err := rand.Int(rand.Reader, limit)
+		if err != nil {
+			return nil, fmt.Errorf("identity: generate serial: %w", err)
+		}
+		if serial.Sign() != 0 {
+			return serial, nil
+		}
 	}
-	return serial, nil
 }
 
 func atomicWrite(dir, finalPath string, data []byte, perm os.FileMode) error {
