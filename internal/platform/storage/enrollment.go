@@ -105,12 +105,14 @@ func (s *Store) RegisterClientApp(ctx context.Context, reg ClientAppRegistration
 		return Invite{}, fmt.Errorf("storage: begin enrollment tx: %w", err)
 	}
 	rollback := func(cause error) (Invite, error) {
+		// %w on every wrapping site (Go 1.20+ multi-wrap) so callers
+		// stay able to detect ErrInviteAlreadyUsed / ErrInviteExpired /
+		// any other sentinel via errors.Is, even on the rollback-
+		// failure path where the rollback error also matters for
+		// diagnostics.
 		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
-			return Invite{}, fmt.Errorf("%w: %v (rollback failed: %v)", ErrEnrollmentRolledBack, cause, rbErr)
+			return Invite{}, fmt.Errorf("%w: %w (rollback failed: %w)", ErrEnrollmentRolledBack, cause, rbErr)
 		}
-		// Preserve sentinel-error chains (ErrInviteAlreadyUsed etc.) so
-		// the handler can detect the canonical "invite race lost"
-		// signal without losing the rollback context.
 		return Invite{}, fmt.Errorf("%w: %w", ErrEnrollmentRolledBack, cause)
 	}
 
@@ -156,6 +158,16 @@ WHERE token_hash = ?
 		return rollback(ErrInviteExpired)
 	}
 
+	// Read the consumed invite back inside the transaction. Doing this
+	// pre-Commit means a transient DB error or context cancellation
+	// surfaces here (and the transaction rolls back) rather than after
+	// Commit, where a failed re-read would turn a successful enrollment
+	// into a confusing 500.
+	consumed, lookupErr := lookupInviteByHashTx(ctx, tx, inviteHash)
+	if lookupErr != nil {
+		return rollback(fmt.Errorf("re-read consumed invite: %w", lookupErr))
+	}
+
 	cert := reg.Certificate
 	serial := cert.SerialNumber.Text(16)
 	if _, err := tx.ExecContext(ctx, `
@@ -172,12 +184,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?)
 	if err := tx.Commit(); err != nil {
 		return Invite{}, fmt.Errorf("%w: commit: %w", ErrEnrollmentRolledBack, err)
 	}
-
-	invite, lookupErr := s.lookupInviteByHash(ctx, inviteHash)
-	if lookupErr != nil {
-		return Invite{}, fmt.Errorf("storage: re-read consumed invite: %w", lookupErr)
-	}
-	return invite, nil
+	return consumed, nil
 }
 
 // ClientAppByID returns the ClientApp persisted under id. Used by the
