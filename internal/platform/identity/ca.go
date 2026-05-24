@@ -185,8 +185,9 @@ func (c *CA) Sign(_ context.Context, csr *x509.CertificateRequest, lifetime time
 	if err != nil {
 		return nil, nil, err
 	}
-	notBefore := time.Now().UTC().Add(-1 * time.Minute) // small clock skew
-	notAfter := notBefore.Add(lifetime)
+	now := time.Now().UTC()
+	notBefore := now.Add(-1 * time.Minute) // clock-skew tolerance for fast-clock clients
+	notAfter := now.Add(lifetime)
 
 	template := &x509.Certificate{
 		SerialNumber:          serial,
@@ -239,8 +240,9 @@ func generateSelfSignedCA(subject pkix.Name, key crypto.Signer, lifetime time.Du
 	if err != nil {
 		return nil, nil, err
 	}
-	notBefore := time.Now().UTC().Add(-1 * time.Minute)
-	notAfter := notBefore.Add(lifetime)
+	now := time.Now().UTC()
+	notBefore := now.Add(-1 * time.Minute)
+	notAfter := now.Add(lifetime)
 
 	template := &x509.Certificate{
 		SerialNumber:          serial,
