@@ -14,14 +14,34 @@ import (
 	"time"
 
 	"github.com/wheelsdown/spivot-server/internal/platform/buildinfo"
+	"github.com/wheelsdown/spivot-server/internal/platform/identity"
 	"github.com/wheelsdown/spivot-server/internal/platform/logging"
 	"github.com/wheelsdown/spivot-server/internal/platform/proxy"
+	"github.com/wheelsdown/spivot-server/internal/platform/storage"
 )
 
-// Store is the database behavior the API server needs for readiness checks.
+// Store is the narrow database behavior the API server needs for the
+// readiness probe. Defined as an interface so server_test.go can pass a
+// minimal fake without standing up a real SQLite store; concrete callers
+// pass [*storage.Store].
 type Store interface {
 	// Ping verifies that the backing store is reachable.
 	Ping(context.Context) error
+}
+
+// EnrollmentStore is the narrow subset of storage operations the
+// client-app enrollment handler needs. Kept distinct from [Store] so
+// each handler depends only on the capabilities it exercises and so
+// readiness-only tests do not have to implement enrollment plumbing.
+// The production implementation is [*storage.Store], which satisfies
+// both interfaces via duck-typing.
+type EnrollmentStore interface {
+	// LookupInvite returns the persisted invite for the supplied
+	// plaintext token. See [storage.Store.LookupInvite].
+	LookupInvite(ctx context.Context, tokenValue string) (storage.Invite, error)
+	// RegisterClientApp atomically writes the four-table state change
+	// for a successful enrollment. See [storage.Store.RegisterClientApp].
+	RegisterClientApp(ctx context.Context, reg storage.ClientAppRegistration) (storage.Invite, error)
 }
 
 // Config describes the HTTP API server's listen and deployment metadata.
@@ -34,8 +54,19 @@ type Config struct {
 	PublicURL *url.URL
 	// Proxy controls whether forwarded request metadata is trusted.
 	Proxy proxy.Config
-	// Store is the runtime database dependency.
+	// Store is the runtime database dependency used by the readiness
+	// probe. May be nil; the probe degrades to "always ready" when no
+	// store is wired (useful for the health-only test surface).
 	Store Store
+	// EnrollmentStore backs the client-app enrollment handler. May be
+	// nil, in which case POST /v1/client-apps/enroll responds 503 so
+	// readiness-only deployments are not silently routing enrollment
+	// requests into a void.
+	EnrollmentStore EnrollmentStore
+	// CA signs the leaf certificates returned by the enrollment
+	// handler. May be nil with the same semantics as EnrollmentStore;
+	// both must be set for enrollment to succeed.
+	CA *identity.CA
 	// PolicySnapshot is captured by value at server startup and advertised to
 	// clients until the process restarts. Runtime policy rotation should make
 	// that lifecycle explicit rather than mutating this value in place.
@@ -70,6 +101,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /readyz", s.handleReady)
 	mux.HandleFunc("GET /v1/server", s.handleServerInfo)
 	mux.HandleFunc("GET /v1/version", s.handleVersion)
+	mux.HandleFunc("POST /v1/client-apps/enroll", s.handleClientAppEnroll)
 	return s.withLogging(mux)
 }
 
