@@ -36,6 +36,11 @@ Current foundation:
 - Identity middleware that resolves a presented client certificate
   (direct mTLS or proxy-forwarded) to its enrolled `(user_id, client_app_id)`
   via the `issued_certificates` audit table.
+- Macaroon issuer + verifier (`internal/platform/auth/macaroon`)
+  backed by a `macaroon_roots` HMAC keystore. The OpenCaravan caveat
+  vocabulary (`time<T`, `journey=`, `user=`, `client_app=`,
+  `action=`) is enforced at verify time, with unknown predicates
+  rejected fail-closed.
 - Container-first release engineering with OCI labels and health checks.
 - Embedded SQL migration metadata for OpenCaravan journey storage.
 
@@ -210,6 +215,15 @@ The Phase 3a migration adds:
   (id, owning user, display name, created time).
 - `user_id` and `client_app_id` columns on `issued_certificates`
   linking every signed leaf back to the requesting user and app.
+
+The Phase 4a migration adds:
+
+- `macaroon_roots` — HMAC root keys this server uses to mint and
+  verify session macaroons. Each row records an opaque id (embedded
+  in every macaroon so the verifier can pick the right key),
+  creation timestamp, and rotation timestamp. Rotated rows are
+  retained so macaroons issued under a rotated key remain
+  verifiable until their own `time<T` caveat fires.
 
 The schema stores protocol-facing data conservatively: text identifiers,
 RFC3339 timestamp strings, integer-scaled coordinates, hashed invite tokens, and
