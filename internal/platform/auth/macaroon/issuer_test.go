@@ -67,7 +67,7 @@ func TestIssueSessionComposesCanonicalCaveats(t *testing.T) {
 		UserID:      opencaravan.UUID("11111111-1111-4111-8111-111111111111"),
 		ClientAppID: opencaravan.UUID("22222222-2222-4222-8222-222222222222"),
 		JourneyID:   opencaravan.UUID("33333333-3333-4333-8333-333333333333"),
-		Actions:     []opencaravan.SessionAction{opencaravan.SessionActionJourneyRead, opencaravan.SessionActionTelemetryWrite},
+		Action:      opencaravan.SessionActionJourneyRead,
 		Expiration:  exp,
 	}
 
@@ -80,7 +80,6 @@ func TestIssueSessionComposesCanonicalCaveats(t *testing.T) {
 		opencaravan.CaveatClientApp(params.ClientAppID),
 		opencaravan.CaveatJourney(params.JourneyID),
 		opencaravan.CaveatAction(opencaravan.SessionActionJourneyRead),
-		opencaravan.CaveatAction(opencaravan.SessionActionTelemetryWrite),
 		opencaravan.CaveatTimeBefore(exp),
 	}
 	got := make([]string, 0, len(m.Caveats()))
@@ -97,7 +96,7 @@ func TestIssueSessionRejectsJourneyActionWithoutJourney(t *testing.T) {
 	params := SessionParams{
 		UserID:      opencaravan.UUID("11111111-1111-4111-8111-111111111111"),
 		ClientAppID: opencaravan.UUID("22222222-2222-4222-8222-222222222222"),
-		Actions:     []opencaravan.SessionAction{opencaravan.SessionActionJourneyRead},
+		Action:      opencaravan.SessionActionJourneyRead,
 		Expiration:  time.Now().Add(time.Hour),
 	}
 	_, _, err := issuer.IssueSession(params)
@@ -111,7 +110,7 @@ func TestIssueSessionRejectsExpiredExpiration(t *testing.T) {
 	params := SessionParams{
 		UserID:      opencaravan.UUID("11111111-1111-4111-8111-111111111111"),
 		ClientAppID: opencaravan.UUID("22222222-2222-4222-8222-222222222222"),
-		Actions:     []opencaravan.SessionAction{opencaravan.SessionActionInviteCreate},
+		Action:      opencaravan.SessionActionInviteCreate,
 		Expiration:  time.Now().Add(-time.Minute),
 		Now:         time.Now(),
 	}
@@ -126,11 +125,25 @@ func TestIssueSessionRejectsInvalidUUID(t *testing.T) {
 	params := SessionParams{
 		UserID:      opencaravan.UUID("not-a-uuid"),
 		ClientAppID: opencaravan.UUID("22222222-2222-4222-8222-222222222222"),
-		Actions:     []opencaravan.SessionAction{opencaravan.SessionActionInviteCreate},
+		Action:      opencaravan.SessionActionInviteCreate,
 		Expiration:  time.Now().Add(time.Hour),
 	}
 	if _, _, err := issuer.IssueSession(params); err == nil {
 		t.Fatal("err = nil, want rejection of invalid user id")
+	}
+}
+
+func TestIssueSessionRejectsUnknownAction(t *testing.T) {
+	issuer := mustIssuer(t)
+	params := SessionParams{
+		UserID:      opencaravan.UUID("11111111-1111-4111-8111-111111111111"),
+		ClientAppID: opencaravan.UUID("22222222-2222-4222-8222-222222222222"),
+		JourneyID:   opencaravan.UUID("33333333-3333-4333-8333-333333333333"),
+		Action:      opencaravan.SessionAction("ransom.demand"),
+		Expiration:  time.Now().Add(time.Hour),
+	}
+	if _, _, err := issuer.IssueSession(params); err == nil {
+		t.Fatal("err = nil, want rejection of unknown action")
 	}
 }
 

@@ -52,7 +52,7 @@ func TestVerifyAcceptsFreshSessionMacaroon(t *testing.T) {
 		UserID:      testUser,
 		ClientAppID: testApp,
 		JourneyID:   testJourney,
-		Actions:     []opencaravan.SessionAction{opencaravan.SessionActionJourneyRead},
+		Action:      opencaravan.SessionActionJourneyRead,
 		Expiration:  exp,
 		Now:         now,
 	})
@@ -93,7 +93,7 @@ func TestVerifyRejectsExpiredMacaroon(t *testing.T) {
 		UserID:      testUser,
 		ClientAppID: testApp,
 		JourneyID:   testJourney,
-		Actions:     []opencaravan.SessionAction{opencaravan.SessionActionJourneyRead},
+		Action:      opencaravan.SessionActionJourneyRead,
 		Expiration:  exp,
 		Now:         issuedAt,
 	})
@@ -125,7 +125,7 @@ func TestVerifyRejectsJourneyMismatch(t *testing.T) {
 		UserID:      testUser,
 		ClientAppID: testApp,
 		JourneyID:   testJourney,
-		Actions:     []opencaravan.SessionAction{opencaravan.SessionActionJourneyRead},
+		Action:      opencaravan.SessionActionJourneyRead,
 		Expiration:  now.Add(time.Hour),
 		Now:         now,
 	})
@@ -153,7 +153,7 @@ func TestVerifyRejectsActionMismatch(t *testing.T) {
 		UserID:      testUser,
 		ClientAppID: testApp,
 		JourneyID:   testJourney,
-		Actions:     []opencaravan.SessionAction{opencaravan.SessionActionJourneyRead},
+		Action:      opencaravan.SessionActionJourneyRead,
 		Expiration:  now.Add(time.Hour),
 		Now:         now,
 	})
@@ -181,7 +181,7 @@ func TestVerifyRejectsUnknownRoot(t *testing.T) {
 		UserID:      testUser,
 		ClientAppID: testApp,
 		JourneyID:   testJourney,
-		Actions:     []opencaravan.SessionAction{opencaravan.SessionActionJourneyRead},
+		Action:      opencaravan.SessionActionJourneyRead,
 		Expiration:  now.Add(time.Hour),
 		Now:         now,
 	})
@@ -266,7 +266,7 @@ func TestVerifyRejectsSignatureMismatch(t *testing.T) {
 		UserID:      testUser,
 		ClientAppID: testApp,
 		JourneyID:   testJourney,
-		Actions:     []opencaravan.SessionAction{opencaravan.SessionActionJourneyRead},
+		Action:      opencaravan.SessionActionJourneyRead,
 		Expiration:  now.Add(time.Hour),
 		Now:         now,
 	})
@@ -306,7 +306,7 @@ func TestVerifySurfacesResolverTransportError(t *testing.T) {
 		UserID:      testUser,
 		ClientAppID: testApp,
 		JourneyID:   testJourney,
-		Actions:     []opencaravan.SessionAction{opencaravan.SessionActionJourneyRead},
+		Action:      opencaravan.SessionActionJourneyRead,
 		Expiration:  now.Add(time.Hour),
 		Now:         now,
 	})

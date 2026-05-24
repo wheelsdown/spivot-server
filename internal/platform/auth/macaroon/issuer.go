@@ -107,8 +107,16 @@ func (i *Issuer) Issue(predicates []string) (*macaroonv2.Macaroon, []byte, error
 //	user=<UserID>                      always present
 //	client_app=<ClientAppID>           always present
 //	journey=<JourneyID>                only when journeyID is non-empty
-//	action=<Action>                    one per supplied action
+//	action=<Action>                    exactly one per macaroon
 //	time<expiration                    always last
+//
+// Macaroon caveats compose with AND semantics: every caveat must
+// be satisfied for the macaroon to verify. The action= predicate
+// the OpenCaravan protocol defines names a single SessionAction,
+// so each issued macaroon authorizes exactly one action. If a
+// client needs multiple actions in a single session, the Phase 4b
+// handler issues N macaroons — one per action — rather than
+// inventing a non-protocol disjunctive predicate.
 //
 // The exact ordering does not affect verification (caveat order is
 // part of the macaroon signature but not the evaluation semantics)
@@ -118,38 +126,43 @@ func (i *Issuer) IssueSession(req SessionParams) (*macaroonv2.Macaroon, []byte, 
 	if err := req.validate(); err != nil {
 		return nil, nil, err
 	}
-	predicates := make([]string, 0, len(req.Actions)+4)
+	predicates := make([]string, 0, 5)
 	predicates = append(predicates, opencaravan.CaveatUser(req.UserID))
 	predicates = append(predicates, opencaravan.CaveatClientApp(req.ClientAppID))
 	if req.JourneyID != "" {
 		predicates = append(predicates, opencaravan.CaveatJourney(req.JourneyID))
 	}
-	for _, action := range req.Actions {
-		predicates = append(predicates, opencaravan.CaveatAction(action))
-	}
+	predicates = append(predicates, opencaravan.CaveatAction(req.Action))
 	predicates = append(predicates, opencaravan.CaveatTimeBefore(req.Expiration))
 	return i.Issue(predicates)
 }
 
 // SessionParams is the structured input to [Issuer.IssueSession]. It
-// names the caller, the optional journey scope, the permitted
-// actions, and the expiration time of the resulting macaroon.
+// names the caller, the optional journey scope, the single
+// permitted action, and the expiration time of the resulting
+// macaroon.
+//
+// One macaroon authorizes exactly one [opencaravan.SessionAction]
+// because macaroon caveats AND together (each caveat restricts the
+// macaroon further) and the protocol's action= predicate names a
+// single value. The handler that fans out a multi-action
+// [opencaravan.SessionRequest] issues one macaroon per requested
+// action.
 //
 // Validation rules (enforced by validate):
 //
 //   - UserID and ClientAppID must be valid OpenCaravan UUIDs.
 //   - JourneyID, if set, must be a valid OpenCaravan UUID.
-//   - Actions must contain at least one entry, every entry must
-//     pass [opencaravan.SessionAction.Valid], and any action that
-//     references a journey (the journey.* / telemetry.* family)
-//     requires JourneyID to be set.
+//   - Action must pass [opencaravan.SessionAction.Valid]. Actions
+//     that reference a journey (the journey.* / telemetry.* /
+//     media.* family) require JourneyID to be set.
 //   - Expiration must be in the future relative to the supplied
 //     Now; a zero Now defers the check to [time.Now].
 type SessionParams struct {
 	UserID      opencaravan.UUID
 	ClientAppID opencaravan.UUID
 	JourneyID   opencaravan.UUID
-	Actions     []opencaravan.SessionAction
+	Action      opencaravan.SessionAction
 	Expiration  time.Time
 	Now         time.Time
 }
@@ -164,16 +177,11 @@ func (p SessionParams) validate() error {
 	if p.JourneyID != "" && !p.JourneyID.Valid() {
 		return errors.New("macaroon: journey id must be a valid UUID when set")
 	}
-	if len(p.Actions) == 0 {
-		return errors.New("macaroon: actions must contain at least one entry")
+	if !p.Action.Valid() {
+		return fmt.Errorf("macaroon: action %q is not a known OpenCaravan value", p.Action)
 	}
-	for j, action := range p.Actions {
-		if !action.Valid() {
-			return fmt.Errorf("macaroon: actions[%d] is not a known OpenCaravan value", j)
-		}
-		if requiresJourney(action) && p.JourneyID == "" {
-			return fmt.Errorf("macaroon: action %q requires a journey id", action)
-		}
+	if requiresJourney(p.Action) && p.JourneyID == "" {
+		return fmt.Errorf("macaroon: action %q requires a journey id", p.Action)
 	}
 	now := p.Now
 	if now.IsZero() {

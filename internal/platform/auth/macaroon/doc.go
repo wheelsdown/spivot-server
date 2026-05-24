@@ -34,8 +34,12 @@
 // caller from silently accepting a macaroon attenuation it cannot
 // honor.
 //
-// Time caveats use the constraints' Now field, not [time.Now], so
-// tests can drive expiration boundaries deterministically.
+// Time caveats use the [Verifier]'s injected clock (via
+// [Verifier.WithClock], default [time.Now]) so tests can drive
+// expiration boundaries deterministically. The clock is captured
+// once at the start of [Verifier.Verify] and shared between the
+// standalone caveat parse pass and the macaroon.v2 signature-check
+// callback so both observe the same instant.
 //
 // # Wire format
 //

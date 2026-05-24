@@ -159,15 +159,17 @@ func (v *Verifier) Verify(ctx context.Context, serialized []byte, c Constraints)
 		return Verified{}, fmt.Errorf("%w: resolve root: %v", ErrVerifyFailed, err)
 	}
 
-	parsed, latestExpiry, caveatErr := parseCaveats(m.Caveats(), v.now(), c)
-	// The caveat check function macaroon.v2 invokes during Verify is
-	// the same evaluation the standalone parseCaveats pass performs,
-	// so signature validation and caveat validation see consistent
-	// results. We pre-compute parsed/latestExpiry up front so the
-	// success-case return carries the structured view without a
-	// second pass.
+	// Capture "now" once at the start of Verify so the standalone
+	// caveat parse pass and the macaroon.v2 signature-verifying
+	// predicate callback observe the same instant. Without this,
+	// time<T evaluation could go one way in parseCaveats and the
+	// other way inside the macaroon.v2 check loop for a macaroon
+	// expiring within the verification window.
+	now := v.now()
+
+	parsed, latestExpiry, caveatErr := parseCaveats(m.Caveats(), now, c)
 	if err := m.Verify(key, func(predicate string) error {
-		return evaluatePredicate(predicate, v.now(), c)
+		return evaluatePredicate(predicate, now, c)
 	}, nil); err != nil {
 		return Verified{}, fmt.Errorf("%w: %v", ErrVerifyFailed, err)
 	}
