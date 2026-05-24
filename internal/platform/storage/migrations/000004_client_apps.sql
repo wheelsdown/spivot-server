@@ -20,10 +20,11 @@ CREATE TABLE client_apps (
 CREATE INDEX idx_client_apps_user_id ON client_apps(user_id);
 
 -- issued_certificates gains links to the requesting user and ClientApp.
--- Both are NULL-allowed for backwards compatibility with rows written
--- before Phase 3a (none today, but the CLI ca init path issues the CA's
--- self-signed root and does not have a requesting user) and so cascading
--- account deletion can null the references without losing audit rows.
+-- Both columns are NULL-allowed + ON DELETE SET NULL so cascading
+-- account deletion preserves audit history rather than destroying the
+-- record of what was issued. Phase 3a is the only insert path today and
+-- always populates both columns; the nullable shape is the right
+-- contract for any future operator-driven account or app cleanup.
 
 ALTER TABLE issued_certificates ADD COLUMN user_id       TEXT REFERENCES accounts(id) ON DELETE SET NULL;
 ALTER TABLE issued_certificates ADD COLUMN client_app_id TEXT REFERENCES client_apps(id) ON DELETE SET NULL;
