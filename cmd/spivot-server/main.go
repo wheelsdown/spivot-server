@@ -28,6 +28,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/opencaravan/opencaravan-go"
 	"github.com/wheelsdown/spivot-server/internal/app"
 	"github.com/wheelsdown/spivot-server/internal/platform/buildinfo"
 	"github.com/wheelsdown/spivot-server/internal/platform/identity"
@@ -90,6 +91,8 @@ func run(ctx context.Context, stdout io.Writer, stderr io.Writer, args []string)
 		return runHealthcheck(ctx, inv.cmdArgs)
 	case "ca":
 		return runCA(ctx, stdout, inv.cmdArgs)
+	case "invite":
+		return runInvite(ctx, stdout, inv.cmdArgs)
 	case "version":
 		return runVersion(stdout, inv.outputFmt)
 	case "":
@@ -178,6 +181,9 @@ func runServe(ctx context.Context, stdout io.Writer, stderr io.Writer, args []st
 		"database_path", store.Path(),
 		"applied_migrations", len(appliedMigrations),
 	)
+	if err := emitBootstrapInviteIfNeeded(ctx, store, stdout, logger); err != nil {
+		return fmt.Errorf("emit bootstrap invite: %w", err)
+	}
 	policyDocument, err := json.Marshal(api.DefaultServerPolicyDocument())
 	if err != nil {
 		return fmt.Errorf("marshal default server policy: %w", err)
@@ -412,6 +418,161 @@ func runHealthcheck(ctx context.Context, args []string) error {
 	return nil
 }
 
+// bootstrapInviteLifetime is how long a self-issued first-run invite stays
+// valid. Long enough that an operator can copy it from their container
+// logs into the first administrator's app without urgency; short enough
+// that a leaked log line that nobody notices for a day stops mattering.
+const bootstrapInviteLifetime = 24 * time.Hour
+
+// emitBootstrapInviteIfNeeded mints and announces a fresh
+// server_registration invite when the server has never registered a
+// user and has no active bootstrap invite outstanding. It is the
+// operator-facing "first run" UX for unattended container deployments:
+// the operator runs the container, watches stdout (or `docker logs`),
+// copies the printed token, and uses it to enroll the first
+// administrator.
+//
+// The function makes two storage observations (AccountCount,
+// UnconsumedInviteCount) and one mutation (IssueInvite). When the
+// observations both return zero it mints a single-use invite of
+// [bootstrapInviteLifetime] duration, writes a fenced banner to stdout,
+// and emits a structured slog audit record naming the token hash and
+// expiry.
+//
+// Lifecycle invariants:
+//
+//   - When the accounts table is non-empty (some user has registered)
+//     this is a no-op for the lifetime of the deployment.
+//   - When a server_registration invite is already active, a single
+//     informational slog event ("bootstrap invite already active") is
+//     emitted and stdout is untouched, so operator restarts during the
+//     24-hour window stay quiet.
+//   - When the previous bootstrap invite has expired unconsumed,
+//     UnconsumedInviteCount returns zero again and a fresh banner is
+//     emitted on the next call.
+//
+// The check-then-act sequence (read counts, then mint) is not
+// transactional. Two processes starting concurrently against the same
+// database could each pass both checks and each call IssueInvite,
+// producing two bootstrap invites instead of one. This is intentional:
+// both invites are single-use, both expire in 24 hours, and the
+// duplicate is operator-visible noise rather than a correctness bug.
+// Production deployments run a single spivot-server process per
+// database, so the race is not actually reachable today.
+func emitBootstrapInviteIfNeeded(ctx context.Context, store *storage.Store, stdout io.Writer, logger *slog.Logger) error {
+	accountCount, err := store.AccountCount(ctx)
+	if err != nil {
+		return fmt.Errorf("count accounts: %w", err)
+	}
+	if accountCount > 0 {
+		return nil
+	}
+	pending, err := store.UnconsumedInviteCount(ctx, opencaravan.InviteScopeServerRegistration)
+	if err != nil {
+		return fmt.Errorf("count unconsumed bootstrap invites: %w", err)
+	}
+	if pending > 0 {
+		logger.Info("bootstrap invite already active; not re-emitting",
+			"scope", opencaravan.InviteScopeServerRegistration,
+			"active_count", pending,
+		)
+		return nil
+	}
+
+	token, invite, err := store.IssueInvite(ctx, opencaravan.InviteScopeServerRegistration, bootstrapInviteLifetime)
+	if err != nil {
+		return fmt.Errorf("issue bootstrap invite: %w", err)
+	}
+
+	if _, err := io.WriteString(stdout, formatBootstrapBanner(token)); err != nil {
+		return fmt.Errorf("print bootstrap banner: %w", err)
+	}
+	logger.Info("bootstrap invite issued",
+		"scope", invite.Scope,
+		"token_hash", invite.TokenHash,
+		"expiration_time", invite.ExpirationTime,
+		"lifetime", bootstrapInviteLifetime,
+	)
+	return nil
+}
+
+func formatBootstrapBanner(token opencaravan.InviteToken) string {
+	const bar = "████████████████████████████████████████████████████████████████████"
+	const div = "  ────────────────────────────────────────────────────────────────"
+	return "\n" + bar + "\n" +
+		"  SPIVOT SERVER FIRST-RUN BOOTSTRAP\n" +
+		div + "\n" +
+		"  No administrator is registered. Use this server_registration\n" +
+		"  invite to enroll the first user. Single-use, 24h expiry.\n" +
+		"\n" +
+		"      " + token.Value + "\n" +
+		"\n" +
+		"  iOS app: Settings → Add Account → Use Invite\n" +
+		bar + "\n"
+}
+
+func runInvite(ctx context.Context, stdout io.Writer, args []string) error {
+	if len(args) == 0 {
+		return errors.New("invite requires a subcommand: create")
+	}
+	sub := args[0]
+	flags := flag.NewFlagSet("invite "+sub, flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+
+	dataDir := envString("SPIVOT_DATA_DIR", defaultDataDir)
+	databasePath := envString("SPIVOT_DATABASE_PATH", "")
+	scope := envString("SPIVOT_INVITE_SCOPE", string(opencaravan.InviteScopeServerRegistration))
+	lifetime := 24 * time.Hour
+	flags.StringVar(&dataDir, "data-dir", dataDir, "persistent data directory")
+	flags.StringVar(&databasePath, "database-path", databasePath, "SQLite database path (default: <data-dir>/spivot.db)")
+	flags.StringVar(&scope, "scope", scope, "invite scope: server_registration or journey")
+	flags.DurationVar(&lifetime, "lifetime", lifetime, "invite lifetime")
+	if err := flags.Parse(args[1:]); err != nil {
+		return fmt.Errorf("parse invite %s flags: %w", sub, err)
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected invite %s argument: %s", sub, flags.Arg(0))
+	}
+
+	switch sub {
+	case "create":
+		dataDir = filepath.Clean(dataDir)
+		if databasePath == "" {
+			databasePath = filepath.Join(dataDir, "spivot.db")
+		}
+		if err := ensureWritableDir(dataDir); err != nil {
+			return fmt.Errorf("prepare data directory %q: %w", dataDir, err)
+		}
+		if err := ensureWritableDir(filepath.Dir(databasePath)); err != nil {
+			return fmt.Errorf("prepare database directory: %w", err)
+		}
+
+		store, err := storage.Open(ctx, storage.Config{Path: databasePath})
+		if err != nil {
+			return err
+		}
+		defer func() {
+			_ = store.Close()
+		}()
+
+		inviteScope := opencaravan.InviteScope(scope)
+		token, invite, err := store.IssueInvite(ctx, inviteScope, lifetime)
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintf(stdout,
+			"invite issued\n  scope:           %s\n  expiration_time: %s\n  token_hash:      %s\n\n  token:           %s\n",
+			invite.Scope,
+			invite.ExpirationTime.Format(time.RFC3339),
+			invite.TokenHash,
+			token.Value,
+		)
+		return err
+	default:
+		return fmt.Errorf("unknown invite subcommand: %s (expected create)", sub)
+	}
+}
+
 func runCA(ctx context.Context, stdout io.Writer, args []string) error {
 	if len(args) == 0 {
 		return errors.New("ca requires a subcommand: init or cert")
@@ -507,6 +668,7 @@ Commands:
   serve         Start the API server
   healthcheck   Check a running server's health endpoint
   ca            Manage the server-local certificate authority
+  invite        Issue invite tokens for client app enrollment
   version       Show version information
 
 Global flags:
@@ -537,6 +699,16 @@ CA flags:
   -data-dir value      Persistent data directory (default: SPIVOT_DATA_DIR or data)
   -common-name value   CA subject common name (default: "Spivot Server CA")
   -organization value  CA subject organization (default: unset)
+
+Invite subcommands:
+  invite create  Issue an invite token for client app enrollment. Prints the
+                 plaintext token exactly once; only its hash is persisted.
+
+Invite flags:
+  -data-dir value       Persistent data directory (default: SPIVOT_DATA_DIR or data)
+  -database-path value  SQLite database path (default: <data-dir>/spivot.db)
+  -scope value          Invite scope: server_registration (default) or journey
+  -lifetime value       Invite lifetime (default: 24h, accepts Go duration syntax)
 `)
 	return err
 }
