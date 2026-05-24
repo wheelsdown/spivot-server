@@ -173,6 +173,24 @@ func runServe(ctx context.Context, stdout io.Writer, stderr io.Writer, args []st
 		"database_path", store.Path(),
 		"applied_migrations", len(appliedMigrations),
 	)
+	policyDocument, err := json.Marshal(api.DefaultServerPolicyDocument())
+	if err != nil {
+		return fmt.Errorf("marshal default server policy: %w", err)
+	}
+	storedPolicy, err := store.EnsureServerPolicySnapshot(ctx, policyDocument)
+	if err != nil {
+		return err
+	}
+	policySnapshot := api.ServerPolicySnapshot{
+		ID:          storedPolicy.ID,
+		Hash:        storedPolicy.PolicyHash,
+		CreatedTime: storedPolicy.CreatedTime,
+		Document:    json.RawMessage(storedPolicy.DocumentJSON),
+	}
+	logger.Info("server policy ready",
+		"policy_hash", policySnapshot.Hash,
+		"policy_snapshot_id", policySnapshot.ID,
+	)
 
 	parentCtx := ctx
 	ctx, cancel := context.WithCancel(parentCtx)
@@ -209,7 +227,8 @@ func runServe(ctx context.Context, stdout io.Writer, stderr io.Writer, args []st
 			TrustForwardedHeaders: cfg.trustProxy,
 			TrustedNetworks:       cfg.trustedProxyRanges,
 		},
-		Store: store,
+		Store:          store,
+		PolicySnapshot: policySnapshot,
 	}, logger)
 	return app.New(server, logger).Serve(ctx)
 }
