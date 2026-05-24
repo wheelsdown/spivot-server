@@ -59,14 +59,99 @@ Actions to catch what could have been caught locally.
 - **Logging**: structured logging via `slog`. INFO tells the operator
   story, DEBUG is for deep troubleshooting, WARN is degraded behavior,
   and ERROR is broken behavior. Include relevant context fields.
-- **Go doc comments**: GoDoc is a primary audience. Every exported symbol
-  gets a doc comment starting with its name and reading as a complete
-  sentence. Every package gets a `// Package foo ...` comment. Comments
-  should explain why the code exists or how it should be used; the
-  signature already says what.
+- **Documentation**: see the [Documentation](#documentation) section
+  below. The short version: GoDoc is a product surface, not commentary,
+  and the bar differs for exported (full contract) vs unexported
+  (rationale where it earns its place).
 - **Provider pattern**: new integrations should sit behind a small
   interface owned by the consuming package, especially when external
   services or vendor APIs are involved.
+
+## Documentation
+
+Treat GoDoc as a primary product surface, not as code commentary. Two
+audiences, two bars:
+
+- A reader landing on [pkg.go.dev](https://pkg.go.dev) (or running
+  `go doc`) should be able to use a package correctly without opening
+  the source.
+- A reader navigating the source should understand *why* each piece
+  exists in its current form, especially where the obvious naive
+  implementation would be wrong.
+
+Documentation is part of the reader-facing interface. A PR that changes
+behavior without updating the affected doc comments is incomplete;
+reviewers should treat that the same way they treat a PR that changes
+a function without updating its tests.
+
+### Exported symbols (full contract)
+
+Every exported package, type, function, method, variable, and constant
+gets a doc comment that:
+
+- Starts with the symbol name and reads as a complete sentence.
+- States the **inputs** the caller must provide, including validation
+  rules, required vs optional fields, and allowed forms.
+- States the **outputs**: return semantics, whether returned
+  slices/structs are fresh copies vs shared references, which fields
+  the caller may mutate.
+- States the **error contract**: which errors are returned when, how
+  to detect sentinel errors via `errors.Is`, what context is wrapped.
+- States the **concurrency** guarantees: which methods are safe under
+  concurrent use, where serialization happens.
+- States the **side effects**: filesystem mutations, permission
+  changes, durability guarantees, observable state changes.
+- Cross-references related symbols via Go 1.19+ `[Identifier]` doc
+  links so pkg.go.dev produces clickable references.
+
+Package-level documentation in `doc.go` uses Go 1.19+ heading syntax
+(`# Heading`) to render a navigable table of contents on pkg.go.dev.
+For non-trivial packages, structure with sections such as Architecture,
+Security Model, On-disk Layout, Lifecycle, Concurrency, and Future
+Evolution. The "what does this package *not* protect against" list is
+as important as the "what does it protect" list for security review.
+
+Add runnable `Example*` functions for the primary usage patterns of
+non-trivial packages. Examples render on pkg.go.dev and are exercised
+by `go test`, so they can't bit-rot silently. Use `// Output:` comments
+to validate the deterministic portions of stdout. See
+`internal/platform/identity/example_test.go` for the established
+pattern.
+
+### Unexported symbols (rationale, not ceremony)
+
+The reader of an unexported function is always reading the source, with
+the body in front of them. Document the *why*, not the *what*. The
+test for whether a comment is doing real work:
+
+> If a contributor were to delete this unexported symbol in a PR,
+> would the surrounding code make clear why that's wrong?
+
+If yes, a short comment or none is fine. If no, the comment is doing
+real work and must exist.
+
+Rich docs are warranted on unexported symbols when:
+
+- They encode subtle invariants the body doesn't show (ordering,
+  concurrency assumptions, partial-failure semantics).
+- They exist because of a specific bug or edge case (the obvious naive
+  implementation would be wrong — for example,
+  `internal/platform/identity.randomSerial`'s rejection loop).
+- They encode a security or durability policy (validation alphabets,
+  atomic-write sequences, hash algorithm choices).
+- They sit at an internal layer boundary even if private (the only
+  place that knows the correct sequence of primitive operations).
+
+Skip ceremonial docs on:
+
+- One-liners where the signature carries the meaning.
+- Pure formatting or conversion helpers and simple field accessors.
+- Test helpers.
+- Code that's purely organizational with no novel logic.
+
+The discipline is not "write ten lines on every private function" but
+"if the answer to *why is this here?* isn't obvious from the
+surrounding code, write the missing context."
 
 ## Container & Release Engineering
 
