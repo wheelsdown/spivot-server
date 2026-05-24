@@ -8,15 +8,22 @@ import (
 
 const openCaravanDraftVersion = "draft-0"
 
+const (
+	policyRegistrationInviteOnly       = "invite_only"
+	policyJourneyVisibilityInviteOnly  = "invite_only"
+	policyRetentionJourneyDeletionTime = "journey_deletion_time"
+)
+
 // ServerPolicySnapshot describes the policy snapshot advertised by this server.
 type ServerPolicySnapshot struct {
 	// ID is the server-local policy snapshot identifier.
 	ID string `json:"id"`
-	// Hash is the content hash of the canonical policy document.
+	// Hash is the server-local content hash of the internally normalized policy
+	// document. It is not an RFC 8785 JSON Canonicalization Scheme hash.
 	Hash string `json:"policy_hash"`
 	// CreatedTime is the RFC3339 UTC time when the snapshot was first recorded.
 	CreatedTime string `json:"created_time"`
-	// Document is the canonical JSON policy document.
+	// Document is the internally normalized JSON policy document.
 	Document json.RawMessage `json:"document"`
 }
 
@@ -87,6 +94,10 @@ type protocolInfo struct {
 	Version string `json:"version"`
 }
 
+// serverCapabilities is a convenience projection from ServerPolicyDocument plus
+// concrete implementation state. Keep policy-backed fields derived in
+// serverCapabilitiesFromPolicy so the advertised policy remains the source of
+// truth.
 type serverCapabilities struct {
 	Registration registrationCapabilities `json:"registration"`
 	Journeys     journeyCapabilities      `json:"journeys"`
@@ -116,17 +127,17 @@ func DefaultServerPolicyDocument() ServerPolicyDocument {
 	return ServerPolicyDocument{
 		Version: "spivot-server-policy/v1alpha1",
 		Registration: RegistrationPolicy{
-			Mode:                     "invite_only",
+			Mode:                     policyRegistrationInviteOnly,
 			InviteProvenanceRequired: true,
 		},
 		Journeys: JourneyPolicy{
-			Visibility:            "invite_only",
+			Visibility:            policyJourneyVisibilityInviteOnly,
 			InviteLinks:           false,
 			InviteUseLimits:       true,
 			DeletionTimeImmutable: true,
 		},
 		Data: DataPolicy{
-			RetentionControl:     "journey_deletion_time",
+			RetentionControl:     policyRetentionJourneyDeletionTime,
 			ProfileRepublication: false,
 			ImageResourceCache:   false,
 		},
@@ -134,6 +145,8 @@ func DefaultServerPolicyDocument() ServerPolicyDocument {
 }
 
 func (s *Server) serverInfo() serverInfoResponse {
+	policy := serverPolicyDocumentFromSnapshot(s.cfg.PolicySnapshot)
+
 	return serverInfoResponse{
 		Name:      "Spivot Server",
 		PublicURL: s.publicURLString(),
@@ -147,22 +160,38 @@ func (s *Server) serverInfo() serverInfoResponse {
 			Name:    "OpenCaravan",
 			Version: openCaravanDraftVersion,
 		},
-		Capabilities: serverCapabilities{
-			Registration: registrationCapabilities{
-				Mode: "invite_only",
-			},
-			Journeys: journeyCapabilities{
-				InviteOnly:          true,
-				InviteLinks:         false,
-				InviteUseLimits:     true,
-				DeletionTimePerItem: true,
-			},
-			Data: dataCapabilities{
-				SQLiteStorage:       true,
-				TelemetryStorage:    false,
-				ImageResourceUpload: false,
-			},
+		Capabilities: serverCapabilitiesFromPolicy(policy),
+		Policy:       s.cfg.PolicySnapshot,
+	}
+}
+
+func serverPolicyDocumentFromSnapshot(snapshot ServerPolicySnapshot) ServerPolicyDocument {
+	if len(snapshot.Document) == 0 {
+		return ServerPolicyDocument{}
+	}
+
+	var policy ServerPolicyDocument
+	if err := json.Unmarshal(snapshot.Document, &policy); err != nil {
+		return ServerPolicyDocument{}
+	}
+	return policy
+}
+
+func serverCapabilitiesFromPolicy(policy ServerPolicyDocument) serverCapabilities {
+	return serverCapabilities{
+		Registration: registrationCapabilities{
+			Mode: policy.Registration.Mode,
 		},
-		Policy: s.cfg.PolicySnapshot,
+		Journeys: journeyCapabilities{
+			InviteOnly:          policy.Journeys.Visibility == policyJourneyVisibilityInviteOnly,
+			InviteLinks:         policy.Journeys.InviteLinks,
+			InviteUseLimits:     policy.Journeys.InviteUseLimits,
+			DeletionTimePerItem: policy.Data.RetentionControl == policyRetentionJourneyDeletionTime,
+		},
+		Data: dataCapabilities{
+			SQLiteStorage:       true,
+			TelemetryStorage:    false,
+			ImageResourceUpload: false,
+		},
 	}
 }

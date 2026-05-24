@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestEnsureServerPolicySnapshotStoresCanonicalDocument(t *testing.T) {
+func TestEnsureServerPolicySnapshotStoresNormalizedDocument(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, Config{Path: filepath.Join(t.TempDir(), "spivot.db")})
 	if err != nil {

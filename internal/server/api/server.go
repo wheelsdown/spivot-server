@@ -36,7 +36,9 @@ type Config struct {
 	Proxy proxy.Config
 	// Store is the runtime database dependency.
 	Store Store
-	// PolicySnapshot is the policy document advertised to clients.
+	// PolicySnapshot is captured by value at server startup and advertised to
+	// clients until the process restarts. Runtime policy rotation should make
+	// that lifecycle explicit rather than mutating this value in place.
 	PolicySnapshot ServerPolicySnapshot
 }
 

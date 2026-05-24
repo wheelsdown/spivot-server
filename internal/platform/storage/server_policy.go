@@ -16,34 +16,40 @@ import (
 // ServerPolicySnapshot is an immutable server policy document recorded in the
 // database.
 type ServerPolicySnapshot struct {
-	// ID is the snapshot identifier. It is currently the policy hash.
+	// ID is the server-local snapshot identifier. It currently mirrors
+	// PolicyHash so snapshots are content-addressed, while leaving room for the
+	// identifier scheme to diverge from the digest later.
 	ID string
-	// PolicyHash is the SHA-256 digest of the canonical policy document.
+	// PolicyHash is the SHA-256 digest of Spivot Server's internal normalized
+	// JSON document. It is not an RFC 8785 JSON Canonicalization Scheme hash.
 	PolicyHash string
-	// DocumentJSON is the canonical JSON policy document.
+	// DocumentJSON is the normalized JSON policy document produced by the
+	// server's internal encoder.
 	DocumentJSON string
 	// CreatedTime is the RFC3339 UTC time when this snapshot was first stored.
 	CreatedTime string
 }
 
 // EnsureServerPolicySnapshot records document as an immutable server policy
-// snapshot if that exact canonical document has not already been stored.
+// snapshot if that exact internally normalized document has not already been
+// stored. The resulting hash is a server-local content identifier, not an
+// interoperable OpenCaravan federation hash.
 func (s *Store) EnsureServerPolicySnapshot(ctx context.Context, document []byte) (ServerPolicySnapshot, error) {
 	if s == nil || s.db == nil {
 		return ServerPolicySnapshot{}, errors.New("database is not open")
 	}
 
-	canonical, err := canonicalJSON(document)
+	normalized, err := normalizedJSON(document)
 	if err != nil {
 		return ServerPolicySnapshot{}, err
 	}
-	policyHash := hashJSON(canonical)
+	policyHash := hashJSON(normalized)
 	createdTime := time.Now().UTC().Format(time.RFC3339Nano)
 
 	if _, err := s.db.ExecContext(ctx, `
 INSERT OR IGNORE INTO server_policy_snapshots (id, policy_hash, document_json, created_at)
 VALUES (?, ?, ?, ?)
-`, policyHash, policyHash, string(canonical), createdTime); err != nil {
+`, policyHash, policyHash, string(normalized), createdTime); err != nil {
 		return ServerPolicySnapshot{}, fmt.Errorf("record server policy snapshot: %w", err)
 	}
 	return s.ServerPolicySnapshot(ctx, policyHash)
@@ -75,7 +81,7 @@ WHERE id = ? OR policy_hash = ?
 	return snapshot, nil
 }
 
-func canonicalJSON(document []byte) ([]byte, error) {
+func normalizedJSON(document []byte) ([]byte, error) {
 	dec := json.NewDecoder(bytes.NewReader(document))
 	dec.UseNumber()
 
@@ -93,11 +99,11 @@ func canonicalJSON(document []byte) ([]byte, error) {
 		return nil, fmt.Errorf("decode trailing server policy JSON: %w", err)
 	}
 
-	canonical, err := json.Marshal(value)
+	normalized, err := json.Marshal(value)
 	if err != nil {
-		return nil, fmt.Errorf("canonicalize server policy JSON: %w", err)
+		return nil, fmt.Errorf("normalize server policy JSON: %w", err)
 	}
-	return canonical, nil
+	return normalized, nil
 }
 
 func hashJSON(document []byte) string {
