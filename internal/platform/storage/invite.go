@@ -73,9 +73,12 @@ func formatSQLiteTime(t time.Time) string {
 	return t.UTC().Format(sqliteTimeFormat)
 }
 
-// ErrInviteNotFound is returned (wrapped via [fmt.Errorf] with %w where
-// the call site has helpful context) when no row in client_app_invites
-// matches the supplied token's hash. Callers detect this via [errors.Is].
+// ErrInviteNotFound is returned when no row in client_app_invites
+// matches the supplied token's hash. The current call paths return it
+// directly rather than wrapped (the hash itself is not useful to log
+// because it's the only handle to a secret); callers should still
+// detect it via [errors.Is] in case a future call site adds context
+// with %w wrapping.
 var ErrInviteNotFound = errors.New("storage: invite not found")
 
 // ErrInviteAlreadyUsed is returned by [Store.LookupInvite] and
