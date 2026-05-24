@@ -166,6 +166,74 @@ func TestParseServeConfigRejectsInvalidPublicURL(t *testing.T) {
 	}
 }
 
+func TestCABootstrapInitAndCert(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("SPIVOT_DATA_DIR", dataDir)
+
+	var initOut bytes.Buffer
+	if err := run(context.Background(), &initOut, &bytes.Buffer{}, []string{"ca", "init"}); err != nil {
+		t.Fatalf("ca init: %v", err)
+	}
+	out := initOut.String()
+	for _, want := range []string{"CA initialized", "fingerprint:", "Spivot Server CA"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("ca init output missing %q:\n%s", want, out)
+		}
+	}
+
+	var certOut bytes.Buffer
+	if err := run(context.Background(), &certOut, &bytes.Buffer{}, []string{"ca", "cert"}); err != nil {
+		t.Fatalf("ca cert: %v", err)
+	}
+	if !strings.HasPrefix(certOut.String(), "-----BEGIN CERTIFICATE-----") {
+		t.Fatalf("ca cert output did not start with CERTIFICATE PEM block:\n%s", certOut.String())
+	}
+
+	// Re-running init must be idempotent: same fingerprint.
+	var reInit bytes.Buffer
+	if err := run(context.Background(), &reInit, &bytes.Buffer{}, []string{"ca", "init"}); err != nil {
+		t.Fatalf("ca init (reload): %v", err)
+	}
+	firstFP := fingerprintLine(t, initOut.String())
+	secondFP := fingerprintLine(t, reInit.String())
+	if firstFP != secondFP {
+		t.Fatalf("fingerprint changed across init runs: %q vs %q", firstFP, secondFP)
+	}
+}
+
+func TestCARejectsUnknownSubcommand(t *testing.T) {
+	t.Setenv("SPIVOT_DATA_DIR", t.TempDir())
+
+	err := run(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, []string{"ca", "bogus"})
+	if err == nil {
+		t.Fatal("ca bogus: expected error")
+	}
+	if !strings.Contains(err.Error(), "unknown ca subcommand") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestCARequiresSubcommand(t *testing.T) {
+	err := run(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, []string{"ca"})
+	if err == nil {
+		t.Fatal("ca: expected error")
+	}
+	if !strings.Contains(err.Error(), "requires a subcommand") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func fingerprintLine(t *testing.T, output string) string {
+	t.Helper()
+	for line := range strings.SplitSeq(output, "\n") {
+		if strings.Contains(line, "fingerprint:") {
+			return strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "fingerprint:"))
+		}
+	}
+	t.Fatalf("no fingerprint line in output:\n%s", output)
+	return ""
+}
+
 func TestHealthcheck(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
