@@ -1,6 +1,6 @@
 services:
   spivot-server:
-    image: ghcr.io/wheelsdown/spivot-server:${SPIVOT_IMAGE_TAG:?set SPIVOT_IMAGE_TAG to a release tag}
+    image: ghcr.io/wheelsdown/spivot-server:${SPIVOT_IMAGE_TAG:-latest}
     restart: unless-stopped
     environment:
       SPIVOT_ADDR: 0.0.0.0
