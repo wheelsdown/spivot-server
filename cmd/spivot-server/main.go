@@ -30,6 +30,7 @@ import (
 
 	"github.com/opencaravan/opencaravan-go"
 	"github.com/wheelsdown/spivot-server/internal/app"
+	"github.com/wheelsdown/spivot-server/internal/platform/auth/macaroon"
 	"github.com/wheelsdown/spivot-server/internal/platform/buildinfo"
 	"github.com/wheelsdown/spivot-server/internal/platform/identity"
 	"github.com/wheelsdown/spivot-server/internal/platform/proxy"
@@ -222,6 +223,11 @@ func runServe(ctx context.Context, stdout io.Writer, stderr io.Writer, args []st
 		"not_after", ca.Certificate().NotAfter.UTC().Format(time.RFC3339),
 	)
 
+	macaroonIssuer, err := loadOrMintMacaroonIssuer(ctx, store, logger)
+	if err != nil {
+		return fmt.Errorf("init macaroon issuer: %w", err)
+	}
+
 	parentCtx := ctx
 	ctx, cancel := context.WithCancel(parentCtx)
 	sigCh := make(chan os.Signal, 2)
@@ -262,6 +268,7 @@ func runServe(ctx context.Context, stdout io.Writer, stderr io.Writer, args []st
 		EnrollmentStore: store,
 		IdentityStore:   store,
 		CA:              ca,
+		MacaroonIssuer:  macaroonIssuer,
 		PolicySnapshot:  policySnapshot,
 	}, logger)
 	return app.New(server, logger).Serve(ctx)
@@ -812,6 +819,50 @@ func parsePublicURL(value string) (*url.URL, error) {
 	}
 	publicURL.Path = strings.TrimRight(publicURL.Path, "/")
 	return publicURL, nil
+}
+
+// loadOrMintMacaroonIssuer returns the [*macaroon.Issuer] this serve
+// process will sign session macaroons with. On the first serve
+// against a fresh database, [storage.ActiveMacaroonRoot] returns
+// [storage.ErrNoActiveMacaroonRoot] — in that case the helper mints
+// a single root via [storage.IssueMacaroonRoot] and logs an INFO
+// event naming the new root id (and only the id; the key bytes are
+// secret and never logged). On subsequent starts the existing
+// active row is loaded.
+//
+// The check-then-act sequence is not transactional. Two spivot-
+// server processes booting concurrently against a brand-new
+// database could each observe ErrNoActiveMacaroonRoot and each call
+// IssueMacaroonRoot, leaving two unrotated rows. ActiveMacaroonRoot
+// picks the most recent one and the orphaned row is still usable
+// for verification (it lookups by id), so the duplicate is an
+// operator-visible double row rather than a correctness bug. The
+// invariant — one spivot-server process per database — is the same
+// one the bootstrap-invite emit relies on.
+func loadOrMintMacaroonIssuer(ctx context.Context, store *storage.Store, logger *slog.Logger) (*macaroon.Issuer, error) {
+	root, err := store.ActiveMacaroonRoot(ctx)
+	switch {
+	case err == nil:
+		logger.Info("macaroon issuer ready",
+			"root_id", root.ID,
+			"created_time", root.CreatedTime.UTC().Format(time.RFC3339),
+			"bootstrap", false,
+		)
+	case errors.Is(err, storage.ErrNoActiveMacaroonRoot):
+		minted, mintErr := store.IssueMacaroonRoot(ctx)
+		if mintErr != nil {
+			return nil, fmt.Errorf("mint initial macaroon root: %w", mintErr)
+		}
+		logger.Info("macaroon issuer ready",
+			"root_id", minted.ID,
+			"created_time", minted.CreatedTime.UTC().Format(time.RFC3339),
+			"bootstrap", true,
+		)
+		root = minted
+	default:
+		return nil, fmt.Errorf("load active macaroon root: %w", err)
+	}
+	return macaroon.NewIssuer(root.ID, root.Key)
 }
 
 func splitCSV(value string) []string {

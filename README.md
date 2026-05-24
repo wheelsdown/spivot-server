@@ -41,6 +41,10 @@ Current foundation:
   vocabulary (`time<T`, `journey=`, `user=`, `client_app=`,
   `action=`) is enforced at verify time, with unknown predicates
   rejected fail-closed.
+- `POST /v1/sessions` endpoint that issues a session macaroon for
+  an authenticated client app. One macaroon authorizes one
+  `SessionAction` against an optional journey; multi-action
+  sessions are deferred to a future protocol extension.
 - Container-first release engineering with OCI labels and health checks.
 - Embedded SQL migration metadata for OpenCaravan journey storage.
 
@@ -104,6 +108,9 @@ GET  /v1/server                 server discovery, capabilities, and policy snaps
 GET  /v1/version                build and runtime version metadata
 POST /v1/client-apps/enroll     redeem a server_registration invite + CSR
                                 for a signed leaf certificate
+POST /v1/sessions               (requires client cert) issue a session
+                                macaroon for a single SessionAction,
+                                optionally scoped to a journey
 ```
 
 Future OpenCaravan API routes will be documented as they land. Go package

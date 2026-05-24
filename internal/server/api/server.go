@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/wheelsdown/spivot-server/internal/platform/auth/macaroon"
 	"github.com/wheelsdown/spivot-server/internal/platform/buildinfo"
 	"github.com/wheelsdown/spivot-server/internal/platform/identity"
 	"github.com/wheelsdown/spivot-server/internal/platform/logging"
@@ -80,6 +81,11 @@ type Config struct {
 	// guarded handlers (none exist today, Phase 4 will add the first)
 	// would always 401. Production wires [*storage.Store] here.
 	IdentityStore IdentityStore
+	// MacaroonIssuer backs POST /v1/sessions. May be nil with the
+	// same semantics as EnrollmentStore: the handler responds 503
+	// when not wired so a misconfigured deployment surfaces
+	// explicitly rather than silently 401-ing.
+	MacaroonIssuer *macaroon.Issuer
 	// PolicySnapshot is captured by value at server startup and advertised to
 	// clients until the process restarts. Runtime policy rotation should make
 	// that lifecycle explicit rather than mutating this value in place.
@@ -137,6 +143,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/server", s.handleServerInfo)
 	mux.HandleFunc("GET /v1/version", s.handleVersion)
 	mux.HandleFunc("POST /v1/client-apps/enroll", s.handleClientAppEnroll)
+	// POST /v1/sessions requires a resolved identity. Wrapping
+	// here at the registration site keeps the auth requirement
+	// visible in the route table — anyone reading Handler() can
+	// see at a glance which routes are public and which require
+	// an enrolled client app.
+	mux.Handle("POST /v1/sessions", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleSessionCreate)))
 
 	h := s.withLogging(mux)
 	if s.cfg.IdentityStore != nil {
