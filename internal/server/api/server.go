@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/opencaravan/opencaravan-go"
 	"github.com/wheelsdown/spivot-server/internal/platform/auth/macaroon"
 	"github.com/wheelsdown/spivot-server/internal/platform/buildinfo"
 	"github.com/wheelsdown/spivot-server/internal/platform/identity"
@@ -52,6 +53,27 @@ type EnrollmentStore interface {
 // duck-typing; the same separation rationale as EnrollmentStore.
 type IdentityStore = middleware.IdentityStore
 
+// JourneyStore is the narrow subset of storage operations the
+// Phase 5 journey + telemetry handlers depend on. Satisfied by
+// [*storage.Store] via duck-typing.
+type JourneyStore interface {
+	// CreateJourney inserts a journeys row and a host
+	// journey_participants row in one transaction. See
+	// [storage.Store.CreateJourney].
+	CreateJourney(ctx context.Context, params storage.JourneyCreateParams) (storage.Journey, error)
+	// JourneyByID returns the journey with the supplied id.
+	// Returns [storage.ErrJourneyNotFound] when no row matches.
+	JourneyByID(ctx context.Context, id string) (storage.Journey, error)
+	// JourneyParticipantByUserAndJourney looks up the joined
+	// participant row for the (user, journey) pair. Used by the
+	// telemetry handler to resolve the per-batch participant_id
+	// and enforce "the caller is actually in this journey"
+	// beyond the macaroon's journey= caveat check.
+	JourneyParticipantByUserAndJourney(ctx context.Context, userID, journeyID string) (storage.JourneyParticipant, error)
+	// RecordTelemetryBatch inserts a telemetry_batches row.
+	RecordTelemetryBatch(ctx context.Context, params storage.TelemetryBatchParams) (storage.TelemetryBatch, error)
+}
+
 // Config describes the HTTP API server's listen and deployment metadata.
 type Config struct {
 	// Address is the local TCP address to bind.
@@ -90,11 +112,15 @@ type Config struct {
 	// MacaroonVerifier backs the [middleware.AttachSession] broad
 	// attach pass. When nil, [Server.Handler] omits the attach
 	// pass and no request ever carries a context-attached
-	// session; future [middleware.RequireSession]-guarded handlers
-	// (Phase 5 will add the first) would always 401. Production
-	// wires a verifier whose root resolver delegates to
-	// [*storage.Store.MacaroonRootByID].
+	// session; every [middleware.RequireSession]-guarded handler
+	// (POST /v1/journeys/{id}/* today, more in later phases)
+	// would always 401. Production wires a verifier whose root
+	// resolver delegates to [*storage.Store.MacaroonRootByID].
 	MacaroonVerifier *macaroon.Verifier
+	// JourneyStore backs the Phase 5 journey + telemetry
+	// handlers. May be nil; the handlers respond 503 when not
+	// wired so a misconfigured deployment surfaces explicitly.
+	JourneyStore JourneyStore
 	// PolicySnapshot is captured by value at server startup and advertised to
 	// clients until the process restarts. Runtime policy rotation should make
 	// that lifecycle explicit rather than mutating this value in place.
@@ -161,6 +187,23 @@ func (s *Server) Handler() http.Handler {
 	// see at a glance which routes are public and which require
 	// an enrolled client app.
 	mux.Handle("POST /v1/sessions", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleSessionCreate)))
+	// Phase 5 journey + telemetry routes. POST /v1/journeys is
+	// identity-only (the caller creates a new journey before any
+	// macaroon could reference it). The journey-scoped routes
+	// require a session macaroon naming the requested journey
+	// and the appropriate action; the per-handler constraints
+	// run through verifier.CheckConstraints so attenuator
+	// attacks against the journey caveat are defeated by
+	// macaroon AND semantics.
+	if s.cfg.MacaroonVerifier != nil {
+		mux.Handle("POST /v1/journeys", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleJourneyCreate)))
+		mux.Handle("GET /v1/journeys/{id}", middleware.RequireSession(s.cfg.MacaroonVerifier, s.logger,
+			middleware.SessionActionJourneyFromPath(opencaravan.SessionActionJourneyRead, "id"),
+		)(http.HandlerFunc(s.handleJourneyGet)))
+		mux.Handle("POST /v1/journeys/{id}/telemetry", middleware.RequireSession(s.cfg.MacaroonVerifier, s.logger,
+			middleware.SessionActionJourneyFromPath(opencaravan.SessionActionTelemetryWrite, "id"),
+		)(http.HandlerFunc(s.handleJourneyTelemetry)))
+	}
 
 	h := s.withLogging(mux)
 	if s.cfg.MacaroonVerifier != nil {

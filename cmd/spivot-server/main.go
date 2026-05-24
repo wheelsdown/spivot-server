@@ -283,6 +283,7 @@ func runServe(ctx context.Context, stdout io.Writer, stderr io.Writer, args []st
 		CA:               ca,
 		MacaroonIssuer:   macaroonIssuer,
 		MacaroonVerifier: macaroonVerifier,
+		JourneyStore:     store,
 		PolicySnapshot:   policySnapshot,
 	}, logger)
 	return app.New(server, logger).Serve(ctx)

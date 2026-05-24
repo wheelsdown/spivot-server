@@ -63,6 +63,20 @@ func (s *Store) Path() string {
 	return s.path
 }
 
+// DB returns the underlying [*sql.DB] handle. Intended for test
+// fixtures that need to seed FK-dependent rows (typically an
+// accounts row that the typed surface does not yet expose a
+// constructor for, since v0 only creates accounts via the
+// enrollment handler) and for migration tooling. Production code
+// path goes through the typed methods on [Store]; reaching for
+// DB() in non-test code is a smell.
+func (s *Store) DB() *sql.DB {
+	if s == nil {
+		return nil
+	}
+	return s.db
+}
+
 // Ping verifies that the database is reachable.
 func (s *Store) Ping(ctx context.Context) error {
 	if s == nil || s.db == nil {
