@@ -198,7 +198,11 @@ func (c *CA) Sign(_ context.Context, csr *x509.CertificateRequest, lifetime time
 		URIs:                  csr.URIs,
 		NotBefore:             notBefore,
 		NotAfter:              notAfter,
-		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		// KeyUsageKeyEncipherment is intentionally omitted: it applies to
+		// RSA key transport and is not meaningful for ECDSA client-auth
+		// certs. Some strict verifiers reject ECDSA certs that declare
+		// it; digitalSignature is sufficient for mTLS client auth.
+		KeyUsage:              x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 		BasicConstraintsValid: true,
 		IsCA:                  false,
