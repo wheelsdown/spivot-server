@@ -185,3 +185,12 @@ automation:
 - use conventional commits
 - run `just ci` locally before every push
 - keep exported Go symbols and packages documented for Godoc
+
+## License
+
+Spivot Server is licensed under the Apache License, Version 2.0. See
+[LICENSE](LICENSE) and [NOTICE](NOTICE) for the full text and attribution.
+
+"Spivot" is a trademark of the Spivot project. The code license does not grant
+trademark rights; see [TRADEMARK.md](TRADEMARK.md) for what you can do with the
+name.
