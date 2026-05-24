@@ -74,6 +74,12 @@ func LoadOrCreate(ctx context.Context, keystore KeyStore, cfg Config) (*CA, erro
 	if err := os.MkdirAll(cfg.Dir, 0o700); err != nil {
 		return nil, fmt.Errorf("identity: create ca dir %q: %w", cfg.Dir, err)
 	}
+	// MkdirAll ignores the perm arg when the directory already exists, so
+	// tighten explicitly: the CA directory contains key material and must
+	// be 0700 regardless of how an operator pre-created it.
+	if err := os.Chmod(cfg.Dir, 0o700); err != nil {
+		return nil, fmt.Errorf("identity: chmod ca dir %q: %w", cfg.Dir, err)
+	}
 
 	subject := cfg.Subject
 	if strings.TrimSpace(subject.CommonName) == "" {
