@@ -59,14 +59,37 @@ Actions to catch what could have been caught locally.
 - **Logging**: structured logging via `slog`. INFO tells the operator
   story, DEBUG is for deep troubleshooting, WARN is degraded behavior,
   and ERROR is broken behavior. Include relevant context fields.
-- **Go doc comments**: GoDoc is a primary audience. Every exported symbol
-  gets a doc comment starting with its name and reading as a complete
-  sentence. Every package gets a `// Package foo ...` comment. Comments
-  should explain why the code exists or how it should be used; the
-  signature already says what.
+- **Documentation**: see the [Documentation](#documentation) section
+  below. The short version: GoDoc is a product surface, not commentary,
+  and the bar differs for exported (full contract) vs unexported
+  (rationale where it earns its place).
 - **Provider pattern**: new integrations should sit behind a small
   interface owned by the consuming package, especially when external
   services or vendor APIs are involved.
+
+## Documentation
+
+GoDoc is a primary product surface, not commentary on the source. A
+reader on pkg.go.dev (or running `go doc`) should be able to use any
+package correctly without opening it. Exported symbols carry that
+load: document the contract, not the Go shape. Package-level docs use
+Go 1.19+ heading syntax for navigable structure; cross-reference
+related symbols with `[Identifier]` doc links; add runnable `Example*`
+tests (see `internal/platform/identity/example_test.go`) for the
+primary usage patterns so the docs cannot bit-rot.
+
+Unexported symbols answer a different question: *why is this here in
+its current form?* The test for whether a comment is earning its place:
+
+> If a contributor deleted this symbol in a PR, would the surrounding
+> code make clear why that's wrong?
+
+If no, document the why. If yes, no comment needed.
+
+Documentation is part of the reader-facing interface. A PR that
+changes behavior without updating the affected docs is incomplete, the
+same way a PR that changes a function without updating its tests is
+incomplete.
 
 ## Container & Release Engineering
 

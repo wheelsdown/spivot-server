@@ -21,40 +21,69 @@ import (
 	"time"
 )
 
-// caKeyName is the KeyStore name under which the CA private key is
-// persisted. There is only ever one CA per server.
+// caKeyName is the [KeyStore] name under which the CA private key is
+// persisted. There is exactly one CA per server, so the name is a
+// constant rather than a configurable; future per-feature signing keys
+// will use additional names (e.g., "federation", "server").
 const caKeyName = "ca"
 
 // caCertFile is the filename used for the persisted CA certificate
-// inside the identity directory.
+// inside the identity directory. The cert is public (it ships in
+// client bundles), so it lives alongside the [KeyStore]'s private-key
+// files but at world-readable 0644 permissions.
 const caCertFile = "ca.crt.pem"
 
 // caDefaultLifetime is how long a freshly-generated CA certificate is
-// valid. The CA cert is self-signed and long-lived because rotating it
-// requires re-issuing client app certs and updating any client-side CA
-// pinning.
+// valid by default (~10 years). The CA cert is self-signed and
+// long-lived because rotating it requires re-issuing client app certs
+// and updating any client-side CA pinning, which is an operator-driven
+// event rather than an automated routine. Operators may override via
+// [Config].Lifetime.
 const caDefaultLifetime = 10 * 365 * 24 * time.Hour
 
-// caSerialBits is the bit width of randomly-generated certificate serial
-// numbers. 128 bits matches Let's Encrypt and modern PKI practice and is
-// well above any reasonable collision threshold.
+// caSerialBits is the bit width of randomly-generated certificate
+// serial numbers (128 bits). Matches Let's Encrypt and modern PKI
+// practice; collision probability under 1/2^128 is well below any
+// reasonable threshold. Random serials (rather than a monotonic
+// counter) avoid leaking issuance order to relying parties.
 const caSerialBits = 128
 
-// Config describes how the CA is bootstrapped on first use.
+// Config describes how the CA is bootstrapped on first use of
+// [LoadOrCreate]. Subsequent calls in the same directory ignore
+// Subject and Lifetime; the persisted certificate's existing values
+// take precedence.
 type Config struct {
-	// Dir is the directory where the CA certificate is stored alongside
-	// the KeyStore's key files. Must be set.
+	// Dir is the directory where the CA certificate is stored, alongside
+	// the [KeyStore]'s key files. Must be set. The directory is created
+	// with 0700 permissions if missing and chmod'd to 0700 if it already
+	// exists with looser permissions.
 	Dir string
-	// Subject is the X.509 subject for the CA self-signed certificate.
-	// If CommonName is empty, "Spivot Server CA" is used.
+
+	// Subject is the X.509 distinguished name written into the CA
+	// self-signed certificate on first bootstrap. If CommonName is empty
+	// or whitespace, "Spivot Server CA" is used. Organization and other
+	// fields are copied as-is. After bootstrap, Subject changes have no
+	// effect: the persisted cert carries the original subject until the
+	// CA is rotated.
 	Subject pkix.Name
-	// Lifetime overrides the default CA certificate lifetime. A non-positive
-	// value selects the default.
+
+	// Lifetime overrides the default CA certificate lifetime on first
+	// bootstrap. A non-positive value (zero or negative) selects
+	// [caDefaultLifetime] (~10 years). After bootstrap, Lifetime changes
+	// have no effect.
 	Lifetime time.Duration
 }
 
-// CA is the server-local certificate authority. CA values are safe for
-// concurrent use after LoadOrCreate returns.
+// CA is the server-local certificate authority. It holds the parsed
+// CA certificate, its PEM encoding, and the private key used to sign
+// leaf certificates. Construct one via [LoadOrCreate]; do not
+// instantiate the struct literal directly.
+//
+// CA values are safe for concurrent use by multiple goroutines after
+// [LoadOrCreate] returns. The certificate and key are immutable once
+// constructed; [CA.Sign] reads them under no lock because
+// [crypto/rand] (the source of randomness for serial numbers and
+// signatures) is itself safe under concurrency.
 type CA struct {
 	cert    *x509.Certificate
 	certPEM []byte
@@ -62,9 +91,38 @@ type CA struct {
 	dir     string
 }
 
-// LoadOrCreate returns the CA. If a CA key + cert are already persisted
-// in cfg.Dir, they are loaded. Otherwise a fresh P-256 ECDSA keypair is
-// generated, a self-signed CA certificate is issued, and both are
+// LoadOrCreate returns the CA rooted at cfg.Dir, generating and
+// persisting one on first call.
+//
+// Behavior by initial on-disk state:
+//
+//   - Neither key nor cert present: a fresh P-256 ECDSA keypair is
+//     generated via [crypto/ecdsa.GenerateKey], a self-signed CA cert
+//     is issued over it, both are persisted, and the new [CA] is
+//     returned.
+//   - Both key and cert present: both are loaded. The cert's public
+//     key is compared to the key's public key; on mismatch,
+//     LoadOrCreate fails fast with "ca state is inconsistent" so the
+//     operator can restore the missing piece or wipe and re-bootstrap
+//     rather than silently producing leaf certs that will fail to
+//     validate.
+//   - Key present, cert missing: a fresh self-signed cert is issued
+//     using the existing key and persisted. Useful after an operator
+//     restores only the key from backup.
+//   - Cert present, key missing: a fresh key is generated by the
+//     [KeyStore], the fresh key's public half is compared against the
+//     persisted cert, and the mismatch path fires. Recovery is
+//     operator-driven.
+//
+// Side effects: cfg.Dir is created with 0700 permissions if missing
+// and chmod'd to 0700 if it already exists. The CA cert is written as
+// PEM at <cfg.Dir>/ca.crt.pem with 0644 permissions. The CA key is
+// written by the [KeyStore] under its own naming convention (for
+// [FileKeyStore], that is <cfg.Dir>/ca.key.pem at 0600).
+//
+// Returns an error if cfg.Dir is empty, if directory creation or
+// permission tightening fails, if key generation fails, if the
+// persisted CA state is inconsistent, or if the certificate cannot be
 // persisted.
 func LoadOrCreate(ctx context.Context, keystore KeyStore, cfg Config) (*CA, error) {
 	if cfg.Dir == "" {
@@ -73,6 +131,12 @@ func LoadOrCreate(ctx context.Context, keystore KeyStore, cfg Config) (*CA, erro
 	cfg.Dir = filepath.Clean(cfg.Dir)
 	if err := os.MkdirAll(cfg.Dir, 0o700); err != nil {
 		return nil, fmt.Errorf("identity: create ca dir %q: %w", cfg.Dir, err)
+	}
+	// MkdirAll ignores the perm arg when the directory already exists, so
+	// tighten explicitly: the CA directory contains key material and must
+	// be 0700 regardless of how an operator pre-created it.
+	if err := os.Chmod(cfg.Dir, 0o700); err != nil {
+		return nil, fmt.Errorf("identity: chmod ca dir %q: %w", cfg.Dir, err)
 	}
 
 	subject := cfg.Subject
@@ -104,6 +168,12 @@ func LoadOrCreate(ctx context.Context, keystore KeyStore, cfg Config) (*CA, erro
 		if err := atomicWrite(cfg.Dir, certPath, certPEM, 0o644); err != nil {
 			return nil, fmt.Errorf("identity: persist ca cert: %w", err)
 		}
+	} else if err := verifyCertMatchesKey(cert, key); err != nil {
+		// A persisted cert that was not issued by the loaded key would
+		// silently produce leaf certs that fail to validate against the
+		// returned CA cert. Fail fast and let the operator decide whether
+		// to restore the missing piece or wipe and re-bootstrap.
+		return nil, fmt.Errorf("identity: ca state at %q is inconsistent: %w", cfg.Dir, err)
 	}
 
 	if cert == nil {
@@ -112,13 +182,35 @@ func LoadOrCreate(ctx context.Context, keystore KeyStore, cfg Config) (*CA, erro
 	return &CA{cert: cert, certPEM: certPEM, key: key, dir: cfg.Dir}, nil
 }
 
-// Certificate returns the parsed CA certificate.
+// verifyCertMatchesKey reports whether cert's public key matches the public
+// half of key. Used to detect the case where the CA key and CA certificate
+// have drifted (one was restored from backup without the other, or one was
+// deleted and regenerated while the other was retained).
+func verifyCertMatchesKey(cert *x509.Certificate, key crypto.Signer) error {
+	certPub, ok := cert.PublicKey.(interface {
+		Equal(crypto.PublicKey) bool
+	})
+	if !ok {
+		return errors.New("ca certificate public key does not support equality comparison")
+	}
+	if !certPub.Equal(key.Public()) {
+		return errors.New("ca certificate public key does not match loaded ca private key")
+	}
+	return nil
+}
+
+// Certificate returns the parsed CA certificate. The returned value is
+// shared with the [CA] and must not be mutated; treat it as
+// effectively read-only. Useful for callers that need to construct an
+// [x509.CertPool] for verifying leaf certificates this CA has issued.
 func (c *CA) Certificate() *x509.Certificate {
 	return c.cert
 }
 
-// CertificatePEM returns the PEM-encoded CA certificate suitable for
-// printing or shipping inside a client bundle.
+// CertificatePEM returns a fresh copy of the PEM-encoded CA
+// certificate. Callers may mutate the returned slice without affecting
+// the [CA]'s internal state. Suitable for printing, piping to a file,
+// or bundling with a client artifact.
 func (c *CA) CertificatePEM() []byte {
 	out := make([]byte, len(c.certPEM))
 	copy(out, c.certPEM)
@@ -126,21 +218,59 @@ func (c *CA) CertificatePEM() []byte {
 }
 
 // Fingerprint returns the lowercase hex SHA-256 fingerprint of the CA
-// certificate, the form most commonly used to identify a CA out of band.
+// certificate's DER bytes. Format is 64 hex characters with no
+// separators (e.g., "ab8f...").
+//
+// This is the form most commonly used for out-of-band CA pinning: an
+// operator copies the fingerprint from `spivot-server ca init` log
+// output into a client configuration so the client can verify it is
+// talking to the expected CA.
 func (c *CA) Fingerprint() string {
 	sum := sha256.Sum256(c.cert.Raw)
 	return hex.EncodeToString(sum[:])
 }
 
 // Sign issues a leaf certificate over the public key in csr, valid for
-// lifetime from now. The CSR's signature is verified before signing; the
-// CSR's subject is preserved. Issued certs carry a random 128-bit serial,
-// digitalSignature + keyEncipherment usages, and ExtKeyUsage clientAuth.
+// lifetime from now.
 //
-// Implementations enforce protocol-level CSR policy (algorithm,
-// subject/SAN constraints) before calling Sign; the CA itself is policy-
-// agnostic beyond verifying the CSR signature and rejecting non-positive
-// lifetimes.
+// Inputs are validated:
+//
+//   - csr must not be nil.
+//   - lifetime must be strictly positive.
+//   - The CSR's self-signature is verified via
+//     [x509.CertificateRequest.CheckSignature] before issuance; an
+//     unsigned or improperly-signed CSR is rejected.
+//
+// Fields propagated from the CSR into the leaf certificate: Subject,
+// DNSNames, EmailAddresses, IPAddresses, URIs. The CSR's PublicKey
+// becomes the leaf certificate's subject public key. All other CSR
+// fields (Extensions, ExtraExtensions, Attributes) are intentionally
+// discarded; protocol-level policy that wants to honor or reject
+// specific CSR extensions must do so before calling Sign.
+//
+// Fields set by the CA on every issued leaf:
+//
+//   - SerialNumber: random 128 bits via [crypto/rand], guaranteed
+//     non-zero.
+//   - NotBefore: time.Now() - 1 minute (clock-skew tolerance for
+//     clients with fast clocks).
+//   - NotAfter: time.Now() + lifetime (callers get the full requested
+//     validity window despite the clock-skew backdating of NotBefore).
+//   - KeyUsage: digitalSignature only (keyEncipherment is not
+//     applicable to ECDSA keys).
+//   - ExtKeyUsage: clientAuth (the CA issues client-auth leaf certs
+//     for mTLS; server certs and other usages are out of scope).
+//   - BasicConstraintsValid: true, IsCA: false.
+//
+// Returns the parsed [*x509.Certificate] and its PEM encoding (one
+// "CERTIFICATE" block). The same DER bytes are reachable via
+// [x509.Certificate.Raw] on the returned value.
+//
+// Sign is safe for concurrent use by multiple goroutines.
+//
+// The ctx argument is currently unused but is part of the signature
+// for future implementations that might consult an HSM or KMS that
+// honors cancellation.
 func (c *CA) Sign(_ context.Context, csr *x509.CertificateRequest, lifetime time.Duration) (*x509.Certificate, []byte, error) {
 	if csr == nil {
 		return nil, nil, errors.New("identity: csr must not be nil")
@@ -156,19 +286,24 @@ func (c *CA) Sign(_ context.Context, csr *x509.CertificateRequest, lifetime time
 	if err != nil {
 		return nil, nil, err
 	}
-	notBefore := time.Now().UTC().Add(-1 * time.Minute) // small clock skew
-	notAfter := notBefore.Add(lifetime)
+	now := time.Now().UTC()
+	notBefore := now.Add(-1 * time.Minute) // clock-skew tolerance for fast-clock clients
+	notAfter := now.Add(lifetime)
 
 	template := &x509.Certificate{
-		SerialNumber:          serial,
-		Subject:               csr.Subject,
-		DNSNames:              csr.DNSNames,
-		EmailAddresses:        csr.EmailAddresses,
-		IPAddresses:           csr.IPAddresses,
-		URIs:                  csr.URIs,
-		NotBefore:             notBefore,
-		NotAfter:              notAfter,
-		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		SerialNumber:   serial,
+		Subject:        csr.Subject,
+		DNSNames:       csr.DNSNames,
+		EmailAddresses: csr.EmailAddresses,
+		IPAddresses:    csr.IPAddresses,
+		URIs:           csr.URIs,
+		NotBefore:      notBefore,
+		NotAfter:       notAfter,
+		// KeyUsageKeyEncipherment is intentionally omitted: it applies to
+		// RSA key transport and is not meaningful for ECDSA client-auth
+		// certs. Some strict verifiers reject ECDSA certs that declare
+		// it; digitalSignature is sufficient for mTLS client auth.
+		KeyUsage:              x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 		BasicConstraintsValid: true,
 		IsCA:                  false,
@@ -186,6 +321,11 @@ func (c *CA) Sign(_ context.Context, csr *x509.CertificateRequest, lifetime time
 	return leaf, leafPEM, nil
 }
 
+// loadCertificate reads the PEM-encoded certificate at path, returns
+// the raw PEM bytes and the parsed certificate. Returns the underlying
+// [fs.ErrNotExist] unwrapped when path is missing so callers can
+// distinguish "not yet bootstrapped" from other I/O failures via
+// [errors.Is].
 func loadCertificate(path string) ([]byte, *x509.Certificate, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -205,13 +345,20 @@ func loadCertificate(path string) ([]byte, *x509.Certificate, error) {
 	return raw, cert, nil
 }
 
+// generateSelfSignedCA issues a self-signed root CA certificate using
+// the supplied key and subject. The cert carries KeyUsageCertSign and
+// KeyUsageCRLSign, IsCA=true, MaxPathLenZero=true (so it can only
+// directly sign leaf certs, not intermediate CAs). NotBefore is
+// backdated for clock-skew tolerance but NotAfter is computed from
+// now+lifetime so the full requested validity window is honored.
 func generateSelfSignedCA(subject pkix.Name, key crypto.Signer, lifetime time.Duration) (*x509.Certificate, []byte, error) {
 	serial, err := randomSerial()
 	if err != nil {
 		return nil, nil, err
 	}
-	notBefore := time.Now().UTC().Add(-1 * time.Minute)
-	notAfter := notBefore.Add(lifetime)
+	now := time.Now().UTC()
+	notBefore := now.Add(-1 * time.Minute)
+	notAfter := now.Add(lifetime)
 
 	template := &x509.Certificate{
 		SerialNumber:          serial,
@@ -236,15 +383,33 @@ func generateSelfSignedCA(subject pkix.Name, key crypto.Signer, lifetime time.Du
 	return cert, encoded, nil
 }
 
+// randomSerial returns a uniformly-random non-zero 128-bit positive
+// integer suitable for use as an X.509 serial number.
+//
+// [crypto/rand.Int] returns a value in [0, limit). [x509.CreateCertificate]
+// requires a positive serial number, so a sampled zero would (extremely
+// rarely) cause issuance to fail. We loop until non-zero; expected
+// iterations is essentially 1.
 func randomSerial() (*big.Int, error) {
 	limit := new(big.Int).Lsh(big.NewInt(1), caSerialBits)
-	serial, err := rand.Int(rand.Reader, limit)
-	if err != nil {
-		return nil, fmt.Errorf("identity: generate serial: %w", err)
+	for {
+		serial, err := rand.Int(rand.Reader, limit)
+		if err != nil {
+			return nil, fmt.Errorf("identity: generate serial: %w", err)
+		}
+		if serial.Sign() != 0 {
+			return serial, nil
+		}
 	}
-	return serial, nil
 }
 
+// atomicWrite writes data to finalPath via a temp file inside dir,
+// chmod'd to perm, fsync'd, renamed into place, and finally the parent
+// directory is fsync'd to make the directory entry durable. Cleans up
+// the temp file on any failure between create and rename so a partial
+// write cannot accumulate as orphaned `.tmp` files.
+//
+// dir must already exist and be writable.
 func atomicWrite(dir, finalPath string, data []byte, perm os.FileMode) error {
 	tmp, err := os.CreateTemp(dir, "."+filepath.Base(finalPath)+"-*.tmp")
 	if err != nil {
@@ -276,6 +441,31 @@ func atomicWrite(dir, finalPath string, data []byte, perm os.FileMode) error {
 	if err := os.Rename(tmpPath, finalPath); err != nil {
 		cleanup()
 		return err
+	}
+	return syncDir(dir)
+}
+
+// syncDir fsyncs the directory at path so that its directory entries
+// (newly-created files, renames) are durably persisted. Without this,
+// a crash or power loss between the rename and the kernel flushing the
+// directory metadata can leave the file invisible on remount even though
+// its contents were sync'd.
+//
+// On platforms where fsync on a directory is not supported the kernel
+// returns an error; we surface that to the caller for visibility rather
+// than silently swallowing it.
+func syncDir(path string) error {
+	d, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("identity: open dir for fsync: %w", err)
+	}
+	syncErr := d.Sync()
+	closeErr := d.Close()
+	if syncErr != nil {
+		return fmt.Errorf("identity: fsync dir %q: %w", path, syncErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("identity: close dir %q: %w", path, closeErr)
 	}
 	return nil
 }

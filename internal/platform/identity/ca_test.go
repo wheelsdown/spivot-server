@@ -80,6 +80,33 @@ func TestLoadOrCreateReusesPersistedCA(t *testing.T) {
 	}
 }
 
+func TestLoadOrCreateRejectsMismatchedKeyAndCert(t *testing.T) {
+	dir := t.TempDir()
+	keyStore, err := NewFileKeyStore(dir)
+	if err != nil {
+		t.Fatalf("NewFileKeyStore: %v", err)
+	}
+	ctx := context.Background()
+	if _, err := LoadOrCreate(ctx, keyStore, Config{Dir: dir}); err != nil {
+		t.Fatalf("initial LoadOrCreate: %v", err)
+	}
+
+	// Simulate the failure mode: the CA cert is preserved but the key file
+	// is deleted, so the next LoadOrCreate generates a fresh key whose
+	// public half does not match the persisted certificate.
+	if err := os.Remove(filepath.Join(dir, "ca.key.pem")); err != nil {
+		t.Fatalf("remove ca key: %v", err)
+	}
+
+	_, err = LoadOrCreate(ctx, keyStore, Config{Dir: dir})
+	if err == nil {
+		t.Fatal("LoadOrCreate(mismatched key/cert) error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("LoadOrCreate(mismatched) error = %v, want match-failure message", err)
+	}
+}
+
 func TestLoadOrCreateHonorsCustomSubject(t *testing.T) {
 	dir := t.TempDir()
 	keyStore, err := NewFileKeyStore(dir)
@@ -130,8 +157,17 @@ func TestSignProducesValidLeafCertificate(t *testing.T) {
 	if leaf.Subject.CommonName != "client-app-test" {
 		t.Fatalf("leaf CN = %q, want client-app-test", leaf.Subject.CommonName)
 	}
-	if leaf.NotAfter.Sub(leaf.NotBefore) < 7*24*time.Hour-2*time.Minute {
-		t.Fatalf("leaf lifetime = %s, want approx 7d", leaf.NotAfter.Sub(leaf.NotBefore))
+	// notAfter - notBefore should be lifetime + clock-skew window (the
+	// notBefore was backdated by 1 minute, the notAfter is at now+lifetime,
+	// so the full validity window is lifetime + 1 minute).
+	wantValidity := 7*24*time.Hour + time.Minute
+	gotValidity := leaf.NotAfter.Sub(leaf.NotBefore)
+	if gotValidity < wantValidity-30*time.Second || gotValidity > wantValidity+30*time.Second {
+		t.Fatalf("leaf validity = %s, want ~%s", gotValidity, wantValidity)
+	}
+	// notAfter must be at least lifetime from issuance time.
+	if leaf.NotAfter.Sub(time.Now().UTC()) < 7*24*time.Hour-30*time.Second {
+		t.Fatalf("leaf notAfter is closer than the requested lifetime")
 	}
 
 	pool := x509.NewCertPool()
