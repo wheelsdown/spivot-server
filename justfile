@@ -12,6 +12,7 @@ host_arch := if arch() == "aarch64" { "arm64" } else if arch() == "x86_64" { "am
 image := env("SPIVOT_IMAGE", "ghcr.io/wheelsdown/spivot-server")
 dev_image := image + ":dev"
 ci_image := image + ":ci"
+container_platforms := env("SPIVOT_CONTAINER_PLATFORMS", "linux/amd64,linux/arm64")
 release-dir := "dist/release"
 
 # List available recipes
@@ -19,6 +20,7 @@ default:
     @echo "Common workflows:"
     @echo "  just ci                                      # full local validation gate"
     @echo "  just container                              # build a local OCI image"
+    @echo "  just container-archive <version>            # build a multi-arch OCI archive"
     @echo "  just release-github <version> [kind]        # tag and publish a GHCR-backed release"
     @echo ""
     @just --list
@@ -65,6 +67,10 @@ container-check tag=ci_image:
     scripts/releng/inspect-container.sh "{{tag}}" "{{version}}"
 
 [group('container')]
+container-archive version platforms=container_platforms:
+    scripts/releng/build-container-archive.sh "{{version}}" "{{platforms}}"
+
+[group('container')]
 container-run tag=dev_image port="8080":
     docker run --rm -p {{port}}:8080 {{tag}}
 
@@ -108,6 +114,7 @@ prepare-release version:
     set -euo pipefail
     version="{{version}}"
     version="${version#v}"
+    container_platforms="{{container_platforms}}"
 
     if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'; then
         echo "Version must look like 0.1.0 or 0.1.0-rc.1" >&2
@@ -118,16 +125,19 @@ prepare-release version:
     mkdir -p "{{release-dir}}"
 
     SPIVOT_VERSION="v${version}" just ci
+    scripts/releng/build-container-archive.sh "v${version}" "$container_platforms"
 
     metadata_path="{{release-dir}}/.spivot_${version}_prepared.env"
     printf 'SPIVOT_RELEASE_PREPARED_VERSION=%s\n' "$version" > "$metadata_path"
     printf 'SPIVOT_RELEASE_PREPARED_COMMIT=%s\n' "$(git rev-parse HEAD)" >> "$metadata_path"
     printf 'SPIVOT_RELEASE_PREPARED_BRANCH=%s\n' "$(git rev-parse --abbrev-ref HEAD)" >> "$metadata_path"
     printf 'SPIVOT_RELEASE_PREPARED_AT=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" >> "$metadata_path"
+    printf 'SPIVOT_RELEASE_CONTAINER_PLATFORMS=%s\n' "$container_platforms" >> "$metadata_path"
 
     echo ""
     echo "Local release preparation complete."
     echo "  Release metadata: $metadata_path"
+    echo "  OCI archive directory: {{release-dir}}"
     echo "  Container smoke tag: {{ci_image}}"
     echo "  Nothing was tagged, pushed, or uploaded to GitHub."
 
@@ -162,6 +172,7 @@ publish-release version release_kind="auto":
     . "$metadata_path"
     test "${SPIVOT_RELEASE_PREPARED_VERSION:-}" = "$version" || { echo "Prepared version mismatch; run 'just prepare-release ${version}' again." >&2; exit 1; }
     test "${SPIVOT_RELEASE_PREPARED_COMMIT:-}" = "$head_commit" || { echo "Prepared commit mismatch; run 'just prepare-release ${version}' again." >&2; exit 1; }
+    release_platforms="${SPIVOT_RELEASE_CONTAINER_PLATFORMS:-{{container_platforms}}}"
 
     git fetch origin main --tags
     test "$(git rev-parse --abbrev-ref HEAD)" = "main" || { echo "Release tags must be cut from main" >&2; exit 1; }
@@ -190,7 +201,9 @@ publish-release version release_kind="auto":
         gh release create "$tag" --title "$tag" --generate-notes "${prerelease_flag[@]}"
     fi
 
-    echo "Published $tag. GitHub Actions will publish OCI tags for {{image}}."
+    scripts/releng/upload-release-assets.sh "v${version}" "$release_platforms"
+
+    echo "Published $tag. GitHub Actions will publish OCI tags for {{image}}; the local OCI archive was uploaded to the GitHub release."
 
 [group('release-engineering')]
 release-github version release_kind="auto":

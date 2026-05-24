@@ -1,0 +1,7 @@
+{
+	email admin@example.com
+}
+
+spivot.example.com {
+	reverse_proxy spivot-server:8080
+}

@@ -36,4 +36,5 @@ section "Publish release"
 run just publish-release "v$version" "$release_kind"
 
 section "Release complete"
-step "GitHub release v$version is published; tag push will build and publish the multi-arch OCI image"
+step "GitHub release v$version is published with a local multi-arch OCI archive attached"
+step "Tag push will also build and publish the multi-arch GHCR image"
