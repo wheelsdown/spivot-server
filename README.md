@@ -31,6 +31,8 @@ Current foundation:
   short-lived client app certificates.
 - Single-use invite tokens for client app enrollment, with first-run
   bootstrap logging for unattended container deployments.
+- `POST /v1/client-apps/enroll` HTTP endpoint that redeems a
+  server_registration invite + CSR for a 7-day signed leaf certificate.
 - Container-first release engineering with OCI labels and health checks.
 - Embedded SQL migration metadata for OpenCaravan journey storage.
 
@@ -87,11 +89,13 @@ label checks, `spivot-server version`, and a live container health check.
 The current HTTP surface is deliberately small:
 
 ```text
-GET /             service summary
-GET /health       liveness check
-GET /readyz       readiness check
-GET /v1/server    server discovery, capabilities, and policy snapshot
-GET /v1/version   build and runtime version metadata
+GET  /                          service summary
+GET  /health                    liveness check
+GET  /readyz                    readiness check
+GET  /v1/server                 server discovery, capabilities, and policy snapshot
+GET  /v1/version                build and runtime version metadata
+POST /v1/client-apps/enroll     redeem a server_registration invite + CSR
+                                for a signed leaf certificate
 ```
 
 Future OpenCaravan API routes will be documented as they land. Go package
@@ -196,6 +200,13 @@ The Phase 2b migration adds:
 
 - `client_app_invites` — hashed invite tokens (token_hash, scope,
   created/expiration timestamps, used_time, used_by_client_app_id).
+
+The Phase 3a migration adds:
+
+- `client_apps` — descriptive record for each enrolled app installation
+  (id, owning user, display name, created time).
+- `user_id` and `client_app_id` columns on `issued_certificates`
+  linking every signed leaf back to the requesting user and app.
 
 The schema stores protocol-facing data conservatively: text identifiers,
 RFC3339 timestamp strings, integer-scaled coordinates, hashed invite tokens, and

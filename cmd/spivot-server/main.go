@@ -203,6 +203,25 @@ func runServe(ctx context.Context, stdout io.Writer, stderr io.Writer, args []st
 		"policy_snapshot_id", policySnapshot.ID,
 	)
 
+	identityDir := filepath.Join(cfg.dataDir, "identity")
+	if err := ensureWritableDir(identityDir); err != nil {
+		return fmt.Errorf("prepare identity directory %q: %w", identityDir, err)
+	}
+	keyStore, err := identity.NewFileKeyStore(identityDir)
+	if err != nil {
+		return fmt.Errorf("init key store: %w", err)
+	}
+	ca, err := identity.LoadOrCreate(ctx, keyStore, identity.Config{Dir: identityDir})
+	if err != nil {
+		return fmt.Errorf("init ca: %w", err)
+	}
+	logger.Info("certificate authority ready",
+		"identity_dir", identityDir,
+		"subject", ca.Certificate().Subject.CommonName,
+		"fingerprint", ca.Fingerprint(),
+		"not_after", ca.Certificate().NotAfter.UTC().Format(time.RFC3339),
+	)
+
 	parentCtx := ctx
 	ctx, cancel := context.WithCancel(parentCtx)
 	sigCh := make(chan os.Signal, 2)
@@ -238,8 +257,10 @@ func runServe(ctx context.Context, stdout io.Writer, stderr io.Writer, args []st
 			TrustForwardedHeaders: cfg.trustProxy,
 			TrustedNetworks:       cfg.trustedProxyRanges,
 		},
-		Store:          store,
-		PolicySnapshot: policySnapshot,
+		Store:           store,
+		EnrollmentStore: store,
+		CA:              ca,
+		PolicySnapshot:  policySnapshot,
 	}, logger)
 	return app.New(server, logger).Serve(ctx)
 }
