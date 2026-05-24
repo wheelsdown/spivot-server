@@ -9,6 +9,12 @@ services:
       SPIVOT_TRUST_PROXY: "true"
       SPIVOT_TRUSTED_PROXY_CIDRS: ${SPIVOT_TRUSTED_PROXY_CIDRS}
       SPIVOT_LOG_FORMAT: ${SPIVOT_LOG_FORMAT:-json}
+      SPIVOT_CONFIG_DIR: /etc/spivot
+      SPIVOT_DATA_DIR: /var/lib/spivot
+      SPIVOT_DATABASE_PATH: /var/lib/spivot/spivot.db
+    volumes:
+      - spivot-data:/var/lib/spivot
+      - ./config:/etc/spivot:ro
     expose:
       - "8080"
     networks:
@@ -30,3 +36,6 @@ networks:
   edge:
     external: true
     name: ${SPIVOT_EDGE_NETWORK:-traefik}
+
+volumes:
+  spivot-data:

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -101,6 +102,55 @@ func TestParseServeConfigProxySettings(t *testing.T) {
 	}
 	if len(cfg.trustedProxyRanges) != 2 {
 		t.Fatalf("trustedProxyRanges len = %d, want 2", len(cfg.trustedProxyRanges))
+	}
+}
+
+func TestParseServeConfigRuntimePaths(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "state")
+	configDir := filepath.Join(t.TempDir(), "config")
+	t.Setenv("SPIVOT_DATA_DIR", dataDir)
+	t.Setenv("SPIVOT_CONFIG_DIR", configDir)
+
+	cfg, err := parseServeConfig(nil)
+	if err != nil {
+		t.Fatalf("parse serve config: %v", err)
+	}
+
+	if cfg.dataDir != dataDir {
+		t.Fatalf("dataDir = %q, want %q", cfg.dataDir, dataDir)
+	}
+	if cfg.configDir != configDir {
+		t.Fatalf("configDir = %q, want %q", cfg.configDir, configDir)
+	}
+	wantDatabasePath := filepath.Join(dataDir, "spivot.db")
+	if cfg.databasePath != wantDatabasePath {
+		t.Fatalf("databasePath = %q, want %q", cfg.databasePath, wantDatabasePath)
+	}
+}
+
+func TestParseServeConfigDatabasePathOverride(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "custom.db")
+
+	cfg, err := parseServeConfig([]string{"-database-path", databasePath})
+	if err != nil {
+		t.Fatalf("parse serve config: %v", err)
+	}
+
+	if cfg.databasePath != databasePath {
+		t.Fatalf("databasePath = %q, want %q", cfg.databasePath, databasePath)
+	}
+}
+
+func TestEnsureRuntimePathsCreatesWritableDataDirectory(t *testing.T) {
+	root := t.TempDir()
+	cfg := serveConfig{
+		configDir:    filepath.Join(root, "config"),
+		dataDir:      filepath.Join(root, "data"),
+		databasePath: filepath.Join(root, "data", "spivot.db"),
+	}
+
+	if err := ensureRuntimePaths(cfg); err != nil {
+		t.Fatalf("ensure runtime paths: %v", err)
 	}
 }
 

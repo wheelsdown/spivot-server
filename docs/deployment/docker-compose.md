@@ -11,6 +11,7 @@ environment values for your host:
 ```bash
 cp examples/deploy/compose/.env.example .env
 cp examples/deploy/compose/compose.yml compose.yml
+mkdir -p config
 ```
 
 Edit `.env`:
@@ -30,6 +31,17 @@ can pin a semver tag such as `v0.1.0`.
 `SPIVOT_PUBLIC_URL` should match the HTTPS URL served by your proxy.
 `SPIVOT_EDGE_NETWORK` should be the Docker network shared with your existing
 Traefik, Caddy, or other reverse proxy.
+
+The compose file mounts two stable runtime paths:
+
+- `/etc/spivot` is a read-only bind mount from `./config` for future operator
+  configuration files.
+- `/var/lib/spivot` is the named `spivot-data` volume for SQLite databases,
+  uploaded resources, and other durable server state.
+
+Spivot Server runs as a non-root user, and the image pre-creates those paths
+with the right ownership. Keep the in-container paths stable unless you are also
+updating `SPIVOT_CONFIG_DIR`, `SPIVOT_DATA_DIR`, and `SPIVOT_DATABASE_PATH`.
 
 Start or update the service:
 

@@ -26,6 +26,8 @@ RUN test -n "${TARGETARCH}" || (echo "TARGETARCH build argument must be set" >&2
         -X github.com/wheelsdown/spivot-server/internal/platform/buildinfo.BuildTime=${BUILD_TIME}" \
       -o /out/spivot-server ./cmd/spivot-server
 
+RUN mkdir -p /out/etc/spivot /out/var/lib/spivot
+
 FROM scratch AS artifact
 
 COPY --from=builder /out/spivot-server /spivot-server
@@ -52,6 +54,12 @@ LABEL \
 
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /out/spivot-server /usr/local/bin/spivot-server
+COPY --from=builder --chown=65532:65532 /out/etc/spivot /etc/spivot
+COPY --from=builder --chown=65532:65532 /out/var/lib/spivot /var/lib/spivot
+
+ENV SPIVOT_CONFIG_DIR=/etc/spivot
+ENV SPIVOT_DATA_DIR=/var/lib/spivot
+ENV SPIVOT_DATABASE_PATH=/var/lib/spivot/spivot.db
 
 USER 65532:65532
 EXPOSE 8080
