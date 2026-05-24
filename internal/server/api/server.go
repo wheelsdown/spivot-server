@@ -18,6 +18,7 @@ import (
 	"github.com/wheelsdown/spivot-server/internal/platform/logging"
 	"github.com/wheelsdown/spivot-server/internal/platform/proxy"
 	"github.com/wheelsdown/spivot-server/internal/platform/storage"
+	"github.com/wheelsdown/spivot-server/internal/server/middleware"
 )
 
 // Store is the narrow database behavior the API server needs for the
@@ -44,6 +45,12 @@ type EnrollmentStore interface {
 	RegisterClientApp(ctx context.Context, reg storage.ClientAppRegistration) (storage.Invite, error)
 }
 
+// IdentityStore is the narrow subset of storage operations the
+// identity middleware needs to resolve a client certificate to the
+// enrolled identity it authorizes. Satisfied by [*storage.Store] via
+// duck-typing; the same separation rationale as EnrollmentStore.
+type IdentityStore = middleware.IdentityStore
+
 // Config describes the HTTP API server's listen and deployment metadata.
 type Config struct {
 	// Address is the local TCP address to bind.
@@ -67,6 +74,12 @@ type Config struct {
 	// handler. May be nil with the same semantics as EnrollmentStore;
 	// both must be set for enrollment to succeed.
 	CA *identity.CA
+	// IdentityStore backs the [middleware.AttachIdentity] pass. When
+	// nil, [Server.Handler] omits the attach pass and no request ever
+	// carries a context-attached identity; [middleware.RequireIdentity]-
+	// guarded handlers (none exist today, Phase 4 will add the first)
+	// would always 401. Production wires [*storage.Store] here.
+	IdentityStore IdentityStore
 	// PolicySnapshot is captured by value at server startup and advertised to
 	// clients until the process restarts. Runtime policy rotation should make
 	// that lifecycle explicit rather than mutating this value in place.
@@ -94,6 +107,19 @@ func NewServer(cfg Config, logger *slog.Logger) *Server {
 }
 
 // Handler returns the API HTTP handler.
+//
+// Middleware composition (outermost first):
+//
+//  1. withLogging — emits the per-request access log; runs outermost
+//     so an attached identity (added by AttachIdentity below) shows
+//     up in the log line.
+//  2. AttachIdentity — when [Config.IdentityStore] is set, resolves
+//     any inbound client cert to a server-side Identity and attaches
+//     it to the request context. Never rejects; unauthenticated
+//     requests pass through.
+//  3. The route mux. Individual handlers wrap themselves in
+//     [middleware.RequireIdentity] at the registration site when they
+//     require an Identity to be present.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", s.handleRoot)
@@ -102,7 +128,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/server", s.handleServerInfo)
 	mux.HandleFunc("GET /v1/version", s.handleVersion)
 	mux.HandleFunc("POST /v1/client-apps/enroll", s.handleClientAppEnroll)
-	return s.withLogging(mux)
+
+	var inner http.Handler = mux
+	if s.cfg.IdentityStore != nil {
+		inner = middleware.AttachIdentity(s.cfg.IdentityStore, s.cfg.Proxy, s.logger)(inner)
+	}
+	return s.withLogging(inner)
 }
 
 // Start begins serving HTTP requests until the server shuts down.

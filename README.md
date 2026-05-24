@@ -33,6 +33,9 @@ Current foundation:
   bootstrap logging for unattended container deployments.
 - `POST /v1/client-apps/enroll` HTTP endpoint that redeems a
   server_registration invite + CSR for a 7-day signed leaf certificate.
+- Identity middleware that resolves a presented client certificate
+  (direct mTLS or proxy-forwarded) to its enrolled `(user_id, client_app_id)`
+  via the `issued_certificates` audit table.
 - Container-first release engineering with OCI labels and health checks.
 - Embedded SQL migration metadata for OpenCaravan journey storage.
 
