@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -35,6 +36,8 @@ const (
 	defaultAddress   = "0.0.0.0"
 	defaultPort      = 8080
 	defaultLogFormat = "text"
+	defaultConfigDir = "config"
+	defaultDataDir   = "data"
 	envPublicURL     = "SPIVOT_PUBLIC_URL"
 )
 
@@ -140,11 +143,17 @@ func runServe(ctx context.Context, stdout io.Writer, stderr io.Writer, args []st
 	_ = stderr
 
 	logger := newLogger(stdout, slog.LevelInfo, cfg.logFormat)
+	if err := ensureRuntimePaths(cfg); err != nil {
+		return err
+	}
 	logger.Info("starting Spivot Server",
 		"version", buildinfo.Version,
 		"commit", buildinfo.GitCommit,
 		"branch", buildinfo.GitBranch,
 		"built", buildinfo.BuildTime,
+		"config_dir", cfg.configDir,
+		"data_dir", cfg.dataDir,
+		"database_path", cfg.databasePath,
 	)
 
 	parentCtx := ctx
@@ -190,6 +199,9 @@ type serveConfig struct {
 	address            string
 	port               int
 	logFormat          string
+	configDir          string
+	dataDir            string
+	databasePath       string
 	publicURL          *url.URL
 	trustProxy         bool
 	trustedProxyCIDRs  []string
@@ -206,6 +218,9 @@ func parseServeConfig(args []string) (serveConfig, error) {
 		address:           envString("SPIVOT_ADDR", defaultAddress),
 		port:              envInt("SPIVOT_PORT", defaultPort),
 		logFormat:         envString("SPIVOT_LOG_FORMAT", defaultLogFormat),
+		configDir:         envString("SPIVOT_CONFIG_DIR", defaultConfigDir),
+		dataDir:           envString("SPIVOT_DATA_DIR", defaultDataDir),
+		databasePath:      envString("SPIVOT_DATABASE_PATH", ""),
 		trustProxy:        trustProxy,
 		trustedProxyCIDRs: splitCSV(trustedProxyCIDRs),
 	}
@@ -215,6 +230,9 @@ func parseServeConfig(args []string) (serveConfig, error) {
 	flags.StringVar(&cfg.address, "addr", cfg.address, "listen address")
 	flags.IntVar(&cfg.port, "port", cfg.port, "listen port")
 	flags.StringVar(&cfg.logFormat, "log-format", cfg.logFormat, "log format: text or json")
+	flags.StringVar(&cfg.configDir, "config-dir", cfg.configDir, "configuration directory")
+	flags.StringVar(&cfg.dataDir, "data-dir", cfg.dataDir, "persistent data directory")
+	flags.StringVar(&cfg.databasePath, "database-path", cfg.databasePath, "SQLite database path")
 	flags.BoolVar(&cfg.trustProxy, "trust-proxy", cfg.trustProxy, "trust X-Forwarded-* headers from trusted proxy CIDRs")
 	flags.Func("public-url", "public base URL advertised by the edge proxy", func(value string) error {
 		publicURL, err := parsePublicURL(value)
@@ -240,6 +258,13 @@ func parseServeConfig(args []string) (serveConfig, error) {
 	if cfg.logFormat != "text" && cfg.logFormat != "json" {
 		return cfg, fmt.Errorf("unknown log format: %q (expected text or json)", cfg.logFormat)
 	}
+	cfg.configDir = filepath.Clean(cfg.configDir)
+	cfg.dataDir = filepath.Clean(cfg.dataDir)
+	if cfg.databasePath == "" {
+		cfg.databasePath = filepath.Join(cfg.dataDir, "spivot.db")
+	} else {
+		cfg.databasePath = filepath.Clean(cfg.databasePath)
+	}
 	if cfg.publicURL == nil {
 		publicURL, err := parsePublicURL(envString(envPublicURL, ""))
 		if err != nil {
@@ -252,6 +277,60 @@ func parseServeConfig(args []string) (serveConfig, error) {
 		return cfg, fmt.Errorf("parse trusted proxy CIDRs: %w", err)
 	}
 	return cfg, nil
+}
+
+func ensureRuntimePaths(cfg serveConfig) error {
+	if err := ensureWritableDir(cfg.dataDir); err != nil {
+		return fmt.Errorf("prepare data directory %q: %w", cfg.dataDir, err)
+	}
+	databaseDir := filepath.Dir(cfg.databasePath)
+	if err := ensureWritableDir(databaseDir); err != nil {
+		return fmt.Errorf("prepare database directory %q: %w", databaseDir, err)
+	}
+	if err := ensureOptionalConfigDir(cfg.configDir); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ensureWritableDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("not a directory")
+	}
+	f, err := os.CreateTemp(dir, ".spivot-write-test-*")
+	if err != nil {
+		return fmt.Errorf("write test: %w", err)
+	}
+	name := f.Name()
+	if err := f.Close(); err != nil {
+		_ = os.Remove(name)
+		return fmt.Errorf("close write test: %w", err)
+	}
+	if err := os.Remove(name); err != nil {
+		return fmt.Errorf("remove write test: %w", err)
+	}
+	return nil
+}
+
+func ensureOptionalConfigDir(dir string) error {
+	info, err := os.Stat(dir)
+	if err == nil {
+		if !info.IsDir() {
+			return fmt.Errorf("config path %q is not a directory", dir)
+		}
+		return nil
+	}
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return fmt.Errorf("stat config directory %q: %w", dir, err)
 }
 
 func runHealthcheck(ctx context.Context, args []string) error {
@@ -325,6 +404,10 @@ Serve flags:
   -addr value        Listen address (default: SPIVOT_ADDR or 0.0.0.0)
   -port value        Listen port (default: SPIVOT_PORT or 8080)
   -log-format value  Log format: text or json (default: SPIVOT_LOG_FORMAT or text)
+  -config-dir value  Configuration directory (default: SPIVOT_CONFIG_DIR or config)
+  -data-dir value    Persistent data directory (default: SPIVOT_DATA_DIR or data)
+  -database-path value
+                    SQLite database path (default: SPIVOT_DATABASE_PATH or <data-dir>/spivot.db)
   -public-url value  Public base URL served by the edge proxy (default: SPIVOT_PUBLIC_URL)
   -trust-proxy       Trust X-Forwarded-* headers from configured proxy CIDRs
   -trusted-proxy-cidrs value

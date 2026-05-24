@@ -117,6 +117,11 @@ RFC3339 timestamp strings, integer-scaled coordinates, hashed invite tokens, and
 JSON extension documents. Runtime database driver selection is intentionally
 kept separate from this first data-model pass.
 
+Container deployments reserve `/etc/spivot` for operator configuration and
+`/var/lib/spivot` for durable state. The default SQLite database path is
+`/var/lib/spivot/spivot.db` in the container and `data/spivot.db` for local
+development unless `SPIVOT_DATABASE_PATH` is set.
+
 ## Containers
 
 Build a local OCI image:
