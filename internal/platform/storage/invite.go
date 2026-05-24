@@ -12,28 +12,43 @@ import (
 	"github.com/opencaravan/opencaravan-go"
 )
 
-// Invite is a server-side record of an invite token that has been issued.
-// The plaintext token value is never persisted; only the SHA-256 hash and
-// lifecycle metadata are stored.
+// Invite is the server-side record of an invite token that has been issued
+// against the client_app_invites table.
+//
+// The plaintext token value is never stored — only its SHA-256 hash, the
+// scope it authorizes, and lifecycle timestamps. Callers who receive an
+// Invite from [Store.IssueInvite], [Store.LookupInvite], or
+// [Store.ConsumeInvite] hold a complete snapshot of the row; the type
+// carries no shared state and is safe to share across goroutines.
+//
+// The lifecycle is linear: issued → optionally consumed (single-use) →
+// eventually expired. UsedTime is non-nil exactly when the invite has
+// been consumed; UsedByClientAppID names the ClientApp that consumed it.
+// Expiration is purely time-based; an unconsumed but expired invite
+// remains in the table until an operator prunes it.
 type Invite struct {
-	// TokenHash is the hex-encoded SHA-256 of the plaintext token value.
+	// TokenHash is the lowercase hex SHA-256 of the plaintext token value
+	// and serves as the primary key of the underlying row. The plaintext
+	// is intentionally unrecoverable from this record.
 	TokenHash string
-	// Scope identifies what kind of action the invite authorizes (see the
-	// opencaravan.InviteScope values).
+	// Scope identifies what action the invite authorizes. Values are drawn
+	// from [opencaravan.InviteScope] and persisted as their wire string.
 	Scope opencaravan.InviteScope
 	// CreatedTime is the RFC3339 UTC time the invite was issued.
 	CreatedTime time.Time
-	// ExpirationTime is the RFC3339 UTC time after which redemption fails.
+	// ExpirationTime is the RFC3339 UTC time after which redemption fails
+	// with [ErrInviteExpired].
 	ExpirationTime time.Time
-	// UsedTime is set when the invite has been consumed.
+	// UsedTime is non-nil exactly when the invite has been consumed.
 	UsedTime *time.Time
-	// UsedByClientAppID is the ClientApp ID that redeemed the invite,
-	// populated alongside UsedTime.
+	// UsedByClientAppID is the ClientApp that consumed the invite,
+	// populated atomically alongside UsedTime.
 	UsedByClientAppID string
 }
 
 // Active reports whether the invite is currently redeemable: not yet used
-// and not yet expired as of now.
+// and not yet expired as of now. Callers pass an explicit now to keep the
+// check deterministic in tests.
 func (i Invite) Active(now time.Time) bool {
 	if i.UsedTime != nil {
 		return false
@@ -41,22 +56,43 @@ func (i Invite) Active(now time.Time) bool {
 	return now.Before(i.ExpirationTime)
 }
 
-// ErrInviteNotFound is returned when no invite matches the supplied token.
+// ErrInviteNotFound is returned (wrapped via [fmt.Errorf] with %w where
+// the call site has helpful context) when no row in client_app_invites
+// matches the supplied token's hash. Callers detect this via [errors.Is].
 var ErrInviteNotFound = errors.New("storage: invite not found")
 
-// ErrInviteAlreadyUsed is returned when the invite has already been
-// redeemed.
+// ErrInviteAlreadyUsed is returned by [Store.LookupInvite] and
+// [Store.ConsumeInvite] when the row exists but its UsedTime is already
+// set. Single-use is enforced at the storage layer via the conditional
+// UPDATE inside ConsumeInvite, so this is the canonical "second caller
+// lost the race" signal.
 var ErrInviteAlreadyUsed = errors.New("storage: invite already used")
 
-// ErrInviteExpired is returned when the invite's ExpirationTime has passed.
+// ErrInviteExpired is returned by [Store.LookupInvite] and
+// [Store.ConsumeInvite] when the row exists, is unused, but its
+// ExpirationTime has passed. Expired invites are not auto-deleted.
 var ErrInviteExpired = errors.New("storage: invite expired")
 
-// IssueInvite generates a fresh invite token of the requested scope,
-// persists its hash + metadata, and returns the plaintext token (the only
-// time the caller sees it) alongside the persisted Invite record.
+// IssueInvite generates a fresh invite token of the requested scope and
+// persists it.
 //
-// Lifetime must be positive. The generated token follows the OpenCaravan
-// invite-token convention (256 bits of entropy, unpadded base64url).
+// The plaintext token is returned to the caller; only the SHA-256 hash
+// is stored. The plaintext is the caller's single chance to display,
+// log, or share the token — once IssueInvite returns, the hash is the
+// only record of it. Token bytes follow the OpenCaravan convention:
+// 256 bits of [crypto/rand] entropy encoded as unpadded base64url via
+// [opencaravan.NewInviteToken].
+//
+// Concurrent IssueInvite calls are independent. Each generates its own
+// random token, each produces a distinct TokenHash, and the PRIMARY KEY
+// on token_hash means any (astronomically unlikely) collision surfaces
+// as a SQL error rather than as a silent overwrite. Two parallel admin
+// operations can each successfully issue a server_registration invite
+// without coordination — this is the intended pattern.
+//
+// Returns an error if the store is closed, scope is not a known
+// [opencaravan.InviteScope], lifetime is non-positive, or the insert
+// fails.
 func (s *Store) IssueInvite(ctx context.Context, scope opencaravan.InviteScope, lifetime time.Duration) (opencaravan.InviteToken, Invite, error) {
 	if s == nil || s.db == nil {
 		return opencaravan.InviteToken{}, Invite{}, errors.New("storage: database is not open")
@@ -91,10 +127,22 @@ VALUES (?, ?, ?, ?)
 	}, nil
 }
 
-// LookupInvite returns the Invite associated with tokenValue. Returns
-// ErrInviteNotFound if no row matches the token's hash; ErrInviteExpired
-// if the invite has expired; ErrInviteAlreadyUsed if the invite has been
-// redeemed.
+// LookupInvite returns the Invite whose stored hash matches tokenValue,
+// without mutating any row. Used as a read-only check (for example, to
+// display expiry to the caller) before [Store.ConsumeInvite] commits the
+// redeem.
+//
+// The "redeemable" semantics ride along in the return: an active invite
+// returns a nil error; an existing-but-used row returns the loaded
+// Invite plus [ErrInviteAlreadyUsed]; an existing-but-expired row
+// returns the loaded Invite plus [ErrInviteExpired]; an unknown token
+// returns [ErrInviteNotFound] and a zero Invite.
+//
+// The expiration check is "now" relative to the wall clock at call
+// time; an unexpired LookupInvite return does not guarantee a subsequent
+// ConsumeInvite will succeed if the call straddles the expiration
+// boundary. Callers that need exact atomicity rely on ConsumeInvite
+// directly.
 func (s *Store) LookupInvite(ctx context.Context, tokenValue string) (Invite, error) {
 	invite, err := s.lookupInviteByHash(ctx, hashInviteToken(tokenValue))
 	if err != nil {
@@ -110,8 +158,21 @@ func (s *Store) LookupInvite(ctx context.Context, tokenValue string) (Invite, er
 }
 
 // ConsumeInvite atomically marks the invite identified by tokenValue as
-// used by clientAppID. Returns ErrInviteNotFound, ErrInviteAlreadyUsed, or
-// ErrInviteExpired if the invite cannot be redeemed.
+// used by clientAppID and returns the resulting Invite.
+//
+// Atomicity is provided by a single conditional UPDATE: the row is
+// mutated in one SQL statement only when its used_time is still NULL and
+// its expiration_time is still in the future. Two concurrent
+// ConsumeInvite calls for the same token cannot both succeed; exactly
+// one observes rows-affected == 1, the other observes zero and gets
+// [ErrInviteAlreadyUsed]. The same guarantee holds across multiple
+// processes against the same SQLite database thanks to SQLite's
+// per-statement transactional semantics.
+//
+// Returns [ErrInviteNotFound], [ErrInviteAlreadyUsed], or
+// [ErrInviteExpired] when the invite cannot be redeemed, or an error
+// wrapping the underlying SQL failure for transport-level problems.
+// clientAppID must be non-empty.
 func (s *Store) ConsumeInvite(ctx context.Context, tokenValue string, clientAppID string) (Invite, error) {
 	if s == nil || s.db == nil {
 		return Invite{}, errors.New("storage: database is not open")
@@ -153,9 +214,15 @@ WHERE token_hash = ?
 }
 
 // UnconsumedInviteCount returns the number of currently-active (unused,
-// unexpired) invites with the requested scope. Used by the bootstrap
-// log-emission path to decide whether a fresh server_registration invite
-// is needed on first run.
+// unexpired) invites with the requested scope.
+//
+// The returned count is a snapshot at the time of the SELECT; concurrent
+// IssueInvite or ConsumeInvite operations can change the underlying
+// value the instant the function returns. The bootstrap-emission path
+// in cmd/spivot-server treats a zero result as "no invite has been
+// issued yet" and proceeds to issue one; two parallel zero observations
+// produce two harmless bootstrap invites rather than any correctness
+// problem.
 func (s *Store) UnconsumedInviteCount(ctx context.Context, scope opencaravan.InviteScope) (int, error) {
 	if s == nil || s.db == nil {
 		return 0, errors.New("storage: database is not open")
@@ -173,12 +240,16 @@ WHERE scope = ? AND used_time IS NULL AND expiration_time > ?
 	return count, nil
 }
 
-// AccountCount returns the number of rows in the accounts table. Used by
-// the bootstrap log-emission path; an empty accounts table is the signal
-// that the server has never registered a user.
+// AccountCount returns the number of rows in the accounts table.
 //
-// TODO: rename to UserCount when the accounts table is migrated to align
-// with the opencaravan-go vocabulary (account -> user).
+// The bootstrap-emission path uses this as the "has this server ever
+// registered a user?" signal: a zero count combined with zero unconsumed
+// server_registration invites triggers a fresh bootstrap invite.
+//
+// The helper still names "accounts" because that is the table created by
+// the initial migration; a later phase renames accounts → users to align
+// with the opencaravan-go vocabulary, at which point this becomes
+// UserCount with identical shape.
 func (s *Store) AccountCount(ctx context.Context) (int, error) {
 	if s == nil || s.db == nil {
 		return 0, errors.New("storage: database is not open")
@@ -190,6 +261,11 @@ func (s *Store) AccountCount(ctx context.Context) (int, error) {
 	return count, nil
 }
 
+// lookupInviteByHash loads the persisted row keyed by hash without
+// applying any "is it redeemable now?" interpretation. Shared by
+// LookupInvite (which adds the time/used checks afterward) and the
+// rows-affected==0 fallback in ConsumeInvite (which needs the existing
+// row's state to distinguish ErrInviteAlreadyUsed from ErrInviteExpired).
 func (s *Store) lookupInviteByHash(ctx context.Context, hash string) (Invite, error) {
 	row := s.db.QueryRowContext(ctx, `
 SELECT token_hash, scope, created_time, expiration_time, used_time, used_by_client_app_id
@@ -239,6 +315,15 @@ WHERE token_hash = ?
 	return invite, nil
 }
 
+// hashInviteToken returns the lowercase hex SHA-256 of tokenValue.
+//
+// Plain SHA-256 (not HMAC) is sufficient here because the input is a
+// uniformly-random 256-bit value generated by [opencaravan.NewInviteToken]
+// — preimage and collision resistance are equivalent to the underlying
+// entropy, and there is no attacker-chosen-input path that an HMAC key
+// would defend. No salt: the token is its own entropy source, and a
+// deterministic plaintext→hash mapping is what lets ConsumeInvite
+// locate the row.
 func hashInviteToken(tokenValue string) string {
 	sum := sha256.Sum256([]byte(tokenValue))
 	return hex.EncodeToString(sum[:])
