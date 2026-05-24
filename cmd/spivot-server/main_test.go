@@ -4,11 +4,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/opencaravan/opencaravan-go"
+	"github.com/wheelsdown/spivot-server/internal/platform/storage"
 )
 
 func TestRunVersionJSON(t *testing.T) {
@@ -232,6 +238,127 @@ func fingerprintLine(t *testing.T, output string) string {
 	}
 	t.Fatalf("no fingerprint line in output:\n%s", output)
 	return ""
+}
+
+func TestInviteCreatePrintsToken(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("SPIVOT_DATA_DIR", dataDir)
+
+	var stdout bytes.Buffer
+	if err := run(context.Background(), &stdout, &bytes.Buffer{}, []string{"invite", "create"}); err != nil {
+		t.Fatalf("invite create: %v", err)
+	}
+	out := stdout.String()
+	for _, want := range []string{"invite issued", "scope:", "server_registration", "token_hash:", "token:"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("invite create output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestInviteCreateAcceptsScopeAndLifetime(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("SPIVOT_DATA_DIR", dataDir)
+
+	var stdout bytes.Buffer
+	args := []string{"invite", "create", "-scope", "journey", "-lifetime", "1h"}
+	if err := run(context.Background(), &stdout, &bytes.Buffer{}, args); err != nil {
+		t.Fatalf("invite create journey: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "journey") {
+		t.Fatalf("output missing journey scope:\n%s", stdout.String())
+	}
+}
+
+func TestInviteRejectsUnknownSubcommand(t *testing.T) {
+	t.Setenv("SPIVOT_DATA_DIR", t.TempDir())
+
+	err := run(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, []string{"invite", "bogus"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "unknown invite subcommand") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestInviteRequiresSubcommand(t *testing.T) {
+	err := run(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, []string{"invite"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "requires a subcommand") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestEmitBootstrapInviteOnEmptyServer(t *testing.T) {
+	store := newBootstrapTestStore(t)
+
+	var stdout bytes.Buffer
+	logger := newTestLogger(t)
+	if err := emitBootstrapInviteIfNeeded(context.Background(), store, &stdout, logger); err != nil {
+		t.Fatalf("emit bootstrap: %v", err)
+	}
+	out := stdout.String()
+	for _, want := range []string{"SPIVOT SERVER FIRST-RUN BOOTSTRAP", "server_registration", "Single-use, 24h"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("banner missing %q:\n%s", want, out)
+		}
+	}
+
+	count, err := store.UnconsumedInviteCount(context.Background(), opencaravan.InviteScopeServerRegistration)
+	if err != nil {
+		t.Fatalf("UnconsumedInviteCount: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("invite count after emit = %d, want 1", count)
+	}
+}
+
+func TestEmitBootstrapInviteSkipsWhenAlreadyActive(t *testing.T) {
+	store := newBootstrapTestStore(t)
+	ctx := context.Background()
+	if _, _, err := store.IssueInvite(ctx, opencaravan.InviteScopeServerRegistration, 24*time.Hour); err != nil {
+		t.Fatalf("seed invite: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	logger := newTestLogger(t)
+	if err := emitBootstrapInviteIfNeeded(ctx, store, &stdout, logger); err != nil {
+		t.Fatalf("emit bootstrap (skip path): %v", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("banner emitted despite active invite:\n%s", stdout.String())
+	}
+
+	count, err := store.UnconsumedInviteCount(ctx, opencaravan.InviteScopeServerRegistration)
+	if err != nil {
+		t.Fatalf("UnconsumedInviteCount: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("invite count after skip = %d, want 1 (existing seed)", count)
+	}
+}
+
+func newBootstrapTestStore(t *testing.T) *storage.Store {
+	t.Helper()
+	dir := t.TempDir()
+	store, err := storage.Open(context.Background(), storage.Config{Path: filepath.Join(dir, "spivot.db")})
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	})
+	return store
+}
+
+func newTestLogger(t *testing.T) *slog.Logger {
+	t.Helper()
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
 func TestHealthcheck(t *testing.T) {

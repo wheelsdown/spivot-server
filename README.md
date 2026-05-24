@@ -29,6 +29,8 @@ Current foundation:
 - In-band server policy snapshot advertisement.
 - Server-local certificate authority (`spivot-server ca init`) that issues
   short-lived client app certificates.
+- Single-use invite tokens for client app enrollment, with first-run
+  bootstrap logging for unattended container deployments.
 - Container-first release engineering with OCI labels and health checks.
 - Embedded SQL migration metadata for OpenCaravan journey storage.
 
@@ -118,6 +120,53 @@ Phase 2a of the auth rollout adds the CA primitive and an audit table
 phases wire the CA into the enrollment HTTP endpoint and the
 identity/session middleware.
 
+## Client App Enrollment Invites
+
+Spivot Server uses single-use invite tokens to gate which apps may enroll.
+Each token carries a scope (`server_registration` for new users,
+`journey` for joining a private journey), an expiration, and a one-time-use
+guarantee. Only the SHA-256 hash of the token is stored on disk; the
+plaintext is shown to the operator exactly once at issuance.
+
+### First-run bootstrap
+
+The first time a fresh server starts with zero registered users and no
+active `server_registration` invite, it self-issues a 24-hour invite and
+prints a fenced banner to its stdout. The expected operator flow:
+
+```
+docker run ... ghcr.io/wheelsdown/spivot-server:latest serve
+...
+████████████████████████████████████████████████████████████████████
+  SPIVOT SERVER FIRST-RUN BOOTSTRAP
+  ────────────────────────────────────────────────────────────────
+  No administrator is registered. Use this server_registration
+  invite to enroll the first user. Single-use, 24h expiry.
+
+      <43-character base64url token>
+
+  iOS app: Settings → Add Account → Use Invite
+████████████████████████████████████████████████████████████████████
+```
+
+The operator copies the token from container logs into the first
+administrator's app. Subsequent restarts while the bootstrap invite is
+still active stay silent. Once a user is registered, the bootstrap path
+never runs again.
+
+### Day-two invites
+
+After bootstrap, additional invites are issued by an administrator via
+the CLI (later phases will add an authenticated HTTP endpoint):
+
+```bash
+spivot-server invite create                         # 24h server_registration invite
+spivot-server invite create -scope journey -lifetime 7d
+```
+
+The output includes the plaintext token, the scope, the expiration time,
+and the stored token hash for audit correlation.
+
 ## Storage Schema
 
 The first schema foundation lives in
@@ -142,6 +191,11 @@ The Phase 2a migration adds:
 
 - `issued_certificates` — audit trail of every leaf certificate the CA has
   signed (serial, subject, validity window, issuance time, revocation time).
+
+The Phase 2b migration adds:
+
+- `client_app_invites` — hashed invite tokens (token_hash, scope,
+  created/expiration timestamps, used_time, used_by_client_app_id).
 
 The schema stores protocol-facing data conservatively: text identifiers,
 RFC3339 timestamp strings, integer-scaled coordinates, hashed invite tokens, and
