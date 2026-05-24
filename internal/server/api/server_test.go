@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -9,6 +11,14 @@ import (
 	"net/url"
 	"testing"
 )
+
+type pingStore struct {
+	err error
+}
+
+func (s pingStore) Ping(context.Context) error {
+	return s.err
+}
 
 func TestHealthEndpoint(t *testing.T) {
 	server := NewServer(Config{Address: "127.0.0.1", Port: 8080}, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -50,6 +60,54 @@ func TestVersionEndpoint(t *testing.T) {
 	}
 	if got["uptime"] == "" {
 		t.Fatal("uptime is empty")
+	}
+}
+
+func TestReadyEndpointChecksStore(t *testing.T) {
+	server := NewServer(Config{
+		Address: "127.0.0.1",
+		Port:    8080,
+		Store:   pingStore{},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var got map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["status"] != "ready" {
+		t.Fatalf("status = %q, want ready", got["status"])
+	}
+}
+
+func TestReadyEndpointReportsStoreFailure(t *testing.T) {
+	server := NewServer(Config{
+		Address: "127.0.0.1",
+		Port:    8080,
+		Store:   pingStore{err: errors.New("database offline")},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+
+	var got map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["status"] != "unready" {
+		t.Fatalf("status = %q, want unready", got["status"])
 	}
 }
 

@@ -2,8 +2,8 @@
 --
 -- This migration intentionally uses a conservative relational subset: TEXT
 -- identifiers, RFC 3339 UTC timestamps in TEXT columns, INTEGER booleans, and
--- JSON documents stored as TEXT. That keeps the protocol data model clear while
--- Spivot Server is still choosing its concrete runtime database driver.
+-- JSON documents stored as TEXT. That keeps the protocol data model clear and
+-- portable while Spivot Server runs the schema on SQLite.
 
 CREATE TABLE schema_migrations (
     version INTEGER PRIMARY KEY,

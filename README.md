@@ -114,8 +114,8 @@ The initial OpenCaravan migration covers:
 
 The schema stores protocol-facing data conservatively: text identifiers,
 RFC3339 timestamp strings, integer-scaled coordinates, hashed invite tokens, and
-JSON extension documents. Runtime database driver selection is intentionally
-kept separate from this first data-model pass.
+JSON extension documents. Runtime storage uses SQLite, with the embedded
+migrations applied at startup before the server begins handling API traffic.
 
 Container deployments reserve `/etc/spivot` for operator configuration and
 `/var/lib/spivot` for durable state. The default SQLite database path is

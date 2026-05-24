@@ -18,6 +18,12 @@ import (
 	"github.com/wheelsdown/spivot-server/internal/platform/proxy"
 )
 
+// Store is the database behavior the API server needs for readiness checks.
+type Store interface {
+	// Ping verifies that the backing store is reachable.
+	Ping(context.Context) error
+}
+
 // Config describes the HTTP API server's listen and deployment metadata.
 type Config struct {
 	// Address is the local TCP address to bind.
@@ -28,6 +34,8 @@ type Config struct {
 	PublicURL *url.URL
 	// Proxy controls whether forwarded request metadata is trusted.
 	Proxy proxy.Config
+	// Store is the runtime database dependency.
+	Store Store
 }
 
 // ListenAddr returns the TCP address used by the HTTP server.
@@ -55,7 +63,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", s.handleRoot)
 	mux.HandleFunc("GET /health", s.handleHealth)
-	mux.HandleFunc("GET /readyz", s.handleHealth)
+	mux.HandleFunc("GET /readyz", s.handleReady)
 	mux.HandleFunc("GET /v1/version", s.handleVersion)
 	return s.withLogging(mux)
 }
@@ -140,12 +148,37 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	}, s.logger)
 }
 
+func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.Store != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := s.cfg.Store.Ping(ctx); err != nil {
+			s.logger.Warn("readiness check failed", "error", err)
+			writeJSONStatus(w, http.StatusServiceUnavailable, map[string]string{
+				"status":  "unready",
+				"version": buildinfo.Version,
+			}, s.logger)
+			return
+		}
+	}
+
+	writeJSON(w, map[string]string{
+		"status":  "ready",
+		"version": buildinfo.Version,
+	}, s.logger)
+}
+
 func (s *Server) handleVersion(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, buildinfo.RuntimeInfo(), s.logger)
 }
 
 func writeJSON(w http.ResponseWriter, v any, logger *slog.Logger) {
+	writeJSONStatus(w, http.StatusOK, v, logger)
+}
+
+func writeJSONStatus(w http.ResponseWriter, status int, v any, logger *slog.Logger) {
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		logger.Debug("failed to write JSON response", "error", err)
 	}
