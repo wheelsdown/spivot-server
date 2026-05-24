@@ -161,6 +161,9 @@ VALUES (?, ?, ?, ?)
 // boundary. Callers that need exact atomicity rely on ConsumeInvite
 // directly.
 func (s *Store) LookupInvite(ctx context.Context, tokenValue string) (Invite, error) {
+	if s == nil || s.db == nil {
+		return Invite{}, errors.New("storage: database is not open")
+	}
 	invite, err := s.lookupInviteByHash(ctx, hashInviteToken(tokenValue))
 	if err != nil {
 		return Invite{}, err
@@ -168,7 +171,13 @@ func (s *Store) LookupInvite(ctx context.Context, tokenValue string) (Invite, er
 	if invite.UsedTime != nil {
 		return invite, ErrInviteAlreadyUsed
 	}
-	if time.Now().UTC().After(invite.ExpirationTime) {
+	// Expired when now is at or after the expiration. Matches the SQL
+	// filter (expiration_time > now → "still active") used inside
+	// ConsumeInvite and UnconsumedInviteCount, and matches Invite.Active.
+	// Using .After would make the boundary inclusive on the wrong side
+	// and let an at-the-exact-tick LookupInvite contradict an
+	// at-the-exact-tick ConsumeInvite.
+	if !time.Now().UTC().Before(invite.ExpirationTime) {
 		return invite, ErrInviteExpired
 	}
 	return invite, nil
@@ -305,11 +314,11 @@ WHERE token_hash = ?
 		return Invite{}, fmt.Errorf("storage: load invite: %w", err)
 	}
 
-	created, err := time.Parse(sqliteTimeFormat,createdTime)
+	created, err := time.Parse(sqliteTimeFormat, createdTime)
 	if err != nil {
 		return Invite{}, fmt.Errorf("storage: parse invite created_time: %w", err)
 	}
-	expiration, err := time.Parse(sqliteTimeFormat,expirationTime)
+	expiration, err := time.Parse(sqliteTimeFormat, expirationTime)
 	if err != nil {
 		return Invite{}, fmt.Errorf("storage: parse invite expiration_time: %w", err)
 	}
@@ -320,7 +329,7 @@ WHERE token_hash = ?
 		ExpirationTime: expiration,
 	}
 	if usedTime.Valid {
-		used, err := time.Parse(sqliteTimeFormat,usedTime.String)
+		used, err := time.Parse(sqliteTimeFormat, usedTime.String)
 		if err != nil {
 			return Invite{}, fmt.Errorf("storage: parse invite used_time: %w", err)
 		}
