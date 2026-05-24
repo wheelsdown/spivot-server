@@ -29,6 +29,7 @@ import (
 	"github.com/wheelsdown/spivot-server/internal/app"
 	"github.com/wheelsdown/spivot-server/internal/platform/buildinfo"
 	"github.com/wheelsdown/spivot-server/internal/platform/proxy"
+	"github.com/wheelsdown/spivot-server/internal/platform/storage"
 	"github.com/wheelsdown/spivot-server/internal/server/api"
 )
 
@@ -155,6 +156,23 @@ func runServe(ctx context.Context, stdout io.Writer, stderr io.Writer, args []st
 		"data_dir", cfg.dataDir,
 		"database_path", cfg.databasePath,
 	)
+	store, err := storage.Open(ctx, storage.Config{Path: cfg.databasePath})
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := store.Close(); err != nil {
+			logger.Error("storage close failed", "error", err)
+		}
+	}()
+	appliedMigrations, err := store.AppliedMigrations(ctx)
+	if err != nil {
+		return err
+	}
+	logger.Info("storage ready",
+		"database_path", store.Path(),
+		"applied_migrations", len(appliedMigrations),
+	)
 
 	parentCtx := ctx
 	ctx, cancel := context.WithCancel(parentCtx)
@@ -191,6 +209,7 @@ func runServe(ctx context.Context, stdout io.Writer, stderr io.Writer, args []st
 			TrustForwardedHeaders: cfg.trustProxy,
 			TrustedNetworks:       cfg.trustedProxyRanges,
 		},
+		Store: store,
 	}, logger)
 	return app.New(server, logger).Serve(ctx)
 }

@@ -2,6 +2,6 @@
 //
 // The first schema mirrors OpenCaravan protocol concepts directly: servers,
 // accounts, devices, vehicles, journeys, invites, participants, segments, and
-// position telemetry. Runtime database wiring will live beside this package
-// once the project commits to a concrete driver.
+// position telemetry. Runtime storage uses SQLite with embedded migrations so
+// the running binary owns the schema it applies.
 package storage
