@@ -80,6 +80,33 @@ func TestLoadOrCreateReusesPersistedCA(t *testing.T) {
 	}
 }
 
+func TestLoadOrCreateRejectsMismatchedKeyAndCert(t *testing.T) {
+	dir := t.TempDir()
+	keyStore, err := NewFileKeyStore(dir)
+	if err != nil {
+		t.Fatalf("NewFileKeyStore: %v", err)
+	}
+	ctx := context.Background()
+	if _, err := LoadOrCreate(ctx, keyStore, Config{Dir: dir}); err != nil {
+		t.Fatalf("initial LoadOrCreate: %v", err)
+	}
+
+	// Simulate the failure mode: the CA cert is preserved but the key file
+	// is deleted, so the next LoadOrCreate generates a fresh key whose
+	// public half does not match the persisted certificate.
+	if err := os.Remove(filepath.Join(dir, "ca.key.pem")); err != nil {
+		t.Fatalf("remove ca key: %v", err)
+	}
+
+	_, err = LoadOrCreate(ctx, keyStore, Config{Dir: dir})
+	if err == nil {
+		t.Fatal("LoadOrCreate(mismatched key/cert) error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("LoadOrCreate(mismatched) error = %v, want match-failure message", err)
+	}
+}
+
 func TestLoadOrCreateHonorsCustomSubject(t *testing.T) {
 	dir := t.TempDir()
 	keyStore, err := NewFileKeyStore(dir)

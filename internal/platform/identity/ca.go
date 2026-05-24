@@ -110,12 +110,35 @@ func LoadOrCreate(ctx context.Context, keystore KeyStore, cfg Config) (*CA, erro
 		if err := atomicWrite(cfg.Dir, certPath, certPEM, 0o644); err != nil {
 			return nil, fmt.Errorf("identity: persist ca cert: %w", err)
 		}
+	} else if err := verifyCertMatchesKey(cert, key); err != nil {
+		// A persisted cert that was not issued by the loaded key would
+		// silently produce leaf certs that fail to validate against the
+		// returned CA cert. Fail fast and let the operator decide whether
+		// to restore the missing piece or wipe and re-bootstrap.
+		return nil, fmt.Errorf("identity: ca state at %q is inconsistent: %w", cfg.Dir, err)
 	}
 
 	if cert == nil {
 		return nil, errors.New("identity: ca certificate unavailable after bootstrap")
 	}
 	return &CA{cert: cert, certPEM: certPEM, key: key, dir: cfg.Dir}, nil
+}
+
+// verifyCertMatchesKey reports whether cert's public key matches the public
+// half of key. Used to detect the case where the CA key and CA certificate
+// have drifted (one was restored from backup without the other, or one was
+// deleted and regenerated while the other was retained).
+func verifyCertMatchesKey(cert *x509.Certificate, key crypto.Signer) error {
+	certPub, ok := cert.PublicKey.(interface {
+		Equal(crypto.PublicKey) bool
+	})
+	if !ok {
+		return errors.New("ca certificate public key does not support equality comparison")
+	}
+	if !certPub.Equal(key.Public()) {
+		return errors.New("ca certificate public key does not match loaded ca private key")
+	}
+	return nil
 }
 
 // Certificate returns the parsed CA certificate.
