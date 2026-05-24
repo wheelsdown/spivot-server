@@ -11,6 +11,9 @@ CREATE TABLE schema_migrations (
     applied_at TEXT NOT NULL
 );
 
+-- The initial implementation uses policy_hash as id so snapshots are
+-- content-addressed. The columns remain separate so a future server-local
+-- identifier can diverge from the digest without reshaping foreign keys.
 CREATE TABLE server_policy_snapshots (
     id TEXT PRIMARY KEY,
     policy_hash TEXT NOT NULL UNIQUE,

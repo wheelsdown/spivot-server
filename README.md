@@ -25,7 +25,8 @@ Current foundation:
 
 - Go HTTP service with a small `main` shim around a testable `run` entry point.
 - Structured logging with `log/slog`.
-- Health, readiness, and version endpoints.
+- Health, readiness, version, and server discovery endpoints.
+- In-band server policy snapshot advertisement.
 - Container-first release engineering with OCI labels and health checks.
 - Embedded SQL migration metadata for OpenCaravan journey storage.
 
@@ -85,6 +86,7 @@ The current HTTP surface is deliberately small:
 GET /             service summary
 GET /health       liveness check
 GET /readyz       readiness check
+GET /v1/server    server discovery, capabilities, and policy snapshot
 GET /v1/version   build and runtime version metadata
 ```
 

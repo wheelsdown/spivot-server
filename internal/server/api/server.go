@@ -36,6 +36,10 @@ type Config struct {
 	Proxy proxy.Config
 	// Store is the runtime database dependency.
 	Store Store
+	// PolicySnapshot is captured by value at server startup and advertised to
+	// clients until the process restarts. Runtime policy rotation should make
+	// that lifecycle explicit rather than mutating this value in place.
+	PolicySnapshot ServerPolicySnapshot
 }
 
 // ListenAddr returns the TCP address used by the HTTP server.
@@ -64,6 +68,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /", s.handleRoot)
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /readyz", s.handleReady)
+	mux.HandleFunc("GET /v1/server", s.handleServerInfo)
 	mux.HandleFunc("GET /v1/version", s.handleVersion)
 	return s.withLogging(mux)
 }
@@ -170,6 +175,10 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleVersion(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, buildinfo.RuntimeInfo(), s.logger)
+}
+
+func (s *Server) handleServerInfo(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, s.serverInfo(), s.logger)
 }
 
 func writeJSON(w http.ResponseWriter, v any, logger *slog.Logger) {
