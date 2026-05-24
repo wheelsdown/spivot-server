@@ -41,6 +41,13 @@ Do not enable proxy trust for a service port that is directly reachable by
 untrusted clients. Forwarded headers are caller-controlled unless a trusted
 edge proxy strips and rewrites them.
 
+## Docker Compose
+
+See [docs/deployment/docker-compose.md](docker-compose.md) for a minimal
+production Compose service that runs Spivot Server behind an existing edge
+proxy. That example pins a release image tag and leaves proxy route labels to
+the local deployment.
+
 ## Caddy
 
 See [examples/deploy/caddy/Caddyfile](../../examples/deploy/caddy/Caddyfile).

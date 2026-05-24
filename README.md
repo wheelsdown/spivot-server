@@ -137,6 +137,9 @@ Published releases are intended to be consumed from GitHub Container Registry:
 docker pull ghcr.io/wheelsdown/spivot-server:latest
 ```
 
+For production Docker Compose deployments behind an existing reverse proxy, see
+[docs/deployment/docker-compose.md](docs/deployment/docker-compose.md).
+
 ## Release Engineering
 
 Release tags use semver with a leading `v`, such as `v0.1.0` or
