@@ -55,6 +55,29 @@ clean:
 
 # --- Container ---
 
+[private]
+_ensure-buildx-builder name:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Verify a buildx builder named $name exists, is using the
+    # docker-container driver, and has been bootstrapped. Multi-arch
+    # / cross-platform builds require docker-container; the default
+    # `docker` driver only supports the host platform and silently
+    # produces single-arch output that looks correct but isn't.
+    # This mirrors the stricter check in
+    # scripts/releng/build-container-archive.sh so the local recipes
+    # fail-loud the same way the release path does.
+    if ! docker buildx inspect '{{name}}' >/dev/null 2>&1; then
+        docker buildx create --name '{{name}}' --driver docker-container --bootstrap >/dev/null
+    else
+        docker buildx inspect '{{name}}' --bootstrap >/dev/null
+    fi
+    driver="$(docker buildx inspect '{{name}}' | awk -F': ' '/^Driver:/ { print $2; exit }' | tr -d '[:space:]')"
+    if [ "$driver" = "docker" ]; then
+        echo "buildx builder '{{name}}' uses the docker driver; recreate with: docker buildx create --name '{{name}}' --driver docker-container --bootstrap" >&2
+        exit 1
+    fi
+
 [group('container')]
 container tag=dev_image platforms=container_platforms tarball_dir=container_tarball_dir:
     #!/usr/bin/env bash
@@ -71,16 +94,8 @@ container tag=dev_image platforms=container_platforms tarball_dir=container_tarb
     # imported into the local Docker daemon so the
     # container-check / container-run recipes (which need a
     # daemon-resident image) keep working unchanged.
-    #
-    # buildx with a docker-container driver is required for
-    # cross-platform builds; the managed `spivot-local` builder
-    # is created on first use and reused across invocations so
-    # the build cache survives.
     mkdir -p '{{tarball_dir}}'
-    if ! docker buildx inspect '{{container_builder}}' >/dev/null 2>&1; then
-        docker buildx create --name '{{container_builder}}' \
-            --driver docker-container --bootstrap
-    fi
+    just _ensure-buildx-builder '{{container_builder}}'
     common_args=(
         --builder '{{container_builder}}'
         --build-arg "SPIVOT_VERSION={{version}}"
@@ -118,7 +133,10 @@ container tag=dev_image platforms=container_platforms tarball_dir=container_tarb
     for entry in "${built[@]}"; do
         arch="${entry%%:*}"; tarball="${entry#*:}"
         base="$(basename "$tarball")"
-        echo "  $arch:  scp $tarball <host>:/tmp/ && ssh <host> docker load -i /tmp/$base"
+        # Single-quote both paths so $tarball_dir values with spaces
+        # or shell-sensitive characters survive an operator's copy
+        # and paste.
+        echo "  $arch:  scp '$tarball' <host>:/tmp/ && ssh <host> docker load -i '/tmp/$base'"
     done
 
 [group('container')]
@@ -143,10 +161,7 @@ container-push tag=dev_image platforms=container_platforms:
     # Caller must be logged into the registry before invoking:
     #   echo "$(gh auth token)" | docker login ghcr.io \
     #       -u "$(gh api user -q .login)" --password-stdin
-    if ! docker buildx inspect '{{container_builder}}' >/dev/null 2>&1; then
-        docker buildx create --name '{{container_builder}}' \
-            --driver docker-container --bootstrap
-    fi
+    just _ensure-buildx-builder '{{container_builder}}'
     docker buildx build \
         --builder '{{container_builder}}' \
         --platform '{{platforms}}' \
