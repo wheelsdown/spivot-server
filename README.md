@@ -12,10 +12,11 @@ alongside the first OpenCaravan specification so the protocol has a practical,
 operable reference implementation from the beginning.
 
 The primary release artifact is a well-labeled, OCI-compliant multi-arch
-container image. A v0.2.0 deployment includes the complete client-app
-enrollment + session macaroon auth stack, the first protected CRUD
-endpoints (journey + telemetry), and a documented HTTP/3 + mTLS Traefik
-recipe an operator can stand up in under fifteen minutes.
+container image. The current release line includes the complete
+client-app enrollment + session macaroon auth stack, the first
+protected CRUD endpoints (journey + telemetry), and a documented HTTP/3
++ mTLS Traefik recipe an operator can stand up in under fifteen
+minutes.
 
 ## Project Status
 
