@@ -1,0 +1,51 @@
+# Traefik dynamic configuration for the Spivot mTLS deployment.
+# Referenced by docker-compose.yml via the file provider.
+
+tls:
+  options:
+    # spivot-mtls is the TLS options profile the spivot router
+    # applies via `tls.options=spivot-mtls@file`. It pins TLS 1.3
+    # and turns the connection into an mTLS-capable one: clients
+    # MAY present a certificate; if they do, Traefik verifies it
+    # against the Spivot CA and rejects the handshake when it
+    # doesn't chain. Without this mode, passTLSClientCert below
+    # would happily forward a self-signed cert and the proxy
+    # package would treat it as a verified identity.
+    spivot-mtls:
+      minVersion: VersionTLS13
+      clientAuth:
+        caFiles:
+          # Path inside the Traefik container; the host file is
+          # mounted from ./ca/spivot-ca.crt in docker-compose.yml.
+          - /etc/traefik/spivot-ca.crt
+        # VerifyClientCertIfGiven is the optional-but-verified
+        # mode: a connection without a cert proceeds (so
+        # enrollment over plain HTTPS keeps working), but any
+        # presented cert must chain to caFiles or the handshake
+        # is rejected at TLS. RequestClientCert (the request-but-
+        # don't-verify mode) would NOT enforce caFiles and would
+        # let an attacker forward a forged cert to the backend.
+        # RequireAndVerifyClientCert would 401 enrollment at the
+        # wrong layer.
+        clientAuthType: VerifyClientCertIfGiven
+
+http:
+  middlewares:
+    # passTLSClientCert forwards the verified client certificate to
+    # the backend via two headers the proxy package recognizes:
+    #
+    #   X-Forwarded-Tls-Client-Cert       URL-encoded PEM of the leaf
+    #   X-Forwarded-Tls-Client-Cert-Info  structured subject / serial / NotAfter
+    #
+    # The server uses either path to surface a `proxy.ClientCert`
+    # to the identity middleware, which resolves the cert serial
+    # to an enrolled (user_id, client_app_id).
+    spivot-pass-client-cert:
+      passTLSClientCert:
+        pem: true
+        info:
+          notAfter: true
+          serialNumber: true
+          subject:
+            commonName: true
+            organization: true

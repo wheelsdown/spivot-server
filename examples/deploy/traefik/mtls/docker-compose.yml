@@ -1,0 +1,77 @@
+# Spivot Server behind Traefik with HTTP/3 + mTLS termination.
+#
+# Replace spivot.example.com and admin@example.com with your real
+# hostname and ACME contact email before running. See README.md in
+# this directory for the bootstrap walkthrough.
+
+services:
+  traefik:
+    image: traefik:v3.5
+    command:
+      # HTTP entrypoint redirects to HTTPS.
+      - --entrypoints.web.address=:80
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      # HTTPS entrypoint with HTTP/3 enabled. UDP/443 must be open
+      # for QUIC; the application stack itself stays plain HTTP
+      # behind Traefik so Spivot Server does not need a QUIC stack.
+      - --entrypoints.websecure.address=:443
+      - --entrypoints.websecure.http3=true
+      # Provider config: Docker labels for routes, file provider
+      # for the TLS options and middleware definitions that need
+      # multi-line shape (passTLSClientCert.info, clientAuth, etc.).
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.file.filename=/etc/traefik/dynamic.yml
+      - --providers.file.watch=true
+      # ACME via TLS-ALPN so HTTP/3 doesn't have to share with the
+      # HTTP-01 challenge port; works fine for renewals once the
+      # certificate is established.
+      - --certificatesresolvers.letsencrypt.acme.email=admin@example.com
+      - --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
+      - --certificatesresolvers.letsencrypt.acme.tlschallenge=true
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - letsencrypt:/letsencrypt
+      - ./dynamic.yml:/etc/traefik/dynamic.yml:ro
+      # The Spivot CA root cert. Mint it once on first boot via
+      # `docker compose exec spivot-server spivot-server ca cert`
+      # and write it to ./ca/spivot-ca.crt before bringing Traefik
+      # up — Traefik refuses to start with a missing caFiles target.
+      - ./ca/spivot-ca.crt:/etc/traefik/spivot-ca.crt:ro
+
+  spivot-server:
+    image: ghcr.io/wheelsdown/spivot-server:latest
+    environment:
+      SPIVOT_ADDR: 0.0.0.0
+      SPIVOT_PORT: "8080"
+      SPIVOT_PUBLIC_URL: https://spivot.example.com
+      SPIVOT_TRUST_PROXY: "true"
+      # Enable the X-Forwarded-Tls-Client-Cert* parser. Without
+      # this, even a passTLSClientCert middleware in front would
+      # not surface the client identity to handlers — the server
+      # treats forwarded-cert headers as untrusted by default.
+      SPIVOT_TRUST_CLIENT_CERT_HEADERS: "true"
+      SPIVOT_CONFIG_DIR: /etc/spivot
+      SPIVOT_DATA_DIR: /var/lib/spivot
+      SPIVOT_DATABASE_PATH: /var/lib/spivot/spivot.db
+    volumes:
+      - spivot-data:/var/lib/spivot
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.spivot.rule: Host(`spivot.example.com`)
+      traefik.http.routers.spivot.entrypoints: websecure
+      traefik.http.routers.spivot.tls.certresolver: letsencrypt
+      # Apply the mTLS-enabling TLS options + the
+      # passTLSClientCert middleware defined in dynamic.yml.
+      traefik.http.routers.spivot.tls.options: spivot-mtls@file
+      traefik.http.routers.spivot.middlewares: spivot-pass-client-cert@file
+      traefik.http.services.spivot.loadbalancer.server.port: "8080"
+
+volumes:
+  letsencrypt:
+  spivot-data:
