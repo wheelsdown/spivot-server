@@ -13,14 +13,16 @@ image := env("SPIVOT_IMAGE", "ghcr.io/wheelsdown/spivot-server")
 dev_image := image + ":dev"
 ci_image := image + ":ci"
 container_platforms := env("SPIVOT_CONTAINER_PLATFORMS", "linux/amd64,linux/arm64")
+container_tarball_dir := env("SPIVOT_CONTAINER_TARBALL_DIR", "dist")
+container_builder := env("SPIVOT_BUILDX_LOCAL_BUILDER", "spivot-local")
 release-dir := "dist/release"
 
 # List available recipes
 default:
     @echo "Common workflows:"
     @echo "  just ci                                      # full local validation gate"
-    @echo "  just container                              # build a local OCI image"
-    @echo "  just container-archive <version>            # build a multi-arch OCI archive"
+    @echo "  just container                              # build multi-arch per-platform tarballs + load host arch locally"
+    @echo "  just container-archive <version>            # build a multi-arch OCI archive (release flow)"
     @echo "  just release-github <version> [kind]        # tag and publish a GHCR-backed release"
     @echo ""
     @just --list
@@ -53,13 +55,66 @@ clean:
 # --- Container ---
 
 [group('container')]
-container tag=dev_image:
-    docker build \
-        --build-arg SPIVOT_VERSION="{{version}}" \
-        --build-arg BUILD_COMMIT="{{git_commit}}" \
-        --build-arg BUILD_BRANCH="{{git_branch}}" \
-        --build-arg BUILD_TIME="{{build_time}}" \
-        -t {{tag}} .
+container tag=dev_image platforms=container_platforms tarball_dir=container_tarball_dir:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Always produce a deployable image for every requested
+    # platform — not just the host arch. The historical
+    # `docker build` single-arch behavior surprised an operator
+    # who built on arm64 and then could not deploy on amd64.
+    #
+    # Per-platform `docker save`-compatible tarballs land in
+    # $tarball_dir, one per requested arch. They are the
+    # standard interchange format for "scp to a deploy host and
+    # docker load" workflows. The host-arch variant is also
+    # imported into the local Docker daemon so the
+    # container-check / container-run recipes (which need a
+    # daemon-resident image) keep working unchanged.
+    #
+    # buildx with a docker-container driver is required for
+    # cross-platform builds; the managed `spivot-local` builder
+    # is created on first use and reused across invocations so
+    # the build cache survives.
+    mkdir -p '{{tarball_dir}}'
+    if ! docker buildx inspect '{{container_builder}}' >/dev/null 2>&1; then
+        docker buildx create --name '{{container_builder}}' \
+            --driver docker-container --bootstrap
+    fi
+    common_args=(
+        --builder '{{container_builder}}'
+        --build-arg "SPIVOT_VERSION={{version}}"
+        --build-arg "BUILD_COMMIT={{git_commit}}"
+        --build-arg "BUILD_BRANCH={{git_branch}}"
+        --build-arg "BUILD_TIME={{build_time}}"
+        -t '{{tag}}'
+    )
+    declare -a built
+    for platform in $(echo '{{platforms}}' | tr ',' ' '); do
+        arch="${platform##*/}"
+        tarball="{{tarball_dir}}/{{binary}}-${platform//\//-}.tar"
+        docker buildx build "${common_args[@]}" \
+            --platform "$platform" \
+            --output "type=docker,dest=${tarball}" .
+        built+=("$arch:$tarball")
+    done
+    # Load the host-arch tarball into the local Docker daemon.
+    host_tarball="{{tarball_dir}}/{{binary}}-linux-{{host_arch}}.tar"
+    if [ -f "$host_tarball" ]; then
+        docker load -i "$host_tarball" >/dev/null
+        echo
+        echo "Host-arch image loaded into local Docker daemon: {{tag}}"
+        echo "  inspect with: docker image inspect {{tag}}"
+        echo "  run with:     just container-run {{tag}}"
+    fi
+    echo
+    echo "Per-platform tarballs (each a docker save-compatible image of {{tag}}):"
+    for entry in "${built[@]}"; do
+        arch="${entry%%:*}"; tarball="${entry#*:}"
+        echo "  $arch  →  $tarball"
+    done
+    echo
+    echo "Deploy on a remote host of any of those architectures:"
+    echo "  scp <tarball> host:/tmp/ && ssh host docker load -i /tmp/$(basename "$tarball")"
 
 [group('container')]
 container-check tag=ci_image:

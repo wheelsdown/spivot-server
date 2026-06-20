@@ -41,11 +41,13 @@ ARG BUILD_TIME=unknown
 
 LABEL \
     org.opencontainers.image.title="Spivot Server" \
-    org.opencontainers.image.description="Backend API service for Spivot" \
+    org.opencontainers.image.description="Reference Go backend for the OpenCaravan protocol — group-drive coordination over open networks." \
     org.opencontainers.image.authors="wheelsdown" \
     org.opencontainers.image.url="https://github.com/wheelsdown/spivot-server" \
+    org.opencontainers.image.documentation="https://github.com/wheelsdown/spivot-server#readme" \
     org.opencontainers.image.source="https://github.com/wheelsdown/spivot-server" \
     org.opencontainers.image.vendor="wheelsdown" \
+    org.opencontainers.image.licenses="Apache-2.0" \
     org.opencontainers.image.version="${SPIVOT_VERSION}" \
     org.opencontainers.image.ref.name="${SPIVOT_VERSION}" \
     org.opencontainers.image.revision="${BUILD_COMMIT}" \
