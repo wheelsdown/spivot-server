@@ -63,6 +63,95 @@ See
 Traefik is a good fit when Spivot runs alongside other containerized services
 and you want Docker-label-driven routing.
 
+## HTTP/3 + mTLS with Traefik
+
+OpenCaravan's transport story is HTTP/3 over QUIC terminated at the edge proxy
+with mTLS for device identity. The application stack itself stays plain HTTP
+behind Traefik — Spivot Server does not link a QUIC implementation.
+
+See
+[examples/deploy/traefik/mtls/](../../examples/deploy/traefik/mtls/)
+for a complete docker-compose + dynamic-config example. The relevant Traefik
+pieces:
+
+- HTTP/3 entrypoint: `--entrypoints.websecure.http3=true` on the websecure
+  entrypoint, plus the `443/udp` port mapping. Browsers and `curl --http3`
+  discover the QUIC endpoint via the `Alt-Svc` header on the first HTTP/1.1
+  or HTTP/2 response.
+- mTLS termination: a TLS options profile (`spivot-mtls@file`) with
+  `caFiles` pointing at the Spivot CA root cert and `clientAuthType:
+  RequestClientCert` so the enrollment endpoint stays reachable without a
+  client cert.
+- Cert forwarding: a `passTLSClientCert` middleware
+  (`spivot-pass-client-cert@file`) emits both `X-Forwarded-Tls-Client-Cert`
+  (URL-encoded PEM) and `X-Forwarded-Tls-Client-Cert-Info` (structured
+  subject / serial / NotAfter). The application's proxy package consumes
+  either path.
+
+The server-side flag that enables consumption of those headers is
+`SPIVOT_TRUST_CLIENT_CERT_HEADERS=true`. The headers are honored only when
+the immediate peer is in `SPIVOT_TRUSTED_PROXY_CIDRS`, mirroring the
+existing forwarded-headers trust model.
+
+### Worked enrollment walkthrough
+
+A clean container host should be able to bring up the stack, enroll the
+first device, and exercise an authenticated endpoint in under 15 minutes.
+
+```bash
+# 1. Bring up just the server so the CA can self-mint and the first-run
+#    bootstrap invite is written to stdout.
+docker compose up -d spivot-server
+docker compose logs spivot-server | grep -A4 'SPIVOT SERVER FIRST-RUN BOOTSTRAP'
+# Copy the printed 43-character token; you'll need it as INVITE below.
+
+# 2. Extract the CA root cert and place it where Traefik can mount it.
+mkdir -p ca
+docker compose exec -T spivot-server spivot-server ca cert > ca/spivot-ca.crt
+
+# 3. Now bring up Traefik (it needs ca/spivot-ca.crt to start).
+docker compose up -d traefik
+
+# 4. Generate a client P-256 keypair + CSR locally. Spivot only signs
+#    P-256 ECDSA leaf certs.
+openssl ecparam -name prime256v1 -genkey -noout -out client.key
+openssl req -new -key client.key -out client.csr \
+    -subj "/CN=my-first-device"
+
+# 5. Enroll. The endpoint runs over HTTPS but does not require a client
+#    cert — that's the whole point of RequestClientCert. Spivot signs a
+#    leaf cert against its CA and returns it inline. The jq invocation
+#    builds the JSON body so the multi-line PEM CSR is correctly
+#    escaped into a single JSON string.
+INVITE=...   # the token from step 1
+jq -n \
+    --arg invite "$INVITE" \
+    --rawfile csr client.csr \
+    --arg name "My First Device" \
+    '{type: "opencaravan.client_app_enrollment_request",
+      version: 1,
+      invite_token: $invite,
+      csr_pem: $csr,
+      display_name: $name}' \
+  | curl -s --cacert ca/spivot-ca.crt \
+      -H "Content-Type: application/json" --data @- \
+      https://spivot.example.com/v1/client-apps/enroll \
+  | jq -r '.enrollment.certificate_chain[0]' > client.crt
+
+# 6. Now use the leaf cert for an authenticated request. The mTLS
+#    handshake presents client.crt, Traefik verifies it against the
+#    Spivot CA, passTLSClientCert forwards the cert to spivot-server,
+#    and the identity middleware resolves it to the enrolled user.
+curl --cacert ca/spivot-ca.crt --cert client.crt --key client.key \
+    -H "Content-Type: application/json" \
+    -d '{"title":"My first journey"}' \
+    https://spivot.example.com/v1/journeys
+```
+
+The same flow with `--http3` works too once the QUIC endpoint is up; curl
+will negotiate HTTP/3 after seeing the `Alt-Svc` header on the first
+response.
+
 ## Tailscale
 
 Tailnet-only deployments may run plain HTTP inside Tailscale because the
