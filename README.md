@@ -11,10 +11,11 @@ for coordinating group drives over networks. The server is being built
 alongside the first OpenCaravan specification so the protocol has a practical,
 operable reference implementation from the beginning.
 
-The primary release artifact is a well-labeled, OCI-compliant container image.
-The current codebase is intentionally early: it has the command/server
-foundation, health/version endpoints, release tooling, and the first storage
-schema foundation for tracked journeys.
+The primary release artifact is a well-labeled, OCI-compliant multi-arch
+container image. A v0.2.0 deployment includes the complete client-app
+enrollment + session macaroon auth stack, the first protected CRUD
+endpoints (journey + telemetry), and a documented HTTP/3 + mTLS Traefik
+recipe an operator can stand up in under fifteen minutes.
 
 ## Project Status
 
@@ -138,6 +139,29 @@ Future OpenCaravan API routes will be documented as they land. Go package
 documentation is part of the public reader experience; exported symbols and
 packages should have useful Godoc comments.
 
+## OpenCaravan Protocol Version
+
+The `/v1/server.protocol.version` field advertises the OpenCaravan
+wire-format version this server implements (currently `0.1.0`). The
+protocol version is **decoupled** from the spivot-server release
+version: spivot-server releases that fix bugs or add capabilities
+without changing the wire format do not bump the protocol version, and
+spivot-server releases that consume a new wire format from
+opencaravan-go bump the protocol version in lockstep with that
+module's tag.
+
+The 0.x prefix signals pre-stable; a 1.0 protocol release will mark
+the wire format as frozen. A client should treat `0.1.x` and `0.1.y`
+as compatible (additive extensions only), and a leading-digit change
+(e.g., `0.1` → `0.2`) as a breaking wire-format revision that needs
+matching client work.
+
+In practice, when reading a deployed server: `spivot-server v0.X.Y`
+and `OpenCaravan vA.B.C` are independent vectors. A long divergence
+(server at `v0.5.0` while protocol is still `0.1.0`) is informative,
+not a bug — it tells a client author that the wire format has been
+stable for many server releases.
+
 ## Certificate Authority
 
 Spivot Server acts as its own certificate authority for the client apps that
@@ -155,10 +179,14 @@ Subject defaults to `CN=Spivot Server CA`; override with `--common-name` and
 `--organization` flags (or `SPIVOT_CA_COMMON_NAME` / `SPIVOT_CA_ORGANIZATION`
 env vars).
 
-Phase 2a of the auth rollout adds the CA primitive and an audit table
-(`issued_certificates`) for every leaf certificate the CA signs. Later
-phases wire the CA into the enrollment HTTP endpoint and the
-identity/session middleware.
+Every leaf certificate the CA signs is recorded in the
+`issued_certificates` audit table (serial, subject, validity window,
+issuance time, revocation time). The identity middleware resolves a
+presented client certificate's serial back to its enrolled
+`(user_id, client_app_id)` through that table, so revoking a row by
+setting `revoked_at` is sufficient to break the identity binding —
+short-lived (7-day) leaf certs make CRL/OCSP infrastructure
+unnecessary for v0.
 
 ## Client App Enrollment Invites
 
@@ -214,44 +242,23 @@ The first schema foundation lives in
 with Go's standard `embed` package so the server can expose and apply the exact
 schema it was built with.
 
-The initial OpenCaravan migration covers:
+The current schema covers, by capability area:
 
-- server policy snapshots
-- federated servers
-- accounts and account devices
-- vehicles
-- journeys and per-journey policy snapshots
-- journey invites and participant consent
-- participant sessions
-- journey segments
-- telemetry batches
-- position samples
-
-The Phase 2a migration adds:
-
-- `issued_certificates` — audit trail of every leaf certificate the CA has
-  signed (serial, subject, validity window, issuance time, revocation time).
-
-The Phase 2b migration adds:
-
-- `client_app_invites` — hashed invite tokens (token_hash, scope,
-  created/expiration timestamps, used_time, used_by_client_app_id).
-
-The Phase 3a migration adds:
-
-- `client_apps` — descriptive record for each enrolled app installation
-  (id, owning user, display name, created time).
-- `user_id` and `client_app_id` columns on `issued_certificates`
-  linking every signed leaf back to the requesting user and app.
-
-The Phase 4a migration adds:
-
-- `macaroon_roots` — HMAC root keys this server uses to mint and
-  verify session macaroons. Each row records an opaque id (embedded
-  in every macaroon so the verifier can pick the right key),
-  creation timestamp, and rotation timestamp. Rotated rows are
-  retained so macaroons issued under a rotated key remain
-  verifiable until their own `time<T` caveat fires.
+- **Identity and accounts** — accounts, account devices, vehicles.
+- **Journeys** — journeys with per-journey policy snapshots, journey
+  invites, journey participants and consent, participant sessions, and
+  journey segments.
+- **Telemetry** — telemetry batches and position samples.
+- **Auth** — `issued_certificates` (audit trail of every leaf cert the
+  CA signs: serial, subject, validity window, issuance time, revocation
+  time), `client_app_invites` (hashed invite tokens with scope and
+  one-time-use semantics), `client_apps` (one row per enrolled app
+  installation), and `macaroon_roots` (HMAC root keys the session
+  macaroon issuer signs against — rotated rows retained so macaroons
+  signed under a since-rotated key remain verifiable until their own
+  `time<T` caveat fires).
+- **Federation and policy** — server policy snapshots, federated
+  servers (placeholder, federation isn't wired yet).
 
 The schema stores protocol-facing data conservatively: text identifiers,
 RFC3339 timestamp strings, integer-scaled coordinates, hashed invite tokens, and
@@ -265,26 +272,41 @@ development unless `SPIVOT_DATABASE_PATH` is set.
 
 ## Containers
 
-Build a local OCI image:
+`just container` performs a multi-arch build (defaults to
+`linux/amd64,linux/arm64`) via `docker buildx`. Output is a per-arch
+`docker save`-compatible tarball under `dist/` plus the host-arch
+variant loaded into the local Docker daemon for `just container-run`:
 
 ```bash
 just container
+# → dist/spivot-server-linux-amd64.tar
+# → dist/spivot-server-linux-arm64.tar
+# → ghcr.io/wheelsdown/spivot-server:dev loaded into the local daemon
 ```
 
-Run it locally:
+To smoke-test a release candidate against a remote deploy host, push
+the same multi-arch build to GHCR:
 
 ```bash
-just container-run
+echo "$(gh auth token)" | docker login ghcr.io -u "$(gh api user -q .login)" --password-stdin
+just container-push ghcr.io/wheelsdown/spivot-server:dev
 ```
 
-Published releases are intended to be consumed from GitHub Container Registry:
+Tagged releases are intended to be consumed from GitHub Container
+Registry:
 
 ```bash
 docker pull ghcr.io/wheelsdown/spivot-server:latest
 ```
 
-For production Docker Compose deployments behind an existing reverse proxy, see
+For production Docker Compose deployments behind an existing reverse
+proxy, see
 [docs/deployment/docker-compose.md](docs/deployment/docker-compose.md).
+For the canonical HTTP/3 + mTLS deployment recipe (Traefik in front,
+client cert termination, worked enrollment walkthrough), see
+[docs/deployment/reverse-proxy.md](docs/deployment/reverse-proxy.md)
+and
+[examples/deploy/traefik/mtls/](examples/deploy/traefik/mtls/).
 
 ## Release Engineering
 
@@ -311,10 +333,15 @@ hardcoded in Go source.
 ```text
 cmd/spivot-server/       command entry point and CLI parsing
 internal/app/            process lifecycle wiring
-internal/server/api/     HTTP API server
-internal/platform/       build info, identity (CA + key store), logging,
-                         storage, and shared platform code
+internal/server/api/     HTTP API handlers
+internal/server/middleware/  identity + session attach/require middleware
+internal/platform/       build info, identity (CA + key store), auth
+                         (macaroon issuer/verifier), logging, proxy
+                         (forwarded-headers handling), storage, and
+                         shared platform code
 scripts/releng/          release engineering helpers
+docs/deployment/         operator-facing deployment recipes
+examples/deploy/         reverse-proxy example configurations
 ```
 
 ## Contributing

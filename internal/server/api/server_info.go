@@ -6,7 +6,20 @@ import (
 	"github.com/wheelsdown/spivot-server/internal/platform/buildinfo"
 )
 
-const openCaravanDraftVersion = "draft-0"
+// openCaravanProtocolVersion is the OpenCaravan wire-format
+// version this server implements, advertised at /v1/server.
+// Decoupled from the spivot-server release version: a server
+// release that fixes bugs or adds capabilities without changing
+// the wire format does NOT bump this constant. A spivot-server
+// release that consumes a new opencaravan-go type set with a
+// breaking wire-format change DOES bump this constant in
+// lockstep with the opencaravan-go module's own tag.
+//
+// Pre-1.0 versioning convention: 0.x bumps signal "expect
+// change," 1.0 signals "wire format frozen." Patch increments
+// (0.1.1, 0.1.2) are reserved for clarifying or non-breaking
+// additive extensions to the existing version.
+const openCaravanProtocolVersion = "0.1.0"
 
 const (
 	policyRegistrationInviteOnly       = "invite_only"
@@ -158,7 +171,7 @@ func (s *Server) serverInfo() serverInfoResponse {
 		},
 		Protocol: protocolInfo{
 			Name:    "OpenCaravan",
-			Version: openCaravanDraftVersion,
+			Version: openCaravanProtocolVersion,
 		},
 		Capabilities: serverCapabilitiesFromPolicy(policy),
 		Policy:       s.cfg.PolicySnapshot,
