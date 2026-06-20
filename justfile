@@ -13,14 +13,17 @@ image := env("SPIVOT_IMAGE", "ghcr.io/wheelsdown/spivot-server")
 dev_image := image + ":dev"
 ci_image := image + ":ci"
 container_platforms := env("SPIVOT_CONTAINER_PLATFORMS", "linux/amd64,linux/arm64")
+container_tarball_dir := env("SPIVOT_CONTAINER_TARBALL_DIR", "dist")
+container_builder := env("SPIVOT_BUILDX_LOCAL_BUILDER", "spivot-local")
 release-dir := "dist/release"
 
 # List available recipes
 default:
     @echo "Common workflows:"
     @echo "  just ci                                      # full local validation gate"
-    @echo "  just container                              # build a local OCI image"
-    @echo "  just container-archive <version>            # build a multi-arch OCI archive"
+    @echo "  just container                              # build multi-arch per-platform tarballs + load host arch locally"
+    @echo "  just container-push [tag]                   # build multi-arch + push to the registry (for rc smoke tests)"
+    @echo "  just container-archive <version>            # build a multi-arch OCI archive (release flow)"
     @echo "  just release-github <version> [kind]        # tag and publish a GHCR-backed release"
     @echo ""
     @just --list
@@ -53,18 +56,120 @@ clean:
 # --- Container ---
 
 [group('container')]
-container tag=dev_image:
-    docker build \
-        --build-arg SPIVOT_VERSION="{{version}}" \
-        --build-arg BUILD_COMMIT="{{git_commit}}" \
-        --build-arg BUILD_BRANCH="{{git_branch}}" \
-        --build-arg BUILD_TIME="{{build_time}}" \
-        -t {{tag}} .
+container tag=dev_image platforms=container_platforms tarball_dir=container_tarball_dir:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Always produce a deployable image for every requested
+    # platform — not just the host arch. The historical
+    # `docker build` single-arch behavior surprised an operator
+    # who built on arm64 and then could not deploy on amd64.
+    #
+    # Per-platform `docker save`-compatible tarballs land in
+    # $tarball_dir, one per requested arch. They are the
+    # standard interchange format for "scp to a deploy host and
+    # docker load" workflows. The host-arch variant is also
+    # imported into the local Docker daemon so the
+    # container-check / container-run recipes (which need a
+    # daemon-resident image) keep working unchanged.
+    mkdir -p '{{tarball_dir}}'
+    # Ensure a docker-container buildx builder exists. Multi-arch
+    # / cross-platform builds require docker-container; the
+    # default `docker` driver only supports the host platform and
+    # silently produces single-arch output that looks correct but
+    # isn't (the exact trap that motivated this recipe). Mirror
+    # the stricter check in scripts/releng/build-container-archive.sh.
+    if ! docker buildx inspect '{{container_builder}}' >/dev/null 2>&1; then
+        docker buildx create --name '{{container_builder}}' --driver docker-container --bootstrap >/dev/null
+    fi
+    if docker buildx inspect '{{container_builder}}' 2>/dev/null | grep -q '^Driver:[[:space:]]*docker$'; then
+        echo "buildx builder '{{container_builder}}' uses the docker driver; recreate with: docker buildx create --name '{{container_builder}}' --driver docker-container --bootstrap" >&2
+        exit 1
+    fi
+    common_args=(
+        --builder '{{container_builder}}'
+        --build-arg "SPIVOT_VERSION={{version}}"
+        --build-arg "BUILD_COMMIT={{git_commit}}"
+        --build-arg "BUILD_BRANCH={{git_branch}}"
+        --build-arg "BUILD_TIME={{build_time}}"
+        -t '{{tag}}'
+    )
+    declare -a built
+    for platform in $(echo '{{platforms}}' | tr ',' ' '); do
+        arch="${platform##*/}"
+        tarball="{{tarball_dir}}/{{binary}}-${platform//\//-}.tar"
+        docker buildx build "${common_args[@]}" \
+            --platform "$platform" \
+            --output "type=docker,dest=${tarball}" .
+        built+=("$arch:$tarball")
+    done
+    # Load the host-arch tarball into the local Docker daemon.
+    host_tarball="{{tarball_dir}}/{{binary}}-linux-{{host_arch}}.tar"
+    if [ -f "$host_tarball" ]; then
+        docker load -i "$host_tarball" >/dev/null
+        echo
+        echo "Host-arch image loaded into local Docker daemon: {{tag}}"
+        echo "  inspect with: docker image inspect {{tag}}"
+        echo "  run with:     just container-run {{tag}}"
+    fi
+    echo
+    echo "Per-platform tarballs (each a docker save-compatible image of {{tag}}):"
+    for entry in "${built[@]}"; do
+        arch="${entry%%:*}"; tarball="${entry#*:}"
+        echo "  $arch  →  $tarball"
+    done
+    echo
+    echo "Deploy on a remote host (substitute the target hostname for <host>):"
+    for entry in "${built[@]}"; do
+        arch="${entry%%:*}"; tarball="${entry#*:}"
+        base="$(basename "$tarball")"
+        # Single-quote both paths so $tarball_dir values with spaces
+        # or shell-sensitive characters survive an operator's copy
+        # and paste.
+        echo "  $arch:  scp '$tarball' <host>:/tmp/ && ssh <host> docker load -i '/tmp/$base'"
+    done
 
 [group('container')]
 container-check tag=ci_image:
     just container "{{tag}}"
     scripts/releng/inspect-container.sh "{{tag}}" "{{version}}"
+
+[group('container')]
+container-push tag=dev_image platforms=container_platforms:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Multi-arch build + push directly to the configured registry.
+    # The intended use case is "push a release-candidate :dev tag so
+    # an amd64 deploy host can pull it for the pre-release smoke
+    # test." For tagged releases use `just release-github` instead;
+    # this recipe is for the unvalidated-yet flow.
+    #
+    # The same `spivot-local` docker-container buildx builder
+    # `just container` uses is reused so the cache survives between
+    # local-load and push runs.
+    #
+    # Caller must be logged into the registry before invoking:
+    #   echo "$(gh auth token)" | docker login ghcr.io \
+    #       -u "$(gh api user -q .login)" --password-stdin
+    if ! docker buildx inspect '{{container_builder}}' >/dev/null 2>&1; then
+        docker buildx create --name '{{container_builder}}' --driver docker-container --bootstrap >/dev/null
+    fi
+    if docker buildx inspect '{{container_builder}}' 2>/dev/null | grep -q '^Driver:[[:space:]]*docker$'; then
+        echo "buildx builder '{{container_builder}}' uses the docker driver; recreate with: docker buildx create --name '{{container_builder}}' --driver docker-container --bootstrap" >&2
+        exit 1
+    fi
+    docker buildx build \
+        --builder '{{container_builder}}' \
+        --platform '{{platforms}}' \
+        --build-arg "SPIVOT_VERSION={{version}}" \
+        --build-arg "BUILD_COMMIT={{git_commit}}" \
+        --build-arg "BUILD_BRANCH={{git_branch}}" \
+        --build-arg "BUILD_TIME={{build_time}}" \
+        --push -t '{{tag}}' .
+    echo
+    echo "Pushed multi-arch image: {{tag}}"
+    echo "  platforms: {{platforms}}"
+    echo "  pull on deploy host: docker pull {{tag}}"
+    echo "  verify manifest:     docker buildx imagetools inspect {{tag}}"
 
 [group('container')]
 container-archive version platforms=container_platforms:
