@@ -97,6 +97,27 @@ func (s *Server) handleJourneyTelemetry(w http.ResponseWriter, r *http.Request) 
 
 	journeyID := r.PathValue("id")
 
+	// Confirm the journey exists (and is not logically deleted —
+	// JourneyByID filters on deleted_at IS NULL) BEFORE the
+	// participant lookup and BEFORE reading the body. Without this
+	// check, an unknown or deleted-journey id would land in the
+	// participant lookup, miss, and surface as 403 not_a_participant
+	// — which conflates "this journey doesn't exist" with "you're
+	// not in this journey" and obscures the real reason from the
+	// caller. Returning 404 here also short-circuits body-reading
+	// cost for a guaranteed-rejection request.
+	if _, err := s.cfg.JourneyStore.JourneyByID(r.Context(), journeyID); err != nil {
+		if errors.Is(err, storage.ErrJourneyNotFound) {
+			writeProblem(w, s.logger, http.StatusNotFound, "journey_not_found",
+				"No journey exists at this id.")
+			return
+		}
+		s.logger.Error("telemetry: journey lookup failed", "error", err, "journey_id", journeyID)
+		writeProblem(w, s.logger, http.StatusInternalServerError, "internal_error",
+			"Could not verify journey existence.")
+		return
+	}
+
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxTelemetryBodyBytes))
 	if err != nil {
 		writeProblem(w, s.logger, http.StatusBadRequest, "invalid_request",

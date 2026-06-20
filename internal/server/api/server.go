@@ -187,16 +187,22 @@ func (s *Server) Handler() http.Handler {
 	// see at a glance which routes are public and which require
 	// an enrolled client app.
 	mux.Handle("POST /v1/sessions", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleSessionCreate)))
-	// Phase 5 journey + telemetry routes. POST /v1/journeys is
-	// identity-only (the caller creates a new journey before any
-	// macaroon could reference it). The journey-scoped routes
-	// require a session macaroon naming the requested journey
-	// and the appropriate action; the per-handler constraints
-	// run through verifier.CheckConstraints so attenuator
-	// attacks against the journey caveat are defeated by
-	// macaroon AND semantics.
+	// POST /v1/journeys is identity-only (the caller creates a new
+	// journey before any macaroon could reference it), so it is
+	// registered unconditionally — deployments that intentionally
+	// omit the session stack still need to be able to create
+	// journeys. The handler's own 503 path covers the
+	// JourneyStore-not-wired case.
+	mux.Handle("POST /v1/journeys", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleJourneyCreate)))
+	// The journey-scoped routes require a session macaroon naming
+	// the requested journey and the appropriate action; the
+	// per-handler constraints run through
+	// verifier.CheckConstraints so attenuator attacks against the
+	// journey caveat are defeated by macaroon AND semantics.
+	// Registered only when MacaroonVerifier is wired: without a
+	// verifier, RequireSession would always 401 and the routes
+	// would be dead code.
 	if s.cfg.MacaroonVerifier != nil {
-		mux.Handle("POST /v1/journeys", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleJourneyCreate)))
 		mux.Handle("GET /v1/journeys/{id}", middleware.RequireSession(s.cfg.MacaroonVerifier, s.logger,
 			middleware.SessionActionJourneyFromPath(opencaravan.SessionActionJourneyRead, "id"),
 		)(http.HandlerFunc(s.handleJourneyGet)))

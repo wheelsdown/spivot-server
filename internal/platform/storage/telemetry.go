@@ -29,11 +29,18 @@ type TelemetryBatch struct {
 
 // TelemetryBatchParams names the input to
 // [Store.RecordTelemetryBatch]. JourneyID and ParticipantID must
-// reference existing rows (FK enforces this). ClientBatchID is
-// client-supplied and acts as the idempotency key — the
-// UNIQUE(device_id, client_batch_id) constraint on
-// telemetry_batches means a retry with the same id either
-// succeeds (if it's the same request) or returns an error.
+// reference existing rows (FK enforces this).
+//
+// ClientBatchID is client-supplied and is intended to become the
+// retry idempotency key once telemetry batches are associated
+// with a device row. The UNIQUE(device_id, client_batch_id)
+// constraint exists on the schema, but v0 leaves device_id NULL
+// and SQLite treats NULLs as distinct in UNIQUE indexes — so
+// today two batches with the same client_batch_id can both
+// succeed. [ErrTelemetryBatchDuplicate] is wired through for the
+// future device-bearing path; do not rely on idempotency at the
+// storage layer yet.
+//
 // PayloadDigest is typically SHA-256 of the canonical batch body
 // so an operator can correlate batches across logs.
 type TelemetryBatchParams struct {

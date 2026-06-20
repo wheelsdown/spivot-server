@@ -172,6 +172,24 @@ func (e *journeyEnv) get(t *testing.T, path string, id middleware.Identity, maca
 	return rec
 }
 
+// mustCreateJourney creates a journey with the supplied title and
+// fails the test if the create response is not 201 or the
+// response body does not decode. Downstream tests use this to
+// surface "create failed" loud rather than silently propagating
+// a zero-id JourneyResponse into the GET / telemetry flow.
+func (e *journeyEnv) mustCreateJourney(t *testing.T, id middleware.Identity, title string) JourneyResponse {
+	t.Helper()
+	rec := e.post(t, "/v1/journeys", JourneyCreateRequest{Title: title}, id, "")
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create journey: status %d, want 201; body = %s", rec.Code, rec.Body.String())
+	}
+	var created JourneyResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("create journey: decode response: %v", err)
+	}
+	return created
+}
+
 func TestJourneyCreateHappyPath(t *testing.T) {
 	env := newJourneyEnv(t)
 	id := env.mintIdentity(t)
@@ -234,19 +252,28 @@ func TestJourneyCreateRejectsMalformedJSON(t *testing.T) {
 	}
 }
 
+func TestJourneyCreateReachableWithoutMacaroonVerifier(t *testing.T) {
+	// POST /v1/journeys is identity-only; deployments that
+	// intentionally omit the session stack (no MacaroonVerifier
+	// wired) must still be able to create journeys. Earlier the
+	// route was conditionally registered behind MacaroonVerifier
+	// != nil, which made the endpoint 404 in identity-only
+	// deployments.
+	env := newJourneyEnv(t)
+	env.server.cfg.MacaroonVerifier = nil
+	id := env.mintIdentity(t)
+	rec := env.post(t, "/v1/journeys", JourneyCreateRequest{Title: "identity-only"}, id, "")
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 (route must register without verifier); body = %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestJourneyGetHappyPath(t *testing.T) {
 	env := newJourneyEnv(t)
 	id := env.mintIdentity(t)
 
 	// Create a journey first.
-	createRec := env.post(t, "/v1/journeys", JourneyCreateRequest{Title: "Test"}, id, "")
-	if createRec.Code != http.StatusCreated {
-		t.Fatalf("create: %d body=%s", createRec.Code, createRec.Body.String())
-	}
-	var created JourneyResponse
-	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
-		t.Fatalf("decode create: %v", err)
-	}
+	created := env.mustCreateJourney(t, id, "Test")
 
 	// Mint a journey.read session macaroon scoped to that journey.
 	mac := env.issueSessionMacaroon(t, id, opencaravan.UUID(created.ID), opencaravan.SessionActionJourneyRead)
@@ -279,9 +306,7 @@ func TestJourneyGetRejectsWrongJourneyMacaroon(t *testing.T) {
 	// loop on session middleware.
 	env := newJourneyEnv(t)
 	id := env.mintIdentity(t)
-	createRec := env.post(t, "/v1/journeys", JourneyCreateRequest{Title: "A"}, id, "")
-	var created JourneyResponse
-	_ = json.Unmarshal(createRec.Body.Bytes(), &created)
+	created := env.mustCreateJourney(t, id, "A")
 
 	// Mint macaroon scoped to a DIFFERENT journey id.
 	otherJourney, _ := opencaravan.NewUUID()
@@ -298,9 +323,7 @@ func TestJourneyGetRejectsWrongActionMacaroon(t *testing.T) {
 	// journey.read.
 	env := newJourneyEnv(t)
 	id := env.mintIdentity(t)
-	createRec := env.post(t, "/v1/journeys", JourneyCreateRequest{Title: "A"}, id, "")
-	var created JourneyResponse
-	_ = json.Unmarshal(createRec.Body.Bytes(), &created)
+	created := env.mustCreateJourney(t, id, "A")
 
 	mac := env.issueSessionMacaroon(t, id, opencaravan.UUID(created.ID), opencaravan.SessionActionTelemetryWrite)
 
@@ -324,9 +347,7 @@ func TestJourneyGetNotFound(t *testing.T) {
 func TestTelemetryHappyPath(t *testing.T) {
 	env := newJourneyEnv(t)
 	id := env.mintIdentity(t)
-	createRec := env.post(t, "/v1/journeys", JourneyCreateRequest{Title: "Telemetry test"}, id, "")
-	var created JourneyResponse
-	_ = json.Unmarshal(createRec.Body.Bytes(), &created)
+	created := env.mustCreateJourney(t, id, "Telemetry test")
 
 	mac := env.issueSessionMacaroon(t, id, opencaravan.UUID(created.ID), opencaravan.SessionActionTelemetryWrite)
 
@@ -367,9 +388,7 @@ func TestTelemetryRejectsCallerNotInJourney(t *testing.T) {
 	env := newJourneyEnv(t)
 	// Host creates the journey.
 	host := env.mintIdentity(t)
-	createRec := env.post(t, "/v1/journeys", JourneyCreateRequest{Title: "Membership test"}, host, "")
-	var created JourneyResponse
-	_ = json.Unmarshal(createRec.Body.Bytes(), &created)
+	created := env.mustCreateJourney(t, host, "Membership test")
 
 	// A DIFFERENT user (also enrolled) presents a macaroon claiming
 	// the same journey + telemetry.write. The macaroon's caveats
@@ -392,9 +411,7 @@ func TestTelemetryRejectsCallerNotInJourney(t *testing.T) {
 func TestTelemetryRejectsMismatchedSampleJourney(t *testing.T) {
 	env := newJourneyEnv(t)
 	id := env.mintIdentity(t)
-	createRec := env.post(t, "/v1/journeys", JourneyCreateRequest{Title: "Sample mismatch"}, id, "")
-	var created JourneyResponse
-	_ = json.Unmarshal(createRec.Body.Bytes(), &created)
+	created := env.mustCreateJourney(t, id, "Sample mismatch")
 	mac := env.issueSessionMacaroon(t, id, opencaravan.UUID(created.ID), opencaravan.SessionActionTelemetryWrite)
 
 	// A sample whose journey_id doesn't match the path — the
@@ -427,9 +444,7 @@ func TestTelemetryRequiresTelemetryAction(t *testing.T) {
 	// mismatch).
 	env := newJourneyEnv(t)
 	id := env.mintIdentity(t)
-	createRec := env.post(t, "/v1/journeys", JourneyCreateRequest{Title: "Action test"}, id, "")
-	var created JourneyResponse
-	_ = json.Unmarshal(createRec.Body.Bytes(), &created)
+	created := env.mustCreateJourney(t, id, "Action test")
 	mac := env.issueSessionMacaroon(t, id, opencaravan.UUID(created.ID), opencaravan.SessionActionJourneyRead)
 
 	body := TelemetryBatchRequest{ClientBatchID: "batch-x"}
@@ -442,15 +457,60 @@ func TestTelemetryRequiresTelemetryAction(t *testing.T) {
 func TestTelemetryRejectsMissingClientBatchID(t *testing.T) {
 	env := newJourneyEnv(t)
 	id := env.mintIdentity(t)
-	createRec := env.post(t, "/v1/journeys", JourneyCreateRequest{Title: "Batch id test"}, id, "")
-	var created JourneyResponse
-	_ = json.Unmarshal(createRec.Body.Bytes(), &created)
+	created := env.mustCreateJourney(t, id, "Batch id test")
 	mac := env.issueSessionMacaroon(t, id, opencaravan.UUID(created.ID), opencaravan.SessionActionTelemetryWrite)
 
 	body := TelemetryBatchRequest{}
 	rec := env.post(t, "/v1/journeys/"+created.ID+"/telemetry", body, id, mac)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400 (missing client_batch_id)", rec.Code)
+	}
+}
+
+func TestTelemetryUnknownJourneyReturns404NotForbidden(t *testing.T) {
+	// A macaroon scoped to a journey id that doesn't exist on this
+	// server must surface as 404 journey_not_found, not 403
+	// not_a_participant. Without the explicit JourneyByID gate at
+	// the top of the handler, the participant lookup would miss
+	// (no journey, no participants) and 403 would conflate
+	// "journey doesn't exist" with "you're not in it" — making the
+	// caller's debugging much harder.
+	env := newJourneyEnv(t)
+	id := env.mintIdentity(t)
+	bogus, _ := opencaravan.NewUUID()
+	mac := env.issueSessionMacaroon(t, id, bogus, opencaravan.SessionActionTelemetryWrite)
+	rec := env.post(t, "/v1/journeys/"+string(bogus)+"/telemetry",
+		TelemetryBatchRequest{ClientBatchID: "x"}, id, mac)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "journey_not_found") {
+		t.Fatalf("body missing journey_not_found: %s", rec.Body.String())
+	}
+}
+
+func TestTelemetryDeletedJourneyReturns404(t *testing.T) {
+	// Companion to TestTelemetryUnknownJourneyReturns404NotForbidden:
+	// a journey that exists but has deleted_at set must look
+	// indistinguishable from "doesn't exist" — JourneyByID filters
+	// deleted_at IS NULL — so telemetry against it gets 404, not
+	// some other status that would leak the existence of deleted
+	// rows.
+	env := newJourneyEnv(t)
+	id := env.mintIdentity(t)
+	created := env.mustCreateJourney(t, id, "Soft-deleted journey")
+	// Soft-delete the journey directly; v0 doesn't expose a
+	// delete handler yet.
+	if _, err := env.store.DB().ExecContext(context.Background(),
+		`UPDATE journeys SET deleted_at = ? WHERE id = ?`,
+		time.Now().UTC().Format(time.RFC3339Nano), created.ID); err != nil {
+		t.Fatalf("soft-delete: %v", err)
+	}
+	mac := env.issueSessionMacaroon(t, id, opencaravan.UUID(created.ID), opencaravan.SessionActionTelemetryWrite)
+	rec := env.post(t, "/v1/journeys/"+created.ID+"/telemetry",
+		TelemetryBatchRequest{ClientBatchID: "x"}, id, mac)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 for soft-deleted journey; body = %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -470,16 +530,8 @@ func TestEndToEndStackCompose(t *testing.T) {
 	env := newJourneyEnv(t)
 	id := env.mintIdentity(t)
 
-	createRec := env.post(t, "/v1/journeys", JourneyCreateRequest{
-		Title: "End-to-end proof",
-	}, id, "")
-	if createRec.Code != http.StatusCreated {
-		t.Fatalf("step 2 (POST /v1/journeys): status %d body %s", createRec.Code, createRec.Body.String())
-	}
-	var created JourneyResponse
-	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
-		t.Fatalf("decode created: %v", err)
-	}
+	// Step 2: POST /v1/journeys (mustCreateJourney asserts 201 + decode)
+	created := env.mustCreateJourney(t, id, "End-to-end proof")
 
 	readMac := env.issueSessionMacaroon(t, id, opencaravan.UUID(created.ID), opencaravan.SessionActionJourneyRead)
 	getRec := env.get(t, "/v1/journeys/"+created.ID, id, readMac)
