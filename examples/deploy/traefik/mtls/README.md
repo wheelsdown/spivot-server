@@ -59,22 +59,29 @@ exist yet. The bootstrap order is:
    `Alt-Svc` header).
 
 4. Enroll the first device. The enrollment endpoint accepts
-   connections without a client cert — the `RequestClientCert`
-   mode in `dynamic.yml` is deliberate. See
+   connections without a client cert — the
+   `VerifyClientCertIfGiven` mode in `dynamic.yml` is
+   deliberate. See
    [docs/deployment/reverse-proxy.md](../../../../docs/deployment/reverse-proxy.md)
    for the full enrollment walkthrough with `openssl` and `curl`.
 
 ## Notes on TLS options
 
-- `clientAuthType: RequestClientCert` (not
-  `RequireAndVerifyClientCert`): the server must reach handlers
-  for unauthenticated callers so the application layer
-  (`RequireIdentity` / `RequireSession`) can decide what to do.
-  Requiring the cert at TLS would 401 enrollment requests at the
-  wrong layer.
+- `clientAuthType: VerifyClientCertIfGiven` (not
+  `RequestClientCert` and not `RequireAndVerifyClientCert`): a
+  connection without a cert proceeds, so the enrollment endpoint
+  is reachable for new devices. Any cert that IS presented must
+  chain to `caFiles` or Traefik rejects the handshake at TLS.
+  Routes that require an enrolled identity are gated at the
+  application layer (`RequireIdentity` / `RequireSession`); a
+  request without a verified client cert reaches those handlers
+  and gets 401, which is the correct layer for that response.
 - `caFiles: [/etc/traefik/spivot-ca.crt]`: the Spivot CA is the
   only trust anchor for client certs. Traefik refuses presented
-  certs signed by any other CA.
+  certs signed by any other CA — this only holds because we use
+  `VerifyClientCertIfGiven`; under `RequestClientCert` the
+  caFiles list would be ignored and an attacker could forward a
+  self-signed cert to the backend.
 - `minVersion: VersionTLS13`: TLS 1.3 is required because the
   full key exchange happens in one round trip and 1.3 is what
   HTTP/3 mandates anyway.

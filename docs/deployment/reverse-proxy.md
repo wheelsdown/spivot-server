@@ -80,8 +80,11 @@ pieces:
   or HTTP/2 response.
 - mTLS termination: a TLS options profile (`spivot-mtls@file`) with
   `caFiles` pointing at the Spivot CA root cert and `clientAuthType:
-  RequestClientCert` so the enrollment endpoint stays reachable without a
-  client cert.
+  VerifyClientCertIfGiven` so the enrollment endpoint stays reachable
+  without a client cert AND any cert that IS presented is verified against
+  the CA. `RequestClientCert` would request a cert but skip verification,
+  letting an attacker forward a self-signed cert through
+  `passTLSClientCert`.
 - Cert forwarding: a `passTLSClientCert` middleware
   (`spivot-pass-client-cert@file`) emits both `X-Forwarded-Tls-Client-Cert`
   (URL-encoded PEM) and `X-Forwarded-Tls-Client-Cert-Info` (structured
@@ -119,10 +122,11 @@ openssl req -new -key client.key -out client.csr \
     -subj "/CN=my-first-device"
 
 # 5. Enroll. The endpoint runs over HTTPS but does not require a client
-#    cert — that's the whole point of RequestClientCert. Spivot signs a
-#    leaf cert against its CA and returns it inline. The jq invocation
-#    builds the JSON body so the multi-line PEM CSR is correctly
-#    escaped into a single JSON string.
+#    cert — that's the whole point of VerifyClientCertIfGiven (optional
+#    cert, verified when present). Spivot signs a leaf cert against its
+#    CA and returns it inline. The jq invocation builds the JSON body so
+#    the multi-line PEM CSR is correctly escaped into a single JSON
+#    string.
 INVITE=...   # the token from step 1
 jq -n \
     --arg invite "$INVITE" \
