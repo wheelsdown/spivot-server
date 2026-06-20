@@ -51,6 +51,13 @@ Current foundation:
   composable per-handler constraints (action match, journey path
   parameter match, custom). Mirrors the two-tier shape of the
   identity middleware.
+- First end-to-end protected endpoints: `POST /v1/journeys`
+  (identity-only), `GET /v1/journeys/{id}` (journey-scoped
+  session macaroon), and `POST /v1/journeys/{id}/telemetry`
+  (journey-scoped + `telemetry.write` session macaroon, plus a
+  participant-membership check). Validates the full auth stack
+  composes correctly before unlocking the rest of the protocol
+  API surface.
 - Container-first release engineering with OCI labels and health checks.
 - Embedded SQL migration metadata for OpenCaravan journey storage.
 
@@ -117,6 +124,14 @@ POST /v1/client-apps/enroll     redeem a server_registration invite + CSR
 POST /v1/sessions               (requires client cert) issue a session
                                 macaroon for a single SessionAction,
                                 optionally scoped to a journey
+POST /v1/journeys               (requires client cert) create a new
+                                journey with the caller as host
+GET  /v1/journeys/{id}          (requires session macaroon scoped to
+                                the journey + journey.read) load journey
+POST /v1/journeys/{id}/telemetry
+                                (requires session macaroon scoped to
+                                the journey + telemetry.write) record
+                                a telemetry batch
 ```
 
 Future OpenCaravan API routes will be documented as they land. Go package
