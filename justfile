@@ -113,8 +113,12 @@ container tag=dev_image platforms=container_platforms tarball_dir=container_tarb
         echo "  $arch  →  $tarball"
     done
     echo
-    echo "Deploy on a remote host of any of those architectures:"
-    echo "  scp <tarball> host:/tmp/ && ssh host docker load -i /tmp/$(basename "$tarball")"
+    echo "Deploy on a remote host (substitute the target hostname for <host>):"
+    for entry in "${built[@]}"; do
+        arch="${entry%%:*}"; tarball="${entry#*:}"
+        base="$(basename "$tarball")"
+        echo "  $arch:  scp $tarball <host>:/tmp/ && ssh <host> docker load -i /tmp/$base"
+    done
 
 [group('container')]
 container-check tag=ci_image:
