@@ -55,29 +55,6 @@ clean:
 
 # --- Container ---
 
-[private]
-_ensure-buildx-builder name:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    # Verify a buildx builder named $name exists, is using the
-    # docker-container driver, and has been bootstrapped. Multi-arch
-    # / cross-platform builds require docker-container; the default
-    # `docker` driver only supports the host platform and silently
-    # produces single-arch output that looks correct but isn't.
-    # This mirrors the stricter check in
-    # scripts/releng/build-container-archive.sh so the local recipes
-    # fail-loud the same way the release path does.
-    if ! docker buildx inspect '{{name}}' >/dev/null 2>&1; then
-        docker buildx create --name '{{name}}' --driver docker-container --bootstrap >/dev/null
-    else
-        docker buildx inspect '{{name}}' --bootstrap >/dev/null
-    fi
-    driver="$(docker buildx inspect '{{name}}' | awk -F': ' '/^Driver:/ { print $2; exit }' | tr -d '[:space:]')"
-    if [ "$driver" = "docker" ]; then
-        echo "buildx builder '{{name}}' uses the docker driver; recreate with: docker buildx create --name '{{name}}' --driver docker-container --bootstrap" >&2
-        exit 1
-    fi
-
 [group('container')]
 container tag=dev_image platforms=container_platforms tarball_dir=container_tarball_dir:
     #!/usr/bin/env bash
@@ -95,7 +72,19 @@ container tag=dev_image platforms=container_platforms tarball_dir=container_tarb
     # container-check / container-run recipes (which need a
     # daemon-resident image) keep working unchanged.
     mkdir -p '{{tarball_dir}}'
-    just _ensure-buildx-builder '{{container_builder}}'
+    # Ensure a docker-container buildx builder exists. Multi-arch
+    # / cross-platform builds require docker-container; the
+    # default `docker` driver only supports the host platform and
+    # silently produces single-arch output that looks correct but
+    # isn't (the exact trap that motivated this recipe). Mirror
+    # the stricter check in scripts/releng/build-container-archive.sh.
+    if ! docker buildx inspect '{{container_builder}}' >/dev/null 2>&1; then
+        docker buildx create --name '{{container_builder}}' --driver docker-container --bootstrap >/dev/null
+    fi
+    if docker buildx inspect '{{container_builder}}' 2>/dev/null | grep -q '^Driver:[[:space:]]*docker$'; then
+        echo "buildx builder '{{container_builder}}' uses the docker driver; recreate with: docker buildx create --name '{{container_builder}}' --driver docker-container --bootstrap" >&2
+        exit 1
+    fi
     common_args=(
         --builder '{{container_builder}}'
         --build-arg "SPIVOT_VERSION={{version}}"
@@ -161,7 +150,13 @@ container-push tag=dev_image platforms=container_platforms:
     # Caller must be logged into the registry before invoking:
     #   echo "$(gh auth token)" | docker login ghcr.io \
     #       -u "$(gh api user -q .login)" --password-stdin
-    just _ensure-buildx-builder '{{container_builder}}'
+    if ! docker buildx inspect '{{container_builder}}' >/dev/null 2>&1; then
+        docker buildx create --name '{{container_builder}}' --driver docker-container --bootstrap >/dev/null
+    fi
+    if docker buildx inspect '{{container_builder}}' 2>/dev/null | grep -q '^Driver:[[:space:]]*docker$'; then
+        echo "buildx builder '{{container_builder}}' uses the docker driver; recreate with: docker buildx create --name '{{container_builder}}' --driver docker-container --bootstrap" >&2
+        exit 1
+    fi
     docker buildx build \
         --builder '{{container_builder}}' \
         --platform '{{platforms}}' \
