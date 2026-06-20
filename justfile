@@ -22,6 +22,7 @@ default:
     @echo "Common workflows:"
     @echo "  just ci                                      # full local validation gate"
     @echo "  just container                              # build multi-arch per-platform tarballs + load host arch locally"
+    @echo "  just container-push [tag]                   # build multi-arch + push to the registry (for rc smoke tests)"
     @echo "  just container-archive <version>            # build a multi-arch OCI archive (release flow)"
     @echo "  just release-github <version> [kind]        # tag and publish a GHCR-backed release"
     @echo ""
@@ -124,6 +125,41 @@ container tag=dev_image platforms=container_platforms tarball_dir=container_tarb
 container-check tag=ci_image:
     just container "{{tag}}"
     scripts/releng/inspect-container.sh "{{tag}}" "{{version}}"
+
+[group('container')]
+container-push tag=dev_image platforms=container_platforms:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Multi-arch build + push directly to the configured registry.
+    # The intended use case is "push a release-candidate :dev tag so
+    # an amd64 deploy host can pull it for the pre-release smoke
+    # test." For tagged releases use `just release-github` instead;
+    # this recipe is for the unvalidated-yet flow.
+    #
+    # The same `spivot-local` docker-container buildx builder
+    # `just container` uses is reused so the cache survives between
+    # local-load and push runs.
+    #
+    # Caller must be logged into the registry before invoking:
+    #   echo "$(gh auth token)" | docker login ghcr.io \
+    #       -u "$(gh api user -q .login)" --password-stdin
+    if ! docker buildx inspect '{{container_builder}}' >/dev/null 2>&1; then
+        docker buildx create --name '{{container_builder}}' \
+            --driver docker-container --bootstrap
+    fi
+    docker buildx build \
+        --builder '{{container_builder}}' \
+        --platform '{{platforms}}' \
+        --build-arg "SPIVOT_VERSION={{version}}" \
+        --build-arg "BUILD_COMMIT={{git_commit}}" \
+        --build-arg "BUILD_BRANCH={{git_branch}}" \
+        --build-arg "BUILD_TIME={{build_time}}" \
+        --push -t '{{tag}}' .
+    echo
+    echo "Pushed multi-arch image: {{tag}}"
+    echo "  platforms: {{platforms}}"
+    echo "  pull on deploy host: docker pull {{tag}}"
+    echo "  verify manifest:     docker buildx imagetools inspect {{tag}}"
 
 [group('container')]
 container-archive version platforms=container_platforms:
