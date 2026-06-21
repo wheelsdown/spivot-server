@@ -3,7 +3,7 @@ module github.com/wheelsdown/spivot-server
 go 1.26
 
 require (
-	github.com/opencaravan/opencaravan-go v0.0.0-20260524173424-3473cf66bb05
+	github.com/opencaravan/opencaravan-go v0.0.0-20260621195930-dc44ce004e3f
 	gopkg.in/macaroon.v2 v2.1.0
 	modernc.org/sqlite v1.50.1
 )

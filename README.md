@@ -134,6 +134,24 @@ POST /v1/journeys/{id}/telemetry
                                 (requires session macaroon scoped to
                                 the journey + telemetry.write) record
                                 a telemetry batch
+POST /v1/journeys/{id}/vehicles  (requires session macaroon scoped to
+                                the journey + journey.write) upload a
+                                journey-scoped Vehicle and its initial
+                                signed ACL revision
+GET  /v1/journeys/{id}/vehicles  (requires session macaroon scoped to
+                                the journey + journey.read) list every
+                                Vehicle uploaded against the journey
+GET  /v1/journeys/{id}/vehicles/{vid}
+                                (requires session macaroon scoped to
+                                the journey + journey.read) load a
+                                single journey vehicle
+POST /v1/journeys/{id}/vehicles/{vid}/acl-revisions
+                                (requires session macaroon scoped to
+                                the journey + journey.write) append a
+                                new signed VehicleACL revision; the
+                                vehicle's current_acl_version pointer
+                                advances when the supplied version is
+                                strictly greater
 ```
 
 Future OpenCaravan API routes will be documented as they land. Go package

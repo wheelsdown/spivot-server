@@ -74,6 +74,29 @@ type JourneyStore interface {
 	RecordTelemetryBatch(ctx context.Context, params storage.TelemetryBatchParams) (storage.TelemetryBatch, error)
 }
 
+// VehicleStore is the narrow subset of storage operations the
+// Phase 2 journey-vehicle handlers depend on. Satisfied by
+// [*storage.Store] via duck-typing.
+type VehicleStore interface {
+	// CreateJourneyVehicle persists a journey-scoped Vehicle and
+	// its initial signed ACL revision in one transaction. See
+	// [storage.Store.CreateJourneyVehicle].
+	CreateJourneyVehicle(ctx context.Context, params storage.JourneyVehicleCreateParams) (storage.JourneyVehicleRecord, error)
+	// JourneyVehicleByID returns the persisted vehicle with the
+	// supplied (journey_id, vehicle_id) pair. Returns
+	// [storage.ErrJourneyVehicleNotFound] when no row matches.
+	JourneyVehicleByID(ctx context.Context, journeyID, vehicleID string) (storage.JourneyVehicleRecord, error)
+	// ListJourneyVehicles returns every vehicle uploaded against
+	// a journey, ordered by created_at ascending.
+	ListJourneyVehicles(ctx context.Context, journeyID string) ([]storage.JourneyVehicleRecord, error)
+	// AppendJourneyVehicleACL records a new VehicleACL revision
+	// and advances the journey vehicle's current_acl_version
+	// pointer when the supplied revision is strictly greater than
+	// the existing version. See
+	// [storage.Store.AppendJourneyVehicleACL].
+	AppendJourneyVehicleACL(ctx context.Context, params storage.JourneyVehicleACLAppendParams) (storage.JourneyVehicleACLRevision, error)
+}
+
 // Config describes the HTTP API server's listen and deployment metadata.
 type Config struct {
 	// Address is the local TCP address to bind.
@@ -121,6 +144,11 @@ type Config struct {
 	// handlers. May be nil; the handlers respond 503 when not
 	// wired so a misconfigured deployment surfaces explicitly.
 	JourneyStore JourneyStore
+	// VehicleStore backs the Phase 2 journey-vehicle handlers
+	// (POST/GET /v1/journeys/{id}/vehicles and the ACL revision
+	// endpoint). May be nil; the handlers respond 503 when not
+	// wired so a misconfigured deployment surfaces explicitly.
+	VehicleStore VehicleStore
 	// AccessLogger receives the per-request "request handled" log
 	// line emitted by [Server.Handler]'s access-logging
 	// middleware. When nil, the server-level application logger
@@ -222,6 +250,18 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("POST /v1/journeys/{id}/telemetry", middleware.RequireSession(s.cfg.MacaroonVerifier, s.logger,
 			middleware.SessionActionJourneyFromPath(opencaravan.SessionActionTelemetryWrite, "id"),
 		)(http.HandlerFunc(s.handleJourneyTelemetry)))
+		mux.Handle("POST /v1/journeys/{id}/vehicles", middleware.RequireSession(s.cfg.MacaroonVerifier, s.logger,
+			middleware.SessionActionJourneyFromPath(opencaravan.SessionActionJourneyWrite, "id"),
+		)(http.HandlerFunc(s.handleJourneyVehicleCreate)))
+		mux.Handle("GET /v1/journeys/{id}/vehicles", middleware.RequireSession(s.cfg.MacaroonVerifier, s.logger,
+			middleware.SessionActionJourneyFromPath(opencaravan.SessionActionJourneyRead, "id"),
+		)(http.HandlerFunc(s.handleJourneyVehicleList)))
+		mux.Handle("GET /v1/journeys/{id}/vehicles/{vid}", middleware.RequireSession(s.cfg.MacaroonVerifier, s.logger,
+			middleware.SessionActionJourneyFromPath(opencaravan.SessionActionJourneyRead, "id"),
+		)(http.HandlerFunc(s.handleJourneyVehicleGet)))
+		mux.Handle("POST /v1/journeys/{id}/vehicles/{vid}/acl-revisions", middleware.RequireSession(s.cfg.MacaroonVerifier, s.logger,
+			middleware.SessionActionJourneyFromPath(opencaravan.SessionActionJourneyWrite, "id"),
+		)(http.HandlerFunc(s.handleJourneyVehicleACLAppend)))
 	}
 
 	h := s.withLogging(mux)
