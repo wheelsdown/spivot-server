@@ -128,6 +128,27 @@ POST /v1/sessions               (requires client cert) issue a session
                                 optionally scoped to a journey
 POST /v1/journeys               (requires client cert) create a new
                                 journey with the caller as host
+POST /v1/garages                (requires client cert) create a new
+                                garage with the caller as the sole
+                                accepted owner; revision_version = 1
+GET  /v1/garages                (requires client cert) list every
+                                garage where the caller is an owner,
+                                accepted or pending (so clients
+                                surface invitations alongside owned)
+GET  /v1/garages/{id}           (requires client cert; caller must
+                                be an owner) load the garage's
+                                current head state + materialized
+                                owner list
+POST /v1/garages/{id}/revisions (requires client cert; caller must
+                                be an accepted owner and must equal
+                                Garage.signed_by) publish the next
+                                signed revision (rename, add/remove
+                                owners)
+POST /v1/garages/{id}/ownership-acceptances
+                                (requires client cert; caller must
+                                equal acceptance.accepter_user_id)
+                                accept a pending ownership
+                                invitation
 GET  /v1/journeys/{id}          (requires session macaroon scoped to
                                 the journey + journey.read) load journey
 POST /v1/journeys/{id}/telemetry

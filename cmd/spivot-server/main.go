@@ -318,6 +318,7 @@ func runServe(ctx context.Context, stdout io.Writer, stderr io.Writer, args []st
 		JourneyStore:           store,
 		VehicleStore:           store,
 		DriverAttestationStore: store,
+		GarageStore:            store,
 		AccessLogger:           accessLogger,
 		PolicySnapshot:         policySnapshot,
 	}, logger)

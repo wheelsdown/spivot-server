@@ -75,6 +75,7 @@ func newJourneyEnv(t *testing.T) *journeyEnv {
 		JourneyStore:           store,
 		VehicleStore:           store,
 		DriverAttestationStore: store,
+		GarageStore:            store,
 		MacaroonIssuer:         issuer,
 		MacaroonVerifier:       verifier,
 		PolicySnapshot: ServerPolicySnapshot{
