@@ -122,15 +122,17 @@ type Config struct {
 	// wired so a misconfigured deployment surfaces explicitly.
 	JourneyStore JourneyStore
 	// AccessLogger receives the per-request "request handled" log
-	// line emitted by [withLogging]. When nil, [Server.logger] is
-	// used so application logs and access logs share the same
-	// destination (the historical behavior and the local-dev
-	// default). When set, access logs route to this logger only —
-	// typically a file handle so an operator can run a separate
-	// log shipper, rotate independently of stdout, or simply keep
-	// container stdout focused on application events. The level,
-	// format, and handler are the caller's choice; this package
-	// only writes records.
+	// line emitted by [Server.Handler]'s access-logging
+	// middleware. When nil, the server-level application logger
+	// passed to [NewServer] is used, so application logs and
+	// access logs share the same destination (the historical
+	// behavior and the local-dev default). When set, access logs
+	// route to this logger only — typically a file handle so an
+	// operator can run a separate log shipper, rotate
+	// independently of stdout, or simply keep container stdout
+	// focused on application events. The level, format, and
+	// handler are the caller's choice; this package only writes
+	// records.
 	AccessLogger *slog.Logger
 	// PolicySnapshot is captured by value at server startup and advertised to
 	// clients until the process restarts. Runtime policy rotation should make
