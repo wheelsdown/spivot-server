@@ -36,8 +36,7 @@ CREATE TABLE journey_vehicles (
     integrity_key_id         TEXT NOT NULL,
     integrity_signature      TEXT NOT NULL,
     canonical_payload_json   TEXT NOT NULL,
-    created_at               TEXT NOT NULL,
-    UNIQUE (journey_id, id)
+    created_at               TEXT NOT NULL
 );
 
 -- A journey participant uploads exactly one Vehicle per journey. The

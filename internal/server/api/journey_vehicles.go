@@ -151,6 +151,10 @@ func (s *Server) handleJourneyVehicleCreate(w http.ResponseWriter, r *http.Reque
 		writeProblem(w, s.logger, http.StatusConflict, "vehicle_already_exists",
 			"This user already has a vehicle uploaded for this journey.")
 		return
+	case errors.Is(err, storage.ErrJourneyVehicleDuplicateID):
+		writeProblem(w, s.logger, http.StatusConflict, "vehicle_id_in_use",
+			"The supplied Vehicle.id is already in use; mint a fresh UUID.")
+		return
 	case err != nil:
 		s.logger.Error("vehicles: create failed", "error", err, "journey_id", journeyID, "user_id", id.UserID)
 		writeProblem(w, s.logger, http.StatusInternalServerError, "internal_error",
@@ -254,8 +258,14 @@ func (s *Server) handleJourneyVehicleACLAppend(w http.ResponseWriter, r *http.Re
 	journeyID := r.PathValue("id")
 	vehicleID := r.PathValue("vid")
 
-	// Confirm the vehicle exists in this journey before touching the ACL log.
-	if _, err := s.cfg.VehicleStore.JourneyVehicleByID(r.Context(), journeyID, vehicleID); err != nil {
+	// Load the stored vehicle so we can confirm the session caller is
+	// the recorded owner. Without this check, any holder of a
+	// journey.write session could append an ACL to another
+	// participant's vehicle by setting payload.owner_user_id to
+	// themselves — breaking the "owner-signed" invariant that
+	// DriverAttestation relies on.
+	stored, err := s.cfg.VehicleStore.JourneyVehicleByID(r.Context(), journeyID, vehicleID)
+	if err != nil {
 		if errors.Is(err, storage.ErrJourneyVehicleNotFound) {
 			writeProblem(w, s.logger, http.StatusNotFound, "vehicle_not_found",
 				"No vehicle exists at this journey and id.")
@@ -264,6 +274,17 @@ func (s *Server) handleJourneyVehicleACLAppend(w http.ResponseWriter, r *http.Re
 		s.logger.Error("vehicles: acl precheck failed", "error", err, "journey_id", journeyID, "vehicle_id", vehicleID)
 		writeProblem(w, s.logger, http.StatusInternalServerError, "internal_error",
 			"Could not look up journey vehicle.")
+		return
+	}
+	if stored.OwnerUserID != id.UserID {
+		s.logger.Warn("vehicles: acl append by non-owner rejected",
+			"session_user_id", id.UserID,
+			"stored_owner_user_id", stored.OwnerUserID,
+			"journey_id", journeyID,
+			"vehicle_id", vehicleID,
+		)
+		writeProblem(w, s.logger, http.StatusForbidden, "owner_mismatch",
+			"Only the vehicle's recorded owner may publish ACL revisions.")
 		return
 	}
 
@@ -312,7 +333,7 @@ func (s *Server) handleJourneyVehicleACLAppend(w http.ResponseWriter, r *http.Re
 	switch {
 	case errors.Is(err, storage.ErrJourneyVehicleACLVersionConflict):
 		writeProblem(w, s.logger, http.StatusConflict, "acl_version_conflict",
-			"An ACL revision with this version already exists for this vehicle.")
+			"VehicleACL.acl_version must be strictly greater than the vehicle's current ACL version.")
 		return
 	case errors.Is(err, storage.ErrJourneyVehicleNotFound):
 		writeProblem(w, s.logger, http.StatusNotFound, "vehicle_not_found",

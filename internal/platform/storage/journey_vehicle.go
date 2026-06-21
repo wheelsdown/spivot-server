@@ -90,12 +90,25 @@ var ErrJourneyVehicleNotFound = errors.New("storage: journey vehicle not found")
 // so the handler can map to 409.
 var ErrJourneyVehicleDuplicateOwner = errors.New("storage: journey vehicle already exists for this owner")
 
+// ErrJourneyVehicleDuplicateID is returned by
+// [Store.CreateJourneyVehicle] when the supplied Vehicle.ID is
+// already present in the journey_vehicles table (anywhere — IDs
+// are globally unique). Distinct from
+// [ErrJourneyVehicleDuplicateOwner] so a UUID collision is not
+// mis-reported as "this user already uploaded a vehicle." In
+// practice, well-behaved clients mint fresh UUIDs and never see
+// this; the sentinel exists so an accidental id reuse surfaces
+// with an honest message instead of an inscrutable owner conflict.
+var ErrJourneyVehicleDuplicateID = errors.New("storage: journey vehicle id already in use")
+
 // ErrJourneyVehicleACLVersionConflict is returned by
 // [Store.AppendJourneyVehicleACL] when the supplied ACL version
-// collides with one already on file for this vehicle. The owner
-// must publish a strictly higher version than the existing
-// current_acl_version.
-var ErrJourneyVehicleACLVersionConflict = errors.New("storage: journey vehicle acl version not monotonically greater")
+// is not strictly greater than the vehicle's current_acl_version.
+// The protocol's monotonic-version contract requires each
+// published revision to advance the counter; replays of an
+// already-seen version and stale uploads of an older version
+// both return this sentinel so the handler can map to 409.
+var ErrJourneyVehicleACLVersionConflict = errors.New("storage: journey vehicle acl version must be strictly greater than current")
 
 // CreateJourneyVehicle persists a journey-scoped Vehicle and its
 // initial ACL revision (ACLVersion = Vehicle.ACLVersion, with the
@@ -147,6 +160,26 @@ func (s *Store) CreateJourneyVehicle(ctx context.Context, params JourneyVehicleC
 		return JourneyVehicleRecord{}, fmt.Errorf("storage: begin tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+
+	// Pre-check ID uniqueness inside the transaction so we can
+	// return the right sentinel when the INSERT's UNIQUE failure
+	// is ambiguous. SQLite serializes writes; another transaction
+	// cannot insert this id between the SELECT and INSERT, so the
+	// pre-check + UNIQUE-on-INSERT pair has no race. The remaining
+	// UNIQUE failure after the pre-check is necessarily the
+	// (journey_id, owner_user_id) index, so map cleanly to
+	// ErrJourneyVehicleDuplicateOwner.
+	var existing string
+	switch err := tx.QueryRowContext(ctx,
+		`SELECT id FROM journey_vehicles WHERE id = ?`,
+		string(params.Vehicle.ID)).Scan(&existing); {
+	case errors.Is(err, sql.ErrNoRows):
+		// expected — id is fresh, proceed to INSERT.
+	case err != nil:
+		return JourneyVehicleRecord{}, fmt.Errorf("storage: pre-check vehicle id: %w", err)
+	default:
+		return JourneyVehicleRecord{}, ErrJourneyVehicleDuplicateID
+	}
 
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO journey_vehicles (
@@ -284,15 +317,16 @@ ORDER BY created_at ASC
 }
 
 // AppendJourneyVehicleACL records a new VehicleACL revision and
-// advances the journey vehicle's current_acl_version pointer if the
-// new revision is strictly greater than the one currently on file.
+// advances the journey vehicle's current_acl_version pointer.
 // Returns [ErrJourneyVehicleACLVersionConflict] when the supplied
-// ACL version is not greater than the existing version.
+// ACL version is not strictly greater than the existing
+// current_acl_version. Strict monotonicity is the protocol's
+// contract: owners publish revisions in order, and the server
+// rejects both duplicates and stale uploads of older versions —
+// either would let a v=2 revoke be reversed by a replay of v=1.
 //
-// The advancing of current_acl_version is conditional: a strictly
-// later revision can be inserted that retroactively pre-dates a
-// later-effective ACL (e.g. a backfill upload during sync) without
-// rewinding the current pointer.
+// Returns [ErrJourneyVehicleNotFound] when the journey vehicle id
+// does not exist.
 func (s *Store) AppendJourneyVehicleACL(ctx context.Context, params JourneyVehicleACLAppendParams) (JourneyVehicleACLRevision, error) {
 	if s == nil || s.db == nil {
 		return JourneyVehicleACLRevision{}, errors.New("storage: database is not open")
@@ -333,6 +367,9 @@ func (s *Store) AppendJourneyVehicleACL(ctx context.Context, params JourneyVehic
 		}
 		return JourneyVehicleACLRevision{}, fmt.Errorf("storage: load current acl version: %w", err)
 	}
+	if params.ACL.ACLVersion <= currentVersion {
+		return JourneyVehicleACLRevision{}, ErrJourneyVehicleACLVersionConflict
+	}
 
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO journey_vehicle_acl_revisions (
@@ -360,12 +397,10 @@ INSERT INTO journey_vehicle_acl_revisions (
 		return JourneyVehicleACLRevision{}, fmt.Errorf("storage: insert acl revision: %w", err)
 	}
 
-	if params.ACL.ACLVersion > currentVersion {
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE journey_vehicles SET current_acl_version = ?, emergency_rule_kind = ? WHERE id = ?`,
-			params.ACL.ACLVersion, emergencyKind, params.JourneyVehicleID); err != nil {
-			return JourneyVehicleACLRevision{}, fmt.Errorf("storage: advance current acl: %w", err)
-		}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE journey_vehicles SET current_acl_version = ?, emergency_rule_kind = ? WHERE id = ?`,
+		params.ACL.ACLVersion, emergencyKind, params.JourneyVehicleID); err != nil {
+		return JourneyVehicleACLRevision{}, fmt.Errorf("storage: advance current acl: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {

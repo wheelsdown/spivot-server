@@ -321,6 +321,52 @@ func TestJourneyVehicleACLAppendVehicleIDMismatchRejected(t *testing.T) {
 	}
 }
 
+func TestJourneyVehicleACLAppendRejectedForNonOwner(t *testing.T) {
+	// Defense in depth: any journey.write holder must NOT be
+	// allowed to append an ACL to another participant's vehicle,
+	// even if they spoof acl.owner_user_id to themselves. The
+	// handler must verify against the stored vehicle owner.
+	env := newJourneyEnv(t)
+	owner := env.mintIdentity(t)
+	other := env.mintIdentity(t)
+	journey := env.mustCreateJourney(t, owner, "Pacific Coast Drive")
+	jid, err := opencaravan.ParseUUID(journey.ID)
+	if err != nil {
+		t.Fatalf("ParseUUID: %v", err)
+	}
+
+	// Owner uploads the vehicle.
+	ownerMac := env.issueSessionMacaroon(t, owner, jid, opencaravan.SessionActionJourneyWrite)
+	payload := newSignedVehiclePayload(t, owner.UserID)
+	if rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", payload, owner, ownerMac); rec.Code != http.StatusCreated {
+		t.Fatalf("owner create: got %d, body=%s", rec.Code, rec.Body.String())
+	}
+
+	// "Other" caller acquires a journey.write session and tries to
+	// append an ACL to the vehicle, claiming themselves as owner.
+	// The handler must reject with 403 because the stored owner is
+	// `owner`, not `other`.
+	otherMac := env.issueSessionMacaroon(t, other, jid, opencaravan.SessionActionJourneyWrite)
+	spoofed := opencaravan.VehicleACL{
+		VehicleID:         payload.ID,
+		OwnerUserID:       opencaravan.UUID(other.UserID),
+		ACLVersion:        2,
+		AuthorizedDrivers: payload.AuthorizedDrivers,
+		EffectiveTime:     time.Now().Add(time.Minute).UTC(),
+		Integrity: &opencaravan.Integrity{
+			Algorithm: "ecdsa-p256-sha256",
+			KeyID:     other.UserID,
+			Signature: "spoofed-signature",
+		},
+	}
+	rec := env.post(t,
+		"/v1/journeys/"+journey.ID+"/vehicles/"+string(payload.ID)+"/acl-revisions",
+		spoofed, other, otherMac)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status: got %d want 403; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestJourneyVehicleCreate503WithoutVehicleStore(t *testing.T) {
 	// Defense-in-depth: a deployment that wires MacaroonVerifier
 	// but forgets VehicleStore returns 503 instead of silently

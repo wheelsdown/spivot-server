@@ -283,6 +283,121 @@ func TestAppendJourneyVehicleACLConflictOnDuplicateVersion(t *testing.T) {
 	}
 }
 
+func TestAppendJourneyVehicleACLRejectsStaleVersion(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	journeyID, ownerID := seedJourneyForVehicleTest(t, store)
+	vehicle, canonical := newSignedVehicle(t, ownerID)
+	rec, err := store.CreateJourneyVehicle(ctx, JourneyVehicleCreateParams{
+		JourneyID:        journeyID,
+		Vehicle:          vehicle,
+		CanonicalPayload: canonical,
+	})
+	if err != nil {
+		t.Fatalf("CreateJourneyVehicle: %v", err)
+	}
+
+	// Advance to v=2.
+	v2 := opencaravan.VehicleACL{
+		VehicleID:         vehicle.ID,
+		OwnerUserID:       ownerID,
+		ACLVersion:        2,
+		AuthorizedDrivers: vehicle.AuthorizedDrivers,
+		EffectiveTime:     time.Now().Add(time.Minute).UTC(),
+	}
+	v2Canonical, err := v2.CanonicalEncoding()
+	if err != nil {
+		t.Fatalf("v2 CanonicalEncoding: %v", err)
+	}
+	v2.Integrity = &opencaravan.Integrity{
+		Algorithm: "ecdsa-p256-sha256",
+		KeyID:     string(ownerID),
+		Signature: "test-v2",
+	}
+	if _, err := store.AppendJourneyVehicleACL(ctx, JourneyVehicleACLAppendParams{
+		JourneyVehicleID: rec.ID,
+		ACL:              v2,
+		CanonicalPayload: v2Canonical,
+	}); err != nil {
+		t.Fatalf("v2 append: %v", err)
+	}
+
+	// Now attempt to insert a stale v=1. The strict-monotonic check
+	// must reject this even though v=1 already exists in history.
+	stale := opencaravan.VehicleACL{
+		VehicleID:         vehicle.ID,
+		OwnerUserID:       ownerID,
+		ACLVersion:        1,
+		AuthorizedDrivers: vehicle.AuthorizedDrivers,
+		EffectiveTime:     time.Now().Add(time.Hour).UTC(),
+	}
+	staleCanonical, err := stale.CanonicalEncoding()
+	if err != nil {
+		t.Fatalf("stale CanonicalEncoding: %v", err)
+	}
+	stale.Integrity = &opencaravan.Integrity{
+		Algorithm: "ecdsa-p256-sha256",
+		KeyID:     string(ownerID),
+		Signature: "test-stale",
+	}
+	_, err = store.AppendJourneyVehicleACL(ctx, JourneyVehicleACLAppendParams{
+		JourneyVehicleID: rec.ID,
+		ACL:              stale,
+		CanonicalPayload: staleCanonical,
+	})
+	if !errors.Is(err, ErrJourneyVehicleACLVersionConflict) {
+		t.Fatalf("got %v, want ErrJourneyVehicleACLVersionConflict", err)
+	}
+
+	// Vehicle pointer stayed at v=2.
+	got, err := store.JourneyVehicleByID(ctx, journeyID, rec.ID)
+	if err != nil {
+		t.Fatalf("JourneyVehicleByID: %v", err)
+	}
+	if got.CurrentACLVersion != 2 {
+		t.Fatalf("current_acl_version: got %d want 2", got.CurrentACLVersion)
+	}
+}
+
+func TestCreateJourneyVehicleRejectsDuplicateID(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	journeyID, ownerA := seedJourneyForVehicleTest(t, store)
+	ownerB := mustUUID(t)
+	seedHostUser(t, store, string(ownerB))
+
+	first, firstCanonical := newSignedVehicle(t, ownerA)
+	if _, err := store.CreateJourneyVehicle(ctx, JourneyVehicleCreateParams{
+		JourneyID:        journeyID,
+		Vehicle:          first,
+		CanonicalPayload: firstCanonical,
+	}); err != nil {
+		t.Fatalf("first CreateJourneyVehicle: %v", err)
+	}
+
+	// Second vehicle owned by a different user, reusing the same
+	// Vehicle.ID. Must surface as ErrJourneyVehicleDuplicateID
+	// rather than DuplicateOwner — the conflict is on the ID,
+	// not the (journey, owner) pair.
+	second, _ := newSignedVehicle(t, ownerB)
+	second.ID = first.ID
+	secondCanonical, err := second.CanonicalEncoding()
+	if err != nil {
+		t.Fatalf("re-canonicalize: %v", err)
+	}
+
+	_, err = store.CreateJourneyVehicle(ctx, JourneyVehicleCreateParams{
+		JourneyID:        journeyID,
+		Vehicle:          second,
+		CanonicalPayload: secondCanonical,
+	})
+	if !errors.Is(err, ErrJourneyVehicleDuplicateID) {
+		t.Fatalf("got %v, want ErrJourneyVehicleDuplicateID", err)
+	}
+}
+
 func TestJourneyVehicleACLAtResolvesHistoricalRevision(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
