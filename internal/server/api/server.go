@@ -126,6 +126,40 @@ type DriverAttestationStore interface {
 	DriverAttestationForkSiblings(ctx context.Context, journeyVehicleID, priorHash string) ([]storage.DriverAttestationRecord, error)
 }
 
+// GarageStore is the narrow subset of storage operations the
+// garage-container handlers depend on. Satisfied by
+// [*storage.Store] via duck-typing.
+type GarageStore interface {
+	// CreateGarage persists a new garage at revision_version = 1.
+	CreateGarage(ctx context.Context, params storage.GarageCreateParams) (storage.GarageRecord, error)
+	// AppendGarageRevision records a new signed Garage payload and
+	// reconciles the materialized owner list. Returns
+	// [storage.ErrGarageRevisionVersionConflict] when the supplied
+	// version is not strictly greater than the current head.
+	AppendGarageRevision(ctx context.Context, params storage.GarageAppendRevisionParams) (storage.GarageRevisionRecord, error)
+	// AcceptGarageOwnership records a signed acceptance and moves
+	// the corresponding owner row from pending to accepted.
+	AcceptGarageOwnership(ctx context.Context, params storage.GarageAcceptOwnershipParams) (storage.GarageOwnershipAcceptanceRecord, error)
+	// GarageByID returns the head-pointer projection of the supplied
+	// garage. Returns [storage.ErrGarageNotFound] when no row matches.
+	GarageByID(ctx context.Context, garageID string) (storage.GarageRecord, error)
+	// ListGarageOwners returns every owner row for the supplied
+	// garage, accepted and pending alike.
+	ListGarageOwners(ctx context.Context, garageID string) ([]storage.GarageOwnerRecord, error)
+	// ListGaragesForUser returns every garage in which the supplied
+	// user appears as an owner (accepted or pending).
+	ListGaragesForUser(ctx context.Context, userID string) ([]storage.GarageRecord, error)
+	// GarageOwnerByUserAndGarage is the "is this user an owner?"
+	// authorization gate. Returns [storage.ErrGarageNotFound] when
+	// no row matches.
+	GarageOwnerByUserAndGarage(ctx context.Context, userID, garageID string) (storage.GarageOwnerRecord, error)
+	// GarageOwnershipAcceptanceByKey returns the recorded
+	// acceptance matching the supplied triple. Used by the
+	// handler to surface canonical stored values after an
+	// idempotent replay.
+	GarageOwnershipAcceptanceByKey(ctx context.Context, garageID, accepterUserID string, revisionVersion int) (storage.GarageOwnershipAcceptanceRecord, error)
+}
+
 // Config describes the HTTP API server's listen and deployment metadata.
 type Config struct {
 	// Address is the local TCP address to bind.
@@ -184,6 +218,11 @@ type Config struct {
 	// May be nil; the handlers respond 503 when not wired so a
 	// misconfigured deployment surfaces explicitly.
 	DriverAttestationStore DriverAttestationStore
+	// GarageStore backs the garage container handlers
+	// (POST/GET /v1/garages and the revision + acceptance
+	// endpoints). May be nil; the handlers respond 503 when not
+	// wired.
+	GarageStore GarageStore
 	// AccessLogger receives the per-request "request handled" log
 	// line emitted by [Server.Handler]'s access-logging
 	// middleware. When nil, the server-level application logger
@@ -270,6 +309,15 @@ func (s *Server) Handler() http.Handler {
 	// journeys. The handler's own 503 path covers the
 	// JourneyStore-not-wired case.
 	mux.Handle("POST /v1/journeys", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleJourneyCreate)))
+	// Garage endpoints are identity-only (no journey context).
+	// The garage container is account-scoped: authority is
+	// "are you an owner of this garage?" — enforced per-handler
+	// via [storage.Store.GarageOwnerByUserAndGarage].
+	mux.Handle("POST /v1/garages", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleGarageCreate)))
+	mux.Handle("GET /v1/garages", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleGarageList)))
+	mux.Handle("GET /v1/garages/{id}", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleGarageGet)))
+	mux.Handle("POST /v1/garages/{id}/revisions", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleGarageRevisionAppend)))
+	mux.Handle("POST /v1/garages/{id}/ownership-acceptances", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleGarageOwnershipAccept)))
 	// The journey-scoped routes require a session macaroon naming
 	// the requested journey and the appropriate action; the
 	// per-handler constraints run through
