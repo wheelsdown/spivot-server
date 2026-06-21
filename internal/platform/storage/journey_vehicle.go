@@ -397,10 +397,29 @@ INSERT INTO journey_vehicle_acl_revisions (
 		return JourneyVehicleACLRevision{}, fmt.Errorf("storage: insert acl revision: %w", err)
 	}
 
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE journey_vehicles SET current_acl_version = ?, emergency_rule_kind = ? WHERE id = ?`,
-		params.ACL.ACLVersion, emergencyKind, params.JourneyVehicleID); err != nil {
+	// Conditional head UPDATE — only advance when our supplied
+	// version is strictly greater than whatever's currently in the
+	// row. Defends against a SELECT-then-UPDATE race where two
+	// concurrent writers both observe the same current_acl_version,
+	// both pass the strict version check above, both insert
+	// distinct ACL revision rows (the UNIQUE constraint on
+	// (vehicle, version) allows v=2 + v=3 to coexist), and a naive
+	// UPDATE would let the second writer regress the head back to
+	// the lower version. RowsAffected = 0 means another writer
+	// raced ahead; we return ErrJourneyVehicleACLVersionConflict
+	// and the tx rolls back so the loser revision row never lands
+	// in the audit log either — clients see 409 and retry with a
+	// fresh version number.
+	res, err := tx.ExecContext(ctx,
+		`UPDATE journey_vehicles SET current_acl_version = ?, emergency_rule_kind = ? WHERE id = ? AND current_acl_version < ?`,
+		params.ACL.ACLVersion, emergencyKind, params.JourneyVehicleID, params.ACL.ACLVersion)
+	if err != nil {
 		return JourneyVehicleACLRevision{}, fmt.Errorf("storage: advance current acl: %w", err)
+	}
+	if affected, affErr := res.RowsAffected(); affErr != nil {
+		return JourneyVehicleACLRevision{}, fmt.Errorf("storage: read rows affected: %w", affErr)
+	} else if affected == 0 {
+		return JourneyVehicleACLRevision{}, ErrJourneyVehicleACLVersionConflict
 	}
 
 	if err := tx.Commit(); err != nil {
