@@ -238,10 +238,28 @@ func (s *Store) AppendGarageRevision(ctx context.Context, params GarageAppendRev
 		return GarageRevisionRecord{}, err
 	}
 
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE garages SET name = ?, current_revision_version = ?, current_revision_time = ? WHERE id = ?`,
-		params.Garage.Name, params.Garage.RevisionVersion, formatSQLiteTime(params.Garage.RevisionTime), string(params.Garage.ID)); err != nil {
+	// Conditional head UPDATE + check RowsAffected. Defends against
+	// a SELECT-then-UPDATE race where two concurrent owners both
+	// observe the same current_revision_version, both pass the
+	// strict version check above, both insert distinct revision
+	// rows (the UNIQUE on (garage, version) allows v=2 + v=3 to
+	// coexist), and a naive UPDATE would let the second writer
+	// regress the head back to the lower version. RowsAffected = 0
+	// returns ErrGarageRevisionVersionConflict; the tx rolls back
+	// so the loser revision row doesn't land in history AND the
+	// materialized owner projection isn't reconciled against the
+	// loser payload. Clients see 409 and retry with a fresh
+	// version number.
+	res, err := tx.ExecContext(ctx,
+		`UPDATE garages SET name = ?, current_revision_version = ?, current_revision_time = ? WHERE id = ? AND current_revision_version < ?`,
+		params.Garage.Name, params.Garage.RevisionVersion, formatSQLiteTime(params.Garage.RevisionTime), string(params.Garage.ID), params.Garage.RevisionVersion)
+	if err != nil {
 		return GarageRevisionRecord{}, fmt.Errorf("storage: update garage head pointer: %w", err)
+	}
+	if affected, affErr := res.RowsAffected(); affErr != nil {
+		return GarageRevisionRecord{}, fmt.Errorf("storage: read rows affected: %w", affErr)
+	} else if affected == 0 {
+		return GarageRevisionRecord{}, ErrGarageRevisionVersionConflict
 	}
 
 	if err := reconcileGarageOwnersTx(ctx, tx, string(params.Garage.ID), params.Garage.RevisionVersion, params.Garage.Owners); err != nil {

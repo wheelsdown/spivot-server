@@ -226,18 +226,16 @@ func (s *Store) AppendGarageVehicleRevision(ctx context.Context, params GarageVe
 		return GarageVehicleRevisionRecord{}, err
 	}
 
-	// Conditional head UPDATE — only advance when our supplied
-	// revision is strictly greater than whatever's currently in
-	// the row. Defends against a SELECT-then-UPDATE race where
-	// two accepted owners observe the same current_revision_version,
-	// both pass the strict check above, both insert distinct
-	// revision rows (the UNIQUE constraint on (vehicle, version)
-	// allows v=2 + v=3 to coexist), and then a naive UPDATE would
-	// let the second writer regress the head back to its lower
-	// version. RowsAffected = 0 means another writer raced ahead;
-	// our revision row landed but the head stays at the higher
-	// concurrent revision. Both revisions are preserved in
-	// garage_vehicle_revisions for the audit log.
+	// Conditional head UPDATE + RowsAffected check. Defends
+	// against a SELECT-then-UPDATE race where two accepted owners
+	// both observe the same current_revision_version, both pass
+	// the strict check above, both insert distinct revision rows
+	// (the UNIQUE on (vehicle, version) allows v=2 + v=3 to
+	// coexist), and a naive UPDATE would let the second writer
+	// regress the head back to the lower version. RowsAffected=0
+	// returns ErrGarageVehicleRevisionVersionConflict; the tx
+	// rolls back so the loser revision row doesn't land in
+	// history. Clients see 409 and retry with a fresh version.
 	res, err := tx.ExecContext(ctx, `
 UPDATE garage_vehicles
 SET current_revision_version = ?, current_revision_time = ?,
@@ -264,11 +262,10 @@ WHERE id = ? AND garage_id = ? AND current_revision_version < ?
 	if err != nil {
 		return GarageVehicleRevisionRecord{}, fmt.Errorf("storage: update garage vehicle head: %w", err)
 	}
-	if affected, affErr := res.RowsAffected(); affErr == nil && affected == 0 {
-		// Concurrent writer raced ahead; our revision row is on
-		// file but the head pointer stays at the higher revision.
-		// Not a fault — log and continue.
-		_ = affected
+	if affected, affErr := res.RowsAffected(); affErr != nil {
+		return GarageVehicleRevisionRecord{}, fmt.Errorf("storage: read rows affected: %w", affErr)
+	} else if affected == 0 {
+		return GarageVehicleRevisionRecord{}, ErrGarageVehicleRevisionVersionConflict
 	}
 
 	if err := tx.Commit(); err != nil {
