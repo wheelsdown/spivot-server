@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -154,72 +155,94 @@ func (s *Server) handleDriverAttestationRecord(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	canonical, err := attestation.CanonicalEncoding()
-	if err != nil {
-		s.logger.Error("attestations: canonical encode failed", "error", err)
-		writeProblem(w, s.logger, http.StatusInternalServerError, "internal_error",
-			"Could not compute canonical attestation bytes.")
-		return
-	}
-
-	resolver := &driverAttestationTrustResolver{
-		store:              s.cfg.VehicleStore,
-		journeyParticipant: s.cfg.JourneyStore,
-	}
-	trust, err := resolver.classify(r.Context(), journeyID, stored.OwnerUserID, attestation)
-	if err != nil {
-		if errors.Is(err, storage.ErrJourneyVehicleNotFound) {
-			// No ACL revision exists at or before EffectiveTime —
-			// structurally impossible for a legitimate driver to
-			// have consulted an ACL that did not yet exist.
-			writeProblem(w, s.logger, http.StatusBadRequest, "no_acl_at_effective_time",
-				"No VehicleACL revision exists at or before the attestation's effective_time.")
-			return
-		}
-		s.logger.Error("attestations: classify failed", "error", err, "vehicle_id", vehicleID)
-		writeProblem(w, s.logger, http.StatusInternalServerError, "internal_error",
-			"Could not classify attestation trust.")
-		return
-	}
-
-	rec, err := s.cfg.DriverAttestationStore.RecordDriverAttestation(r.Context(), storage.DriverAttestationRecordParams{
-		Attestation:      attestation,
-		JourneyVehicleID: vehicleID,
-		TrustFlag:        trust,
-		CanonicalPayload: canonical,
-	})
-	status := http.StatusCreated
+	// Short-circuit on replay BEFORE classification: a gossiped
+	// retry of an already-stored attestation must return the
+	// original record even if classify would now fail transiently
+	// (DB hiccup, ACL JSON decode error, journey-participant
+	// lookup error). Returning the original record also preserves
+	// the original trust_flag — if the ACL evolved between the
+	// first submission and this replay, the response reflects the
+	// state at the time of original classification, not the freshly
+	// recomputed one.
+	rec, status, err := s.replayExistingAttestation(r.Context(), vehicleID, id.UserID, attestation.EffectiveTime)
 	switch {
-	case errors.Is(err, storage.ErrDriverAttestationDuplicate):
-		// Idempotent replay — fetch the existing record so the
-		// client sees the canonical trust_flag from the original
-		// classification rather than the freshly-computed one
-		// (which could differ if the ACL evolved between the
-		// original upload and this retry).
-		existing, lookupErr := s.cfg.DriverAttestationStore.DriverAttestationByReplayKey(
-			r.Context(), vehicleID, id.UserID, attestation.EffectiveTime)
-		if lookupErr != nil {
-			s.logger.Error("attestations: replay lookup failed", "error", lookupErr,
-				"vehicle_id", vehicleID, "driver_user_id", id.UserID)
+	case err != nil:
+		s.logger.Error("attestations: replay key lookup failed", "error", err,
+			"vehicle_id", vehicleID, "driver_user_id", id.UserID)
+		writeProblem(w, s.logger, http.StatusInternalServerError, "internal_error",
+			"Could not check for an existing attestation.")
+		return
+	case status == http.StatusOK:
+		// Existing record returned. Fall through to fork-sibling
+		// surfacing — useful for the replay client to see any
+		// siblings that have appeared since the original submission.
+	default:
+		// No replay match — classify and insert fresh.
+		canonical, encErr := attestation.CanonicalEncoding()
+		if encErr != nil {
+			s.logger.Error("attestations: canonical encode failed", "error", encErr)
 			writeProblem(w, s.logger, http.StatusInternalServerError, "internal_error",
-				"Could not load existing attestation after replay conflict.")
+				"Could not compute canonical attestation bytes.")
 			return
 		}
-		rec = existing
-		status = http.StatusOK
-	case err != nil:
-		s.logger.Error("attestations: record failed", "error", err, "vehicle_id", vehicleID)
-		writeProblem(w, s.logger, http.StatusInternalServerError, "internal_error",
-			"Could not record driver attestation.")
-		return
-	default:
-		s.logger.Info("driver attestation recorded",
-			"journey_id", journeyID,
-			"vehicle_id", vehicleID,
-			"driver_user_id", rec.DriverUserID,
-			"acl_version_consulted", rec.ACLVersionConsulted,
-			"trust_flag", rec.TrustFlag,
-		)
+		resolver := &driverAttestationTrustResolver{
+			store:              s.cfg.VehicleStore,
+			journeyParticipant: s.cfg.JourneyStore,
+		}
+		trust, classifyErr := resolver.classify(r.Context(), journeyID, stored.OwnerUserID, attestation)
+		if classifyErr != nil {
+			if errors.Is(classifyErr, storage.ErrJourneyVehicleNotFound) {
+				// No ACL revision exists at or before EffectiveTime —
+				// structurally impossible for a legitimate driver to
+				// have consulted an ACL that did not yet exist.
+				writeProblem(w, s.logger, http.StatusBadRequest, "no_acl_at_effective_time",
+					"No VehicleACL revision exists at or before the attestation's effective_time.")
+				return
+			}
+			s.logger.Error("attestations: classify failed", "error", classifyErr, "vehicle_id", vehicleID)
+			writeProblem(w, s.logger, http.StatusInternalServerError, "internal_error",
+				"Could not classify attestation trust.")
+			return
+		}
+		inserted, recordErr := s.cfg.DriverAttestationStore.RecordDriverAttestation(r.Context(), storage.DriverAttestationRecordParams{
+			Attestation:      attestation,
+			JourneyVehicleID: vehicleID,
+			TrustFlag:        trust,
+			CanonicalPayload: canonical,
+		})
+		switch {
+		case errors.Is(recordErr, storage.ErrDriverAttestationDuplicate):
+			// Concurrent submission won the race; fetch the
+			// committed record. The pre-check above is best-effort,
+			// not a lock — a peer submission between our check and
+			// our insert can still produce a UNIQUE collision.
+			existing, lookupErr := s.cfg.DriverAttestationStore.DriverAttestationByReplayKey(
+				r.Context(), vehicleID, id.UserID, attestation.EffectiveTime)
+			if lookupErr != nil {
+				s.logger.Error("attestations: post-insert replay lookup failed", "error", lookupErr,
+					"vehicle_id", vehicleID, "driver_user_id", id.UserID)
+				writeProblem(w, s.logger, http.StatusInternalServerError, "internal_error",
+					"Could not load existing attestation after replay conflict.")
+				return
+			}
+			rec = existing
+			status = http.StatusOK
+		case recordErr != nil:
+			s.logger.Error("attestations: record failed", "error", recordErr, "vehicle_id", vehicleID)
+			writeProblem(w, s.logger, http.StatusInternalServerError, "internal_error",
+				"Could not record driver attestation.")
+			return
+		default:
+			rec = inserted
+			status = http.StatusCreated
+			s.logger.Info("driver attestation recorded",
+				"journey_id", journeyID,
+				"vehicle_id", vehicleID,
+				"driver_user_id", rec.DriverUserID,
+				"acl_version_consulted", rec.ACLVersionConsulted,
+				"trust_flag", rec.TrustFlag,
+			)
+		}
 	}
 
 	// Surface fork siblings when the attestation chains to a
@@ -299,6 +322,26 @@ func (s *Server) handleDriverAttestationList(w http.ResponseWriter, r *http.Requ
 		out = append(out, driverAttestationResponseFrom(rec, nil))
 	}
 	writeJSON(w, DriverAttestationListResponse{Attestations: out}, s.logger)
+}
+
+// replayExistingAttestation looks up a previously-recorded
+// attestation by replay key. Returns:
+//
+//   - rec, http.StatusOK, nil — the record exists; caller should
+//     return it with 200 (and skip classify+insert).
+//   - empty rec, 0, nil — no replay match; caller should classify
+//     and insert fresh.
+//   - empty rec, 0, err — unexpected lookup failure (NOT
+//     ErrDriverAttestationNotFound).
+func (s *Server) replayExistingAttestation(ctx context.Context, journeyVehicleID, driverUserID string, effectiveTime time.Time) (storage.DriverAttestationRecord, int, error) {
+	existing, err := s.cfg.DriverAttestationStore.DriverAttestationByReplayKey(ctx, journeyVehicleID, driverUserID, effectiveTime)
+	switch {
+	case errors.Is(err, storage.ErrDriverAttestationNotFound):
+		return storage.DriverAttestationRecord{}, 0, nil
+	case err != nil:
+		return storage.DriverAttestationRecord{}, 0, err
+	}
+	return existing, http.StatusOK, nil
 }
 
 func driverAttestationResponseFrom(rec storage.DriverAttestationRecord, siblings []DriverAttestationForkSibling) DriverAttestationResponse {

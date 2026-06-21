@@ -45,8 +45,8 @@ type journeyParticipantLookup interface {
 	JourneyParticipantByUserAndJourney(ctx context.Context, userID, journeyID string) (storage.JourneyParticipant, error)
 }
 
-// classifyDriverAttestation resolves the trust flag for the
-// supplied attestation against the vehicle's ACL history.
+// classify resolves the trust flag for the supplied attestation
+// against the vehicle's ACL history.
 //
 // journeyID identifies the journey the vehicle belongs to; it is
 // required for the emergency-fallback path which checks the

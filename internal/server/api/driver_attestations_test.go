@@ -13,11 +13,11 @@ import (
 	"github.com/wheelsdown/spivot-server/internal/server/middleware"
 )
 
-// uploadVehicleFor uploads a journey vehicle owned by `owner`,
-// returns its id, and (for emergency-fallback test paths) the
-// vehicle's currently-configured emergency rule kind. Helper for
-// the attestation handler tests so the per-test boilerplate
-// stays focused on the attestation flow itself.
+// uploadVehicleFor uploads a journey vehicle owned by `owner`
+// with the supplied emergency rule (nil keeps the default rule
+// from newSignedVehiclePayload) and returns the vehicle's id.
+// Helper for the attestation handler tests so the per-test
+// boilerplate stays focused on the attestation flow itself.
 func uploadVehicleFor(t *testing.T, env *journeyEnv, owner middleware.Identity, journey JourneyResponse, emergency *opencaravan.VehicleEmergencyRule) opencaravan.UUID {
 	t.Helper()
 	jid, err := opencaravan.ParseUUID(journey.ID)
@@ -217,6 +217,78 @@ func TestDriverAttestationRecordReplayReturns200(t *testing.T) {
 		second, owner, writeMac)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("replay status: got %d want 200; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDriverAttestationRecordReplayPreservesOriginalTrust(t *testing.T) {
+	// Locks in the "replay returns the original trust_flag" invariant
+	// from the PR description: an ACL revision published between the
+	// original record and a gossip replay must NOT retroactively
+	// reclassify the existing row. This also exercises the new
+	// short-circuit ordering — the handler now checks the replay
+	// key BEFORE running the classifier, so even if the classifier
+	// would now produce a different outcome (or fail transiently),
+	// the response reflects the state at original record time.
+	env := newJourneyEnv(t)
+	owner := env.mintIdentity(t)
+	other := env.mintIdentity(t)
+	journey := env.mustCreateJourney(t, owner, "Pacific Coast Drive")
+	jid, err := opencaravan.ParseUUID(journey.ID)
+	if err != nil {
+		t.Fatalf("ParseUUID: %v", err)
+	}
+	// Emergency rule = none, so other classifies as acl_violation on first submit.
+	vehicleID := uploadVehicleFor(t, env, owner, journey, &opencaravan.VehicleEmergencyRule{
+		Kind: opencaravan.VehicleEmergencyRuleNone,
+	})
+	otherMac := env.issueSessionMacaroon(t, other, jid, opencaravan.SessionActionJourneyWrite)
+
+	effective := time.Now().Add(time.Minute).UTC()
+	first := newSignedAttestationPayload(t, vehicleID, other.UserID, effective, 1, nil)
+	if rec := env.post(t,
+		"/v1/journeys/"+journey.ID+"/vehicles/"+string(vehicleID)+"/driver-attestations",
+		first, other, otherMac); rec.Code != http.StatusCreated {
+		t.Fatalf("first: got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Owner publishes a new VehicleACL revision that adds `other`
+	// to AuthorizedDrivers. A fresh classification would now
+	// produce "authorized" instead of "acl_violation".
+	ownerWriteMac := env.issueSessionMacaroon(t, owner, jid, opencaravan.SessionActionJourneyWrite)
+	acl := opencaravan.VehicleACL{
+		VehicleID:         vehicleID,
+		OwnerUserID:       opencaravan.UUID(owner.UserID),
+		ACLVersion:        2,
+		AuthorizedDrivers: []opencaravan.UUID{opencaravan.UUID(owner.UserID), opencaravan.UUID(other.UserID)},
+		EffectiveTime:     time.Now().Add(2 * time.Minute).UTC(),
+		Integrity: &opencaravan.Integrity{
+			Algorithm: "ecdsa-p256-sha256",
+			KeyID:     owner.UserID,
+			Signature: "test-acl-revision",
+		},
+	}
+	if rec := env.post(t,
+		"/v1/journeys/"+journey.ID+"/vehicles/"+string(vehicleID)+"/acl-revisions",
+		acl, owner, ownerWriteMac); rec.Code != http.StatusCreated {
+		t.Fatalf("acl revision: got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Replay the original attestation — must return the original
+	// "acl_violation" classification, NOT a freshly-recomputed
+	// "authorized".
+	replay := newSignedAttestationPayload(t, vehicleID, other.UserID, effective, 1, nil)
+	rec := env.post(t,
+		"/v1/journeys/"+journey.ID+"/vehicles/"+string(vehicleID)+"/driver-attestations",
+		replay, other, otherMac)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("replay status: got %d want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp DriverAttestationResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.TrustFlag != storage.DriverAttestationTrustACLViolation {
+		t.Fatalf("trust_flag: got %q want acl_violation (replay must preserve original)", resp.TrustFlag)
 	}
 }
 
