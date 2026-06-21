@@ -153,6 +153,11 @@ type GarageStore interface {
 	// authorization gate. Returns [storage.ErrGarageNotFound] when
 	// no row matches.
 	GarageOwnerByUserAndGarage(ctx context.Context, userID, garageID string) (storage.GarageOwnerRecord, error)
+	// GarageOwnershipAcceptanceByKey returns the recorded
+	// acceptance matching the supplied triple. Used by the
+	// handler to surface canonical stored values after an
+	// idempotent replay.
+	GarageOwnershipAcceptanceByKey(ctx context.Context, garageID, accepterUserID string, revisionVersion int) (storage.GarageOwnershipAcceptanceRecord, error)
 }
 
 // Config describes the HTTP API server's listen and deployment metadata.

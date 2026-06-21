@@ -161,7 +161,7 @@ VALUES (?, ?, ?, ?, ?)
 	}
 
 	for _, owner := range params.Garage.Owners {
-		if err := insertGarageOwnerTx(ctx, tx, string(params.Garage.ID), owner); err != nil {
+		if err := insertGarageOwnerTx(ctx, tx, string(params.Garage.ID), params.Garage.RevisionVersion, owner); err != nil {
 			return GarageRecord{}, err
 		}
 	}
@@ -186,11 +186,15 @@ VALUES (?, ?, ?, ?, ?)
 // current head, and [ErrGarageNotFound] when the garage does not
 // exist.
 //
-// The owner projection is recomputed by diffing the new owner list
-// against the existing one: owners absent from the new payload are
-// removed (unilateral removal), owners present with non-nil
-// AcceptedTime are upserted accordingly, and newly-invited owners
-// (AcceptedTime nil) are added as pending.
+// The owner projection is reconciled by a true diff/upsert:
+// owners absent from the new payload are deleted (unilateral
+// removal), owners carried over from the prior revision keep
+// their original added_in_revision_version (so a downstream
+// acceptance still binds to the invite revision), and newly-added
+// owners get the new revision's version. The accepted_time on a
+// carried-over row updates only if the new payload says the owner
+// is accepted — a revision cannot reset accepted_time back to
+// pending (that would require a removal + re-invite cycle).
 func (s *Store) AppendGarageRevision(ctx context.Context, params GarageAppendRevisionParams) (GarageRevisionRecord, error) {
 	if s == nil || s.db == nil {
 		return GarageRevisionRecord{}, errors.New("storage: database is not open")
@@ -240,7 +244,7 @@ func (s *Store) AppendGarageRevision(ctx context.Context, params GarageAppendRev
 		return GarageRevisionRecord{}, fmt.Errorf("storage: update garage head pointer: %w", err)
 	}
 
-	if err := reconcileGarageOwnersTx(ctx, tx, string(params.Garage.ID), params.Garage.Owners); err != nil {
+	if err := reconcileGarageOwnersTx(ctx, tx, string(params.Garage.ID), params.Garage.RevisionVersion, params.Garage.Owners); err != nil {
 		return GarageRevisionRecord{}, err
 	}
 
@@ -261,11 +265,20 @@ func (s *Store) AppendGarageRevision(ctx context.Context, params GarageAppendRev
 }
 
 // AcceptGarageOwnership records a signed acceptance and updates
-// the corresponding garage_owners row's accepted_time. Returns
-// [ErrGarageOwnershipNotPending] when no pending invitation exists
-// for the accepter, and [ErrGarageOwnershipAlreadyAccepted] when
-// the same acceptance has been replayed for an invitation that has
-// already been accepted at the same revision.
+// the corresponding garage_owners row's accepted_time. Returns:
+//
+//   - [ErrGarageOwnershipNotPending] when no owner row exists for
+//     the accepter, OR when the row's added_in_revision_version
+//     does not match acceptance.revision_version_accepted. The
+//     second case enforces the spec's binding rule: an acceptance
+//     names a specific invite revision, and submitting it against
+//     any other revision must be rejected.
+//   - [ErrGarageOwnershipAlreadyAccepted] when the owner row is
+//     already accepted. The acceptance is NOT recorded in the
+//     audit trail because the (garage, accepter, revision) UNIQUE
+//     index would no-op the insert anyway; callers fetch the
+//     original via [Store.GarageOwnershipAcceptanceByKey] when
+//     they need to render the stored values.
 func (s *Store) AcceptGarageOwnership(ctx context.Context, params GarageAcceptOwnershipParams) (GarageOwnershipAcceptanceRecord, error) {
 	if s == nil || s.db == nil {
 		return GarageOwnershipAcceptanceRecord{}, errors.New("storage: database is not open")
@@ -292,46 +305,30 @@ func (s *Store) AcceptGarageOwnership(ctx context.Context, params GarageAcceptOw
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// Confirm the accepter has a pending invitation row. We
-	// require the row to exist with accepted_time NULL — an
-	// already-accepted acceptance at the same revision returns
-	// ErrGarageOwnershipAlreadyAccepted; a missing row (the
-	// invitation was rescinded or never existed) returns
-	// ErrGarageOwnershipNotPending.
-	var existingAccepted sql.NullString
+	var (
+		addedInRevisionVersion int
+		existingAccepted       sql.NullString
+	)
 	switch err := tx.QueryRowContext(ctx, `
-SELECT accepted_time FROM garage_owners
+SELECT added_in_revision_version, accepted_time FROM garage_owners
 WHERE garage_id = ? AND user_id = ?
 `,
 		string(params.Acceptance.GarageID),
 		string(params.Acceptance.AccepterUserID),
-	).Scan(&existingAccepted); {
+	).Scan(&addedInRevisionVersion, &existingAccepted); {
 	case errors.Is(err, sql.ErrNoRows):
 		return GarageOwnershipAcceptanceRecord{}, ErrGarageOwnershipNotPending
 	case err != nil:
 		return GarageOwnershipAcceptanceRecord{}, fmt.Errorf("storage: load owner row: %w", err)
 	}
+	if addedInRevisionVersion != params.Acceptance.RevisionVersionAccepted {
+		// Acceptance binds to a specific invite revision; mismatch
+		// = stale or fabricated. Surface as "not pending" so the
+		// handler maps to 404, hiding whether the user was ever
+		// invited at all.
+		return GarageOwnershipAcceptanceRecord{}, ErrGarageOwnershipNotPending
+	}
 	if existingAccepted.Valid {
-		// Already accepted. Insert the acceptance row anyway so
-		// the audit trail records the replay, but signal the
-		// idempotent state to the caller via a distinct sentinel.
-		if _, err := tx.ExecContext(ctx, garageAcceptanceInsert,
-			string(acceptanceID),
-			string(params.Acceptance.GarageID),
-			params.Acceptance.RevisionVersionAccepted,
-			string(params.Acceptance.AccepterUserID),
-			formatSQLiteTime(params.Acceptance.AcceptedTime),
-			params.Acceptance.Integrity.Algorithm,
-			params.Acceptance.Integrity.KeyID,
-			params.Acceptance.Integrity.Signature,
-			string(params.CanonicalPayload),
-			formatSQLiteTime(now),
-		); err != nil && !isUniqueViolation(err) {
-			return GarageOwnershipAcceptanceRecord{}, fmt.Errorf("storage: insert replay acceptance: %w", err)
-		}
-		if err := tx.Commit(); err != nil {
-			return GarageOwnershipAcceptanceRecord{}, fmt.Errorf("storage: commit replay acceptance: %w", err)
-		}
 		return GarageOwnershipAcceptanceRecord{}, ErrGarageOwnershipAlreadyAccepted
 	}
 
@@ -376,6 +373,51 @@ WHERE garage_id = ? AND user_id = ?
 		CanonicalPayload:        params.CanonicalPayload,
 		ReceivedAt:              now,
 	}, nil
+}
+
+// GarageOwnershipAcceptanceByKey returns the recorded acceptance
+// matching the supplied (garage, accepter, revision) triple. Used
+// by the handler to surface the canonical stored record after an
+// idempotent replay. Returns [ErrDriverAttestationNotFound] when
+// no row matches — but in practice the handler only calls this
+// when it has just observed [ErrGarageOwnershipAlreadyAccepted],
+// so the lookup should always hit.
+func (s *Store) GarageOwnershipAcceptanceByKey(ctx context.Context, garageID, accepterUserID string, revisionVersion int) (GarageOwnershipAcceptanceRecord, error) {
+	if s == nil || s.db == nil {
+		return GarageOwnershipAcceptanceRecord{}, errors.New("storage: database is not open")
+	}
+	row := s.db.QueryRowContext(ctx, `
+SELECT id, garage_id, revision_version_accepted, accepter_user_id,
+       accepted_time, integrity_algorithm, integrity_key_id,
+       integrity_signature, canonical_payload_json, received_at
+FROM garage_ownership_acceptances
+WHERE garage_id = ? AND accepter_user_id = ? AND revision_version_accepted = ?
+`, garageID, accepterUserID, revisionVersion)
+	var (
+		rec           GarageOwnershipAcceptanceRecord
+		acceptedAt    string
+		receivedAtStr string
+	)
+	if err := row.Scan(&rec.ID, &rec.GarageID, &rec.RevisionVersionAccepted,
+		&rec.AccepterUserID, &acceptedAt, &rec.Integrity.Algorithm,
+		&rec.Integrity.KeyID, &rec.Integrity.Signature,
+		&rec.CanonicalPayload, &receivedAtStr); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return GarageOwnershipAcceptanceRecord{}, ErrGarageOwnershipNotPending
+		}
+		return GarageOwnershipAcceptanceRecord{}, fmt.Errorf("storage: scan acceptance: %w", err)
+	}
+	parsedAccepted, err := time.Parse(sqliteTimeFormat, acceptedAt)
+	if err != nil {
+		return GarageOwnershipAcceptanceRecord{}, fmt.Errorf("storage: parse accepted_time: %w", err)
+	}
+	parsedReceived, err := time.Parse(sqliteTimeFormat, receivedAtStr)
+	if err != nil {
+		return GarageOwnershipAcceptanceRecord{}, fmt.Errorf("storage: parse received_at: %w", err)
+	}
+	rec.AcceptedTime = parsedAccepted
+	rec.ReceivedAt = parsedReceived
+	return rec, nil
 }
 
 // GarageByID returns the head-pointer projection of the supplied
@@ -541,18 +583,19 @@ INSERT INTO garage_revisions (
 	return nil
 }
 
-func insertGarageOwnerTx(ctx context.Context, tx *sql.Tx, garageID string, owner opencaravan.GarageOwner) error {
+func insertGarageOwnerTx(ctx context.Context, tx *sql.Tx, garageID string, addedInRevisionVersion int, owner opencaravan.GarageOwner) error {
 	var acceptedArg any
 	if owner.AcceptedTime != nil {
 		acceptedArg = formatSQLiteTime(*owner.AcceptedTime)
 	}
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO garage_owners (garage_id, user_id, added_time, accepted_time)
-VALUES (?, ?, ?, ?)
+INSERT INTO garage_owners (garage_id, user_id, added_time, added_in_revision_version, accepted_time)
+VALUES (?, ?, ?, ?, ?)
 `,
 		garageID,
 		string(owner.UserID),
 		formatSQLiteTime(owner.AddedTime),
+		addedInRevisionVersion,
 		acceptedArg,
 	); err != nil {
 		return fmt.Errorf("storage: insert garage owner: %w", err)
@@ -560,18 +603,77 @@ VALUES (?, ?, ?, ?)
 	return nil
 }
 
-// reconcileGarageOwnersTx materializes the supplied owner list as
-// the new authoritative state: removes rows absent from the new
-// list, upserts present rows. The new revision's owner list is the
-// truth — pending and accepted alike — and replaces the existing
-// projection wholesale.
-func reconcileGarageOwnersTx(ctx context.Context, tx *sql.Tx, garageID string, owners []opencaravan.GarageOwner) error {
-	if _, err := tx.ExecContext(ctx, `DELETE FROM garage_owners WHERE garage_id = ?`, garageID); err != nil {
-		return fmt.Errorf("storage: clear garage owners: %w", err)
+// reconcileGarageOwnersTx applies the new owner list to the
+// materialized garage_owners projection via a true diff/upsert:
+//
+//   - Owners absent from the new payload are deleted.
+//   - Owners present in both keep their original
+//     added_in_revision_version (preserving the binding an
+//     acceptance needs); their accepted_time updates only when
+//     the new payload says they're accepted — a revision cannot
+//     reset accepted_time back to NULL.
+//   - Owners new to this revision are inserted with
+//     added_in_revision_version = newRevisionVersion.
+func reconcileGarageOwnersTx(ctx context.Context, tx *sql.Tx, garageID string, newRevisionVersion int, owners []opencaravan.GarageOwner) error {
+	rows, err := tx.QueryContext(ctx, `
+SELECT user_id, added_in_revision_version, accepted_time
+FROM garage_owners
+WHERE garage_id = ?
+`, garageID)
+	if err != nil {
+		return fmt.Errorf("storage: load existing owners: %w", err)
 	}
+	type existingOwner struct {
+		addedInRevisionVersion int
+		acceptedTime           sql.NullString
+	}
+	existing := make(map[string]existingOwner)
+	for rows.Next() {
+		var (
+			userID string
+			eo     existingOwner
+		)
+		if err := rows.Scan(&userID, &eo.addedInRevisionVersion, &eo.acceptedTime); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("storage: scan existing owner: %w", err)
+		}
+		existing[userID] = eo
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("storage: close existing owners cursor: %w", err)
+	}
+
+	keep := make(map[string]struct{}, len(owners))
 	for _, owner := range owners {
-		if err := insertGarageOwnerTx(ctx, tx, garageID, owner); err != nil {
+		userID := string(owner.UserID)
+		keep[userID] = struct{}{}
+		if prev, ok := existing[userID]; ok {
+			// Existing row. Update accepted_time only when the new
+			// payload promotes from pending to accepted; preserve
+			// added_in_revision_version.
+			if owner.AcceptedTime != nil && !prev.acceptedTime.Valid {
+				if _, err := tx.ExecContext(ctx,
+					`UPDATE garage_owners SET accepted_time = ? WHERE garage_id = ? AND user_id = ?`,
+					formatSQLiteTime(*owner.AcceptedTime), garageID, userID); err != nil {
+					return fmt.Errorf("storage: update owner accepted_time: %w", err)
+				}
+			}
+			continue
+		}
+		// New row.
+		if err := insertGarageOwnerTx(ctx, tx, garageID, newRevisionVersion, owner); err != nil {
 			return err
+		}
+	}
+
+	for userID := range existing {
+		if _, ok := keep[userID]; ok {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM garage_owners WHERE garage_id = ? AND user_id = ?`,
+			garageID, userID); err != nil {
+			return fmt.Errorf("storage: delete removed owner: %w", err)
 		}
 	}
 	return nil

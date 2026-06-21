@@ -121,6 +121,27 @@ func (s *Server) handleGarageCreate(w http.ResponseWriter, r *http.Request) {
 			"Garage.signed_by must match the session caller.")
 		return
 	}
+	// A new garage must start with the caller as the sole accepted
+	// owner. Co-owners are added via subsequent revisions and must
+	// publish signed GarageOwnershipAcceptance — pre-seeding owners
+	// at create time would bypass the consent-based add flow and
+	// let a client spam unwanted entries into another user's
+	// garage list.
+	if len(garage.Owners) != 1 {
+		writeProblem(w, s.logger, http.StatusBadRequest, "invalid_garage",
+			"POST /v1/garages must list exactly one owner (the caller); add co-owners via a subsequent revision.")
+		return
+	}
+	if string(garage.Owners[0].UserID) != id.UserID {
+		writeProblem(w, s.logger, http.StatusForbidden, "invalid_garage",
+			"The sole owner at create time must be the session caller.")
+		return
+	}
+	if garage.Owners[0].AcceptedTime == nil {
+		writeProblem(w, s.logger, http.StatusBadRequest, "invalid_garage",
+			"The creator's owner row must have accepted_time set (self-acceptance is implicit at create time).")
+		return
+	}
 
 	canonical, err := garage.CanonicalEncoding()
 	if err != nil {
@@ -438,8 +459,18 @@ func (s *Server) handleGarageOwnershipAccept(w http.ResponseWriter, r *http.Requ
 		return
 	case errors.Is(err, storage.ErrGarageOwnershipAlreadyAccepted):
 		// Idempotent replay — the acceptance is already on file.
-		// Surface 200 with the garage state so the client knows
-		// they're already an owner.
+		// Fetch the original stored acceptance so the response
+		// returns the canonical recorded values (not request-body
+		// fields that may differ from what was first stored).
+		existing, lookupErr := s.cfg.GarageStore.GarageOwnershipAcceptanceByKey(
+			r.Context(), garageID, id.UserID, acceptance.RevisionVersionAccepted)
+		if lookupErr != nil {
+			s.logger.Error("garages: replay acceptance lookup failed", "error", lookupErr,
+				"garage_id", garageID, "user_id", id.UserID)
+			writeProblem(w, s.logger, http.StatusInternalServerError, "internal_error",
+				"Already accepted but original acceptance could not be loaded.")
+			return
+		}
 		updated, loadErr := s.cfg.GarageStore.GarageByID(r.Context(), garageID)
 		if loadErr != nil {
 			s.logger.Error("garages: reload after replay accept failed", "error", loadErr)
@@ -455,9 +486,12 @@ func (s *Server) handleGarageOwnershipAccept(w http.ResponseWriter, r *http.Requ
 			return
 		}
 		writeJSONStatus(w, http.StatusOK, GarageOwnershipAcceptanceResponse{
-			GarageID:                garageID,
-			RevisionVersionAccepted: acceptance.RevisionVersionAccepted,
-			AcceptedTime:            acceptance.AcceptedTime.UTC(),
+			AcceptanceID:            existing.ID,
+			GarageID:                existing.GarageID,
+			RevisionVersionAccepted: existing.RevisionVersionAccepted,
+			AcceptedTime:            existing.AcceptedTime.UTC(),
+			Integrity:               existing.Integrity,
+			ReceivedAt:              existing.ReceivedAt.UTC(),
 			Garage:                  garageResp,
 		}, s.logger)
 		return

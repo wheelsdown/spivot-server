@@ -359,6 +359,198 @@ func TestListGaragesForUserIncludesPending(t *testing.T) {
 	}
 }
 
+func TestAcceptGarageOwnershipReplayReturnsSentinelAndPreservesOriginal(t *testing.T) {
+	// Idempotent replay: submitting the same acceptance twice must
+	// return ErrGarageOwnershipAlreadyAccepted on the second call,
+	// and the original acceptance record must remain retrievable
+	// via GarageOwnershipAcceptanceByKey with stable canonical
+	// values. Locks in the "200-OK with stored values" behavior
+	// the handler exposes.
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	owner := mustUUID(t)
+	invitee := mustUUID(t)
+	seedAccount(t, store, owner)
+	seedAccount(t, store, invitee)
+
+	garage, canonical := newSignedGarage(t, owner, "Shared")
+	if _, err := store.CreateGarage(ctx, GarageCreateParams{Garage: garage, CanonicalPayload: canonical}); err != nil {
+		t.Fatalf("CreateGarage: %v", err)
+	}
+	now := time.Now().Add(time.Minute).UTC()
+	acceptedNow := garage.Owners[0].AddedTime
+	v2 := opencaravan.Garage{
+		ID:              garage.ID,
+		Name:            garage.Name,
+		RevisionVersion: 2,
+		RevisionTime:    now,
+		Owners: []opencaravan.GarageOwner{
+			{UserID: owner, AddedTime: garage.Owners[0].AddedTime, AcceptedTime: &acceptedNow},
+			{UserID: invitee, AddedTime: now},
+		},
+		SignedBy: owner,
+	}
+	v2Canonical, err := v2.CanonicalEncoding()
+	if err != nil {
+		t.Fatalf("v2 CanonicalEncoding: %v", err)
+	}
+	v2.Integrity = &opencaravan.Integrity{
+		Algorithm: "ecdsa-p256-sha256",
+		KeyID:     string(owner),
+		Signature: "x",
+	}
+	if _, err := store.AppendGarageRevision(ctx, GarageAppendRevisionParams{
+		Garage:           v2,
+		CanonicalPayload: v2Canonical,
+	}); err != nil {
+		t.Fatalf("AppendGarageRevision: %v", err)
+	}
+
+	acceptanceTime := time.Now().Add(2 * time.Minute).UTC()
+	acceptance := opencaravan.GarageOwnershipAcceptance{
+		GarageID:                garage.ID,
+		RevisionVersionAccepted: 2,
+		AccepterUserID:          invitee,
+		AcceptedTime:            acceptanceTime,
+	}
+	aCanonical, err := acceptance.CanonicalEncoding()
+	if err != nil {
+		t.Fatalf("acceptance CanonicalEncoding: %v", err)
+	}
+	acceptance.Integrity = &opencaravan.Integrity{
+		Algorithm: "ecdsa-p256-sha256",
+		KeyID:     string(invitee),
+		Signature: "accept",
+	}
+	first, err := store.AcceptGarageOwnership(ctx, GarageAcceptOwnershipParams{
+		Acceptance:       acceptance,
+		CanonicalPayload: aCanonical,
+	})
+	if err != nil {
+		t.Fatalf("first accept: %v", err)
+	}
+
+	_, err = store.AcceptGarageOwnership(ctx, GarageAcceptOwnershipParams{
+		Acceptance:       acceptance,
+		CanonicalPayload: aCanonical,
+	})
+	if !errors.Is(err, ErrGarageOwnershipAlreadyAccepted) {
+		t.Fatalf("replay: got %v, want ErrGarageOwnershipAlreadyAccepted", err)
+	}
+
+	stored, err := store.GarageOwnershipAcceptanceByKey(ctx, string(garage.ID), string(invitee), 2)
+	if err != nil {
+		t.Fatalf("GarageOwnershipAcceptanceByKey: %v", err)
+	}
+	if stored.ID != first.ID {
+		t.Fatalf("replay should resolve to original acceptance id; got %q want %q", stored.ID, first.ID)
+	}
+	if !stored.AcceptedTime.Equal(first.AcceptedTime) {
+		t.Fatalf("replay accepted_time drifted: got %v want %v", stored.AcceptedTime, first.AcceptedTime)
+	}
+}
+
+func TestAcceptGarageOwnershipRejectsWrongRevisionVersion(t *testing.T) {
+	// Acceptance must bind to the invite revision. An acceptance
+	// naming a revision the user wasn't first invited in returns
+	// ErrGarageOwnershipNotPending — even if a pending row exists
+	// for them under a different revision.
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	owner := mustUUID(t)
+	invitee := mustUUID(t)
+	seedAccount(t, store, owner)
+	seedAccount(t, store, invitee)
+
+	garage, canonical := newSignedGarage(t, owner, "G")
+	if _, err := store.CreateGarage(ctx, GarageCreateParams{Garage: garage, CanonicalPayload: canonical}); err != nil {
+		t.Fatalf("CreateGarage: %v", err)
+	}
+	now := time.Now().Add(time.Minute).UTC()
+	acceptedNow := garage.Owners[0].AddedTime
+	v2 := opencaravan.Garage{
+		ID:              garage.ID,
+		Name:            garage.Name,
+		RevisionVersion: 2,
+		RevisionTime:    now,
+		Owners: []opencaravan.GarageOwner{
+			{UserID: owner, AddedTime: garage.Owners[0].AddedTime, AcceptedTime: &acceptedNow},
+			{UserID: invitee, AddedTime: now}, // first invited at v=2
+		},
+		SignedBy: owner,
+	}
+	v2Canonical, err := v2.CanonicalEncoding()
+	if err != nil {
+		t.Fatalf("v2 CanonicalEncoding: %v", err)
+	}
+	v2.Integrity = &opencaravan.Integrity{
+		Algorithm: "ecdsa-p256-sha256",
+		KeyID:     string(owner),
+		Signature: "x",
+	}
+	if _, err := store.AppendGarageRevision(ctx, GarageAppendRevisionParams{
+		Garage:           v2,
+		CanonicalPayload: v2Canonical,
+	}); err != nil {
+		t.Fatalf("AppendGarageRevision: %v", err)
+	}
+
+	// Owner publishes v=3 (e.g., a rename) carrying the invitee
+	// forward. Invitee's added_in_revision_version should stay at
+	// 2 because the reconcile preserves it.
+	v3Time := now.Add(time.Minute)
+	v3 := opencaravan.Garage{
+		ID:              garage.ID,
+		Name:            "Renamed",
+		RevisionVersion: 3,
+		RevisionTime:    v3Time,
+		Owners:          v2.Owners,
+		SignedBy:        owner,
+	}
+	v3Canonical, err := v3.CanonicalEncoding()
+	if err != nil {
+		t.Fatalf("v3 CanonicalEncoding: %v", err)
+	}
+	v3.Integrity = &opencaravan.Integrity{
+		Algorithm: "ecdsa-p256-sha256",
+		KeyID:     string(owner),
+		Signature: "x",
+	}
+	if _, err := store.AppendGarageRevision(ctx, GarageAppendRevisionParams{
+		Garage:           v3,
+		CanonicalPayload: v3Canonical,
+	}); err != nil {
+		t.Fatalf("AppendGarageRevision v3: %v", err)
+	}
+
+	// Invitee tries to accept at v=3 — must fail because they were
+	// first added at v=2.
+	wrong := opencaravan.GarageOwnershipAcceptance{
+		GarageID:                garage.ID,
+		RevisionVersionAccepted: 3,
+		AccepterUserID:          invitee,
+		AcceptedTime:            time.Now().Add(2 * time.Minute).UTC(),
+	}
+	wrongCanonical, err := wrong.CanonicalEncoding()
+	if err != nil {
+		t.Fatalf("wrong CanonicalEncoding: %v", err)
+	}
+	wrong.Integrity = &opencaravan.Integrity{
+		Algorithm: "ecdsa-p256-sha256",
+		KeyID:     string(invitee),
+		Signature: "x",
+	}
+	_, err = store.AcceptGarageOwnership(ctx, GarageAcceptOwnershipParams{
+		Acceptance:       wrong,
+		CanonicalPayload: wrongCanonical,
+	})
+	if !errors.Is(err, ErrGarageOwnershipNotPending) {
+		t.Fatalf("got %v, want ErrGarageOwnershipNotPending", err)
+	}
+}
+
 func TestAppendGarageRevisionRemovesAbsentOwner(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

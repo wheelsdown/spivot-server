@@ -50,6 +50,20 @@ CREATE INDEX idx_garage_revisions_garage_version
 -- is pending; non-NULL once the recipient has published a
 -- matching GarageOwnershipAcceptance.
 --
+-- added_in_revision_version names the garage revision in which
+-- this owner first appeared. Used by AcceptGarageOwnership to
+-- enforce the spec's "acceptance binds to invite revision" rule:
+-- an acceptance whose revision_version_accepted doesn't match
+-- this column is rejected, preventing a user from accepting at
+-- the wrong revision (e.g., the current head after a rename) and
+-- preventing audit-row spam by an already-accepted user.
+--
+-- The reconcile step on revision append preserves
+-- added_in_revision_version on owners carried over from the
+-- prior revision; only newly-added owners get the current
+-- revision's version. This keeps the binding stable across
+-- revisions that don't touch the owner list.
+--
 -- Removing an owner deletes the row outright (no soft-delete
 -- tombstone in this layer; the revision history retains every
 -- past owner list).
@@ -57,6 +71,7 @@ CREATE TABLE garage_owners (
     garage_id                   TEXT NOT NULL REFERENCES garages(id) ON DELETE CASCADE,
     user_id                     TEXT NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
     added_time                  TEXT NOT NULL,
+    added_in_revision_version   INTEGER NOT NULL CHECK (added_in_revision_version >= 1),
     accepted_time               TEXT,
     PRIMARY KEY (garage_id, user_id)
 );
@@ -71,8 +86,11 @@ CREATE INDEX idx_garage_owners_user
 -- the corresponding garage_owners row to set accepted_time; the
 -- acceptance row stays for audit. revision_version_accepted binds
 -- the acceptance to the specific garage revision in which the
--- invitee was added — replays against later revisions are
--- rejected by the validate step before reaching this table.
+-- invitee was added — the storage layer cross-checks against
+-- garage_owners.added_in_revision_version before recording and
+-- rejects mismatches as ErrGarageOwnershipNotPending (structural
+-- validate can't see storage state; the binding check lives in
+-- AcceptGarageOwnership).
 CREATE TABLE garage_ownership_acceptances (
     id                          TEXT PRIMARY KEY,
     garage_id                   TEXT NOT NULL REFERENCES garages(id) ON DELETE CASCADE,
