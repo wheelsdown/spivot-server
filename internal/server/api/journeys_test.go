@@ -68,14 +68,15 @@ func newJourneyEnv(t *testing.T) *journeyEnv {
 	}
 
 	server := NewServer(Config{
-		Address:          "127.0.0.1",
-		Port:             8080,
-		Store:            store,
-		IdentityStore:    store,
-		JourneyStore:     store,
-		VehicleStore:     store,
-		MacaroonIssuer:   issuer,
-		MacaroonVerifier: verifier,
+		Address:                "127.0.0.1",
+		Port:                   8080,
+		Store:                  store,
+		IdentityStore:          store,
+		JourneyStore:           store,
+		VehicleStore:           store,
+		DriverAttestationStore: store,
+		MacaroonIssuer:         issuer,
+		MacaroonVerifier:       verifier,
 		PolicySnapshot: ServerPolicySnapshot{
 			ID:          "policy-1",
 			Hash:        "test-policy-hash",

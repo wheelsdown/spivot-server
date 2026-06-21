@@ -95,6 +95,35 @@ type VehicleStore interface {
 	// the existing version. See
 	// [storage.Store.AppendJourneyVehicleACL].
 	AppendJourneyVehicleACL(ctx context.Context, params storage.JourneyVehicleACLAppendParams) (storage.JourneyVehicleACLRevision, error)
+	// JourneyVehicleACLAt returns the ACL revision that was
+	// current at the supplied time. Used by the Phase 3 driver
+	// attestation trust evaluator to resolve "what could the
+	// driver have known about the ACL at handoff time?"
+	JourneyVehicleACLAt(ctx context.Context, journeyVehicleID string, at time.Time) (storage.JourneyVehicleACLRevision, error)
+}
+
+// DriverAttestationStore is the narrow subset of storage
+// operations the Phase 3 driver-attestation handlers depend on.
+// Satisfied by [*storage.Store] via duck-typing.
+type DriverAttestationStore interface {
+	// RecordDriverAttestation persists a single driver attestation
+	// with its server-evaluated trust flag. Returns
+	// [storage.ErrDriverAttestationDuplicate] when the
+	// (journey_vehicle_id, driver_user_id, effective_time) tuple
+	// is already on file.
+	RecordDriverAttestation(ctx context.Context, params storage.DriverAttestationRecordParams) (storage.DriverAttestationRecord, error)
+	// DriverAttestationByReplayKey returns the existing record
+	// matching the supplied tuple; used to surface the already-
+	// stored record on a gossiped replay.
+	DriverAttestationByReplayKey(ctx context.Context, journeyVehicleID, driverUserID string, effectiveTime time.Time) (storage.DriverAttestationRecord, error)
+	// ListDriverAttestations returns every attestation for a
+	// journey vehicle, ordered by effective_time ascending.
+	ListDriverAttestations(ctx context.Context, journeyVehicleID string) ([]storage.DriverAttestationRecord, error)
+	// DriverAttestationForkSiblings returns every attestation
+	// referencing the supplied prior_attestation_hash, so the
+	// handler can surface a fork warning when two drivers
+	// concurrently claim the same predecessor.
+	DriverAttestationForkSiblings(ctx context.Context, journeyVehicleID, priorHash string) ([]storage.DriverAttestationRecord, error)
 }
 
 // Config describes the HTTP API server's listen and deployment metadata.
@@ -149,6 +178,12 @@ type Config struct {
 	// endpoint). May be nil; the handlers respond 503 when not
 	// wired so a misconfigured deployment surfaces explicitly.
 	VehicleStore VehicleStore
+	// DriverAttestationStore backs the Phase 3 driver
+	// attestation handlers (POST/GET
+	// /v1/journeys/{id}/vehicles/{vid}/driver-attestations).
+	// May be nil; the handlers respond 503 when not wired so a
+	// misconfigured deployment surfaces explicitly.
+	DriverAttestationStore DriverAttestationStore
 	// AccessLogger receives the per-request "request handled" log
 	// line emitted by [Server.Handler]'s access-logging
 	// middleware. When nil, the server-level application logger
@@ -262,6 +297,12 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("POST /v1/journeys/{id}/vehicles/{vid}/acl-revisions", middleware.RequireSession(s.cfg.MacaroonVerifier, s.logger,
 			middleware.SessionActionJourneyFromPath(opencaravan.SessionActionJourneyWrite, "id"),
 		)(http.HandlerFunc(s.handleJourneyVehicleACLAppend)))
+		mux.Handle("POST /v1/journeys/{id}/vehicles/{vid}/driver-attestations", middleware.RequireSession(s.cfg.MacaroonVerifier, s.logger,
+			middleware.SessionActionJourneyFromPath(opencaravan.SessionActionJourneyWrite, "id"),
+		)(http.HandlerFunc(s.handleDriverAttestationRecord)))
+		mux.Handle("GET /v1/journeys/{id}/vehicles/{vid}/driver-attestations", middleware.RequireSession(s.cfg.MacaroonVerifier, s.logger,
+			middleware.SessionActionJourneyFromPath(opencaravan.SessionActionJourneyRead, "id"),
+		)(http.HandlerFunc(s.handleDriverAttestationList)))
 	}
 
 	h := s.withLogging(mux)
