@@ -149,6 +149,23 @@ POST /v1/garages/{id}/ownership-acceptances
                                 equal acceptance.accepter_user_id)
                                 accept a pending ownership
                                 invitation
+POST /v1/garages/{id}/vehicles  (requires client cert; caller must
+                                be an accepted owner) add a vehicle
+                                to the garage at revision_version=1
+GET  /v1/garages/{id}/vehicles  (requires client cert; caller must
+                                be an owner, accepted or pending)
+                                list the garage's vehicles —
+                                pending invitees can preview the
+                                library they're being invited into
+GET  /v1/garages/{id}/vehicles/{vid}
+                                (requires client cert; caller must
+                                be an owner) load a single garage
+                                vehicle's current head state
+POST /v1/garages/{id}/vehicles/{vid}/revisions
+                                (requires client cert; caller must
+                                be an accepted owner) publish a
+                                new signed revision (rename,
+                                change photos, update capacity)
 GET  /v1/journeys/{id}          (requires session macaroon scoped to
                                 the journey + journey.read) load journey
 POST /v1/journeys/{id}/telemetry

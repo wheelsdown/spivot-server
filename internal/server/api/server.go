@@ -158,6 +158,18 @@ type GarageStore interface {
 	// handler to surface canonical stored values after an
 	// idempotent replay.
 	GarageOwnershipAcceptanceByKey(ctx context.Context, garageID, accepterUserID string, revisionVersion int) (storage.GarageOwnershipAcceptanceRecord, error)
+	// CreateGarageVehicle persists a new garage vehicle at
+	// revision_version = 1 with its initial signed revision row.
+	CreateGarageVehicle(ctx context.Context, params storage.GarageVehicleCreateParams) (storage.GarageVehicleRecord, error)
+	// AppendGarageVehicleRevision records a new signed
+	// GarageVehicle payload and advances the head pointer.
+	AppendGarageVehicleRevision(ctx context.Context, params storage.GarageVehicleAppendRevisionParams) (storage.GarageVehicleRevisionRecord, error)
+	// GarageVehicleByID returns the head-pointer projection of
+	// the supplied garage vehicle, scoped to garageID.
+	GarageVehicleByID(ctx context.Context, garageID, vehicleID string) (storage.GarageVehicleRecord, error)
+	// ListGarageVehicles returns every vehicle in the supplied
+	// garage, ordered by created_at ascending.
+	ListGarageVehicles(ctx context.Context, garageID string) ([]storage.GarageVehicleRecord, error)
 }
 
 // Config describes the HTTP API server's listen and deployment metadata.
@@ -318,6 +330,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /v1/garages/{id}", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleGarageGet)))
 	mux.Handle("POST /v1/garages/{id}/revisions", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleGarageRevisionAppend)))
 	mux.Handle("POST /v1/garages/{id}/ownership-acceptances", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleGarageOwnershipAccept)))
+	mux.Handle("POST /v1/garages/{id}/vehicles", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleGarageVehicleCreate)))
+	mux.Handle("GET /v1/garages/{id}/vehicles", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleGarageVehicleList)))
+	mux.Handle("GET /v1/garages/{id}/vehicles/{vid}", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleGarageVehicleGet)))
+	mux.Handle("POST /v1/garages/{id}/vehicles/{vid}/revisions", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleGarageVehicleRevisionAppend)))
 	// The journey-scoped routes require a session macaroon naming
 	// the requested journey and the appropriate action; the
 	// per-handler constraints run through
