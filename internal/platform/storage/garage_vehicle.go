@@ -203,10 +203,16 @@ func (s *Store) AppendGarageVehicleRevision(ctx context.Context, params GarageVe
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// Scope the head lookup to (id, garage_id) so a mismatched
+	// GarageVehicle.GarageID in the payload doesn't silently mutate
+	// a row in the right vehicle id but the wrong garage. Returns
+	// the same not-found sentinel as a fully-missing vehicle —
+	// callers don't need to distinguish.
 	var currentVersion int
 	if err := tx.QueryRowContext(ctx,
-		`SELECT current_revision_version FROM garage_vehicles WHERE id = ?`,
-		string(params.GarageVehicle.ID)).Scan(&currentVersion); err != nil {
+		`SELECT current_revision_version FROM garage_vehicles WHERE id = ? AND garage_id = ?`,
+		string(params.GarageVehicle.ID),
+		string(params.GarageVehicle.GarageID)).Scan(&currentVersion); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return GarageVehicleRevisionRecord{}, ErrGarageVehicleNotFound
 		}
@@ -220,13 +226,25 @@ func (s *Store) AppendGarageVehicleRevision(ctx context.Context, params GarageVe
 		return GarageVehicleRevisionRecord{}, err
 	}
 
-	if _, err := tx.ExecContext(ctx, `
+	// Conditional head UPDATE — only advance when our supplied
+	// revision is strictly greater than whatever's currently in
+	// the row. Defends against a SELECT-then-UPDATE race where
+	// two accepted owners observe the same current_revision_version,
+	// both pass the strict check above, both insert distinct
+	// revision rows (the UNIQUE constraint on (vehicle, version)
+	// allows v=2 + v=3 to coexist), and then a naive UPDATE would
+	// let the second writer regress the head back to its lower
+	// version. RowsAffected = 0 means another writer raced ahead;
+	// our revision row landed but the head stays at the higher
+	// concurrent revision. Both revisions are preserved in
+	// garage_vehicle_revisions for the audit log.
+	res, err := tx.ExecContext(ctx, `
 UPDATE garage_vehicles
 SET current_revision_version = ?, current_revision_time = ?,
     display_name = ?, make = ?, model = ?, model_year = ?,
     color = ?, capacity = ?, avatar_image_ref_json = ?,
     banner_image_ref_json = ?, notes = ?
-WHERE id = ?
+WHERE id = ? AND garage_id = ? AND current_revision_version < ?
 `,
 		params.GarageVehicle.RevisionVersion,
 		formatSQLiteTime(params.GarageVehicle.RevisionTime),
@@ -240,8 +258,17 @@ WHERE id = ?
 		bannerJSON,
 		params.GarageVehicle.Notes,
 		string(params.GarageVehicle.ID),
-	); err != nil {
+		string(params.GarageVehicle.GarageID),
+		params.GarageVehicle.RevisionVersion,
+	)
+	if err != nil {
 		return GarageVehicleRevisionRecord{}, fmt.Errorf("storage: update garage vehicle head: %w", err)
+	}
+	if affected, affErr := res.RowsAffected(); affErr == nil && affected == 0 {
+		// Concurrent writer raced ahead; our revision row is on
+		// file but the head pointer stays at the higher revision.
+		// Not a fault — log and continue.
+		_ = affected
 	}
 
 	if err := tx.Commit(); err != nil {

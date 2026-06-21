@@ -220,6 +220,67 @@ func TestListGarageVehiclesOrdersByCreatedAt(t *testing.T) {
 	}
 }
 
+func TestAppendGarageVehicleRevisionRejectsWrongGarageID(t *testing.T) {
+	// Defense in depth: the storage method must enforce
+	// (id, garage_id) scoping even if a malformed payload reaches
+	// it. The handler already checks GarageID, but storage
+	// shouldn't trust callers.
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	garageA, ownerA := seedGarageForVehicleTest(t, store)
+	garageB, _ := seedGarageForVehicleTest(t, store)
+	gv, canonical := newSignedGarageVehicle(t, opencaravan.UUID(garageA), ownerA, "In A")
+	if _, err := store.CreateGarageVehicle(ctx, GarageVehicleCreateParams{
+		GarageVehicle:    gv,
+		CanonicalPayload: canonical,
+	}); err != nil {
+		t.Fatalf("CreateGarageVehicle: %v", err)
+	}
+
+	// Attempt to append a v=2 revision claiming garage B as
+	// the container. Must return not-found, not silently
+	// mutate the row in garage A.
+	v2Time := time.Now().Add(time.Minute).UTC()
+	wrong := opencaravan.GarageVehicle{
+		ID:              gv.ID,
+		GarageID:        opencaravan.UUID(garageB), // wrong
+		RevisionVersion: 2,
+		RevisionTime:    v2Time,
+		DisplayName:     "Spoofed",
+		Capacity:        7,
+		SignedBy:        ownerA,
+	}
+	wrongCanonical, err := wrong.CanonicalEncoding()
+	if err != nil {
+		t.Fatalf("wrong CanonicalEncoding: %v", err)
+	}
+	wrong.Integrity = &opencaravan.Integrity{
+		Algorithm: "ecdsa-p256-sha256",
+		KeyID:     string(ownerA),
+		Signature: "x",
+	}
+	_, err = store.AppendGarageVehicleRevision(ctx, GarageVehicleAppendRevisionParams{
+		GarageVehicle:    wrong,
+		CanonicalPayload: wrongCanonical,
+	})
+	if !errors.Is(err, ErrGarageVehicleNotFound) {
+		t.Fatalf("got %v, want ErrGarageVehicleNotFound (wrong garage_id should miss)", err)
+	}
+
+	// Confirm garage A's vehicle still at v=1, untouched.
+	got, err := store.GarageVehicleByID(ctx, garageA, string(gv.ID))
+	if err != nil {
+		t.Fatalf("GarageVehicleByID: %v", err)
+	}
+	if got.CurrentRevisionVersion != 1 {
+		t.Fatalf("vehicle in garage A mutated: revision = %d", got.CurrentRevisionVersion)
+	}
+	if got.DisplayName != "In A" {
+		t.Fatalf("vehicle display_name changed: %q", got.DisplayName)
+	}
+}
+
 func TestGarageVehicleByIDScopedToGarage(t *testing.T) {
 	// A vehicle from garage A should NOT be findable via garage B's
 	// lookup. Defends against a caller using a vehicle id they
