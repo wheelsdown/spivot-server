@@ -121,6 +121,19 @@ type Config struct {
 	// handlers. May be nil; the handlers respond 503 when not
 	// wired so a misconfigured deployment surfaces explicitly.
 	JourneyStore JourneyStore
+	// AccessLogger receives the per-request "request handled" log
+	// line emitted by [Server.Handler]'s access-logging
+	// middleware. When nil, the server-level application logger
+	// passed to [NewServer] is used, so application logs and
+	// access logs share the same destination (the historical
+	// behavior and the local-dev default). When set, access logs
+	// route to this logger only — typically a file handle so an
+	// operator can run a separate log shipper, rotate
+	// independently of stdout, or simply keep container stdout
+	// focused on application events. The level, format, and
+	// handler are the caller's choice; this package only writes
+	// records.
+	AccessLogger *slog.Logger
 	// PolicySnapshot is captured by value at server startup and advertised to
 	// clients until the process restarts. Runtime policy rotation should make
 	// that lifecycle explicit rather than mutating this value in place.
@@ -311,8 +324,20 @@ func (s *Server) withLogging(next http.Handler) http.Handler {
 				attrs = append(attrs, "session_journey_id", string(session.JourneyID))
 			}
 		}
-		s.logger.Info("request handled", attrs...)
+		s.accessLogger().Info("request handled", attrs...)
 	})
+}
+
+// accessLogger returns the destination for per-request access log
+// lines: [Config.AccessLogger] when set, otherwise the main
+// application logger. Keeping the resolution in one place means a
+// future change to the fallback policy (per-route loggers, severity
+// filters, etc.) lands in a single function.
+func (s *Server) accessLogger() *slog.Logger {
+	if s.cfg.AccessLogger != nil {
+		return s.cfg.AccessLogger
+	}
+	return s.logger
 }
 
 func (s *Server) handleRoot(w http.ResponseWriter, _ *http.Request) {

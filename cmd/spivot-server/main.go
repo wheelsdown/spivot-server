@@ -268,6 +268,38 @@ func runServe(ctx context.Context, stdout io.Writer, stderr io.Writer, args []st
 	defer stopSignals()
 	defer cancel()
 
+	// Optional separate destination for per-request access log
+	// lines. Default (unset path) keeps the historical behavior:
+	// access logs are emitted on the main logger and end up on
+	// stdout alongside application events — friendly for `docker
+	// logs` and local development. When SPIVOT_ACCESS_LOG_PATH /
+	// --access-log-path is set, build a dedicated logger pointed at
+	// that file and pass it to the API server. The file is opened
+	// with O_APPEND so an external rotation tool (logrotate
+	// copytruncate, container restart with sidecar shipping, etc.)
+	// can manage size and retention without coordinating with the
+	// running process.
+	var accessLogger *slog.Logger
+	if cfg.accessLogPath != "" {
+		accessLogDir := filepath.Dir(cfg.accessLogPath)
+		if err := ensureWritableDir(accessLogDir); err != nil {
+			return fmt.Errorf("prepare access log directory %q: %w", accessLogDir, err)
+		}
+		accessFile, err := os.OpenFile(cfg.accessLogPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			return fmt.Errorf("open access log %q: %w", cfg.accessLogPath, err)
+		}
+		defer func() {
+			if err := accessFile.Close(); err != nil {
+				logger.Error("access log file close failed", "error", err)
+			}
+		}()
+		accessLogger = newLogger(accessFile, slog.LevelInfo, cfg.logFormat)
+		logger.Info("access log routed to file",
+			"access_log_path", cfg.accessLogPath,
+		)
+	}
+
 	server := api.NewServer(api.Config{
 		Address:   cfg.address,
 		Port:      cfg.port,
@@ -284,6 +316,7 @@ func runServe(ctx context.Context, stdout io.Writer, stderr io.Writer, args []st
 		MacaroonIssuer:   macaroonIssuer,
 		MacaroonVerifier: macaroonVerifier,
 		JourneyStore:     store,
+		AccessLogger:     accessLogger,
 		PolicySnapshot:   policySnapshot,
 	}, logger)
 	return app.New(server, logger).Serve(ctx)
@@ -296,6 +329,7 @@ type serveConfig struct {
 	configDir              string
 	dataDir                string
 	databasePath           string
+	accessLogPath          string
 	publicURL              *url.URL
 	trustProxy             bool
 	trustClientCertHeaders bool
@@ -320,6 +354,7 @@ func parseServeConfig(args []string) (serveConfig, error) {
 		configDir:              envString("SPIVOT_CONFIG_DIR", defaultConfigDir),
 		dataDir:                envString("SPIVOT_DATA_DIR", defaultDataDir),
 		databasePath:           envString("SPIVOT_DATABASE_PATH", ""),
+		accessLogPath:          envString("SPIVOT_ACCESS_LOG_PATH", ""),
 		trustProxy:             trustProxy,
 		trustClientCertHeaders: trustClientCertHeaders,
 		trustedProxyCIDRs:      splitCSV(trustedProxyCIDRs),
@@ -333,6 +368,7 @@ func parseServeConfig(args []string) (serveConfig, error) {
 	flags.StringVar(&cfg.configDir, "config-dir", cfg.configDir, "configuration directory")
 	flags.StringVar(&cfg.dataDir, "data-dir", cfg.dataDir, "persistent data directory")
 	flags.StringVar(&cfg.databasePath, "database-path", cfg.databasePath, "SQLite database path")
+	flags.StringVar(&cfg.accessLogPath, "access-log-path", cfg.accessLogPath, "per-request access log file path (empty: route access logs to stdout alongside application logs)")
 	flags.BoolVar(&cfg.trustProxy, "trust-proxy", cfg.trustProxy, "trust X-Forwarded-* headers from trusted proxy CIDRs")
 	flags.BoolVar(&cfg.trustClientCertHeaders, "trust-client-cert-headers", cfg.trustClientCertHeaders, "trust X-Forwarded-Tls-Client-Cert* headers from trusted proxy CIDRs")
 	flags.Func("public-url", "public base URL advertised by the edge proxy", func(value string) error {
@@ -734,6 +770,9 @@ Serve flags:
   -data-dir value    Persistent data directory (default: SPIVOT_DATA_DIR or data)
   -database-path value
                     SQLite database path (default: SPIVOT_DATABASE_PATH or <data-dir>/spivot.db)
+  -access-log-path value
+                    Per-request access log file path (default: SPIVOT_ACCESS_LOG_PATH;
+                    empty: route access logs to stdout alongside application logs)
   -public-url value  Public base URL served by the edge proxy (default: SPIVOT_PUBLIC_URL)
   -trust-proxy       Trust X-Forwarded-* headers from configured proxy CIDRs
   -trust-client-cert-headers

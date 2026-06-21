@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -37,6 +39,57 @@ func TestHealthEndpoint(t *testing.T) {
 	}
 	if got["status"] != "healthy" {
 		t.Fatalf("status = %q, want healthy", got["status"])
+	}
+}
+
+func TestAccessLoggerSplitsRequestHandledFromApplicationLogs(t *testing.T) {
+	// When Config.AccessLogger is set, the per-request "request
+	// handled" line must land on it and NOT on the main
+	// application logger. This is the property an operator who
+	// sets SPIVOT_ACCESS_LOG_PATH is relying on — splitting access
+	// from application traffic. The fallback case (AccessLogger
+	// nil) keeps the historical behavior and is covered by every
+	// other test in this file that runs a request without
+	// observing the access log routing.
+	var appBuf, accessBuf bytes.Buffer
+	appLogger := slog.New(slog.NewTextHandler(&appBuf, nil))
+	accessLogger := slog.New(slog.NewTextHandler(&accessBuf, nil))
+
+	server := NewServer(Config{
+		Address:      "127.0.0.1",
+		Port:         8080,
+		AccessLogger: accessLogger,
+	}, appLogger)
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	server.Handler().ServeHTTP(httptest.NewRecorder(), req)
+
+	if !strings.Contains(accessBuf.String(), `msg="request handled"`) {
+		t.Fatalf("expected access log to contain the request line; got:\n%s", accessBuf.String())
+	}
+	if strings.Contains(appBuf.String(), `msg="request handled"`) {
+		t.Fatalf("expected main logger to NOT carry the access log line; got:\n%s", appBuf.String())
+	}
+}
+
+func TestAccessLoggerNilFallsBackToMainLogger(t *testing.T) {
+	// Without an AccessLogger configured, access lines must keep
+	// landing on the main application logger so existing
+	// deployments (and `docker logs` flows) keep working
+	// unchanged.
+	var appBuf bytes.Buffer
+	appLogger := slog.New(slog.NewTextHandler(&appBuf, nil))
+
+	server := NewServer(Config{
+		Address: "127.0.0.1",
+		Port:    8080,
+	}, appLogger)
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	server.Handler().ServeHTTP(httptest.NewRecorder(), req)
+
+	if !strings.Contains(appBuf.String(), `msg="request handled"`) {
+		t.Fatalf("expected main logger to carry the request line in fallback mode; got:\n%s", appBuf.String())
 	}
 }
 

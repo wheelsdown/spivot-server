@@ -59,6 +59,14 @@ services:
       SPIVOT_CONFIG_DIR: /etc/spivot
       SPIVOT_DATA_DIR: /var/lib/spivot
       SPIVOT_DATABASE_PATH: /var/lib/spivot/spivot.db
+      # Route per-request access logs to a file rather than
+      # stdout. Application events (startup, warnings, errors)
+      # stay on stdout so `docker compose logs spivot-server`
+      # remains focused. Pair with an external log rotation
+      # tool (logrotate copytruncate, container restart, or a
+      # sidecar shipper) for size management — the server
+      # opens the file with O_APPEND and does not rotate.
+      SPIVOT_ACCESS_LOG_PATH: /var/lib/spivot/log/access.log
     volumes:
       - spivot-data:/var/lib/spivot
     labels:
