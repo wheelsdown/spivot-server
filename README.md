@@ -166,6 +166,28 @@ POST /v1/garages/{id}/vehicles/{vid}/revisions
                                 be an accepted owner) publish a
                                 new signed revision (rename,
                                 change photos, update capacity)
+POST /v1/garages/{id}/invites   (requires client cert; caller must
+                                be an accepted owner) mint a fresh
+                                invite token for sharing the garage;
+                                response carries the plaintext
+                                token once, never retrievable from
+                                the server again
+GET  /v1/garages/{id}/invites   (requires client cert; caller must
+                                be an accepted owner) list every
+                                invite issued for the garage —
+                                token field is never populated on
+                                this path
+POST /v1/garages/{id}/invites/{inviteId}/revoke
+                                (requires client cert; caller must
+                                be an accepted owner) revoke an
+                                outstanding invite so further
+                                redeems fail
+POST /v1/garage-invites/redeem  (requires client cert) body
+                                {"token": "..."}; redeems the
+                                invite and adds the caller as an
+                                accepted owner of the inviter's
+                                garage. Token in body so it
+                                doesn't leak into access logs
 GET  /v1/journeys/{id}          (requires session macaroon scoped to
                                 the journey + journey.read) load journey
 POST /v1/journeys/{id}/telemetry

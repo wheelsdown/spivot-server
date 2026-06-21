@@ -170,6 +170,20 @@ type GarageStore interface {
 	// ListGarageVehicles returns every vehicle in the supplied
 	// garage, ordered by created_at ascending.
 	ListGarageVehicles(ctx context.Context, garageID string) ([]storage.GarageVehicleRecord, error)
+	// IssueGarageInvite mints a fresh invite token for the supplied
+	// garage. Returns the plaintext token (shown once) and the
+	// persisted metadata record.
+	IssueGarageInvite(ctx context.Context, params storage.GarageInviteIssueParams) (opencaravan.InviteToken, storage.GarageInviteRecord, error)
+	// ListGarageInvites returns every invite ever issued for the
+	// supplied garage, including expired/revoked/exhausted rows.
+	ListGarageInvites(ctx context.Context, garageID string) ([]storage.GarageInviteRecord, error)
+	// RevokeGarageInvite marks an invite revoked. Idempotent —
+	// revoking an already-revoked invite returns nil.
+	RevokeGarageInvite(ctx context.Context, garageID, inviteID string) error
+	// RedeemGarageInvite verifies the supplied plaintext token,
+	// records the redemption, and adds the redeemer to
+	// garage_owners as an accepted owner.
+	RedeemGarageInvite(ctx context.Context, tokenValue, redeemerUserID string) (storage.GarageInviteRedemptionResult, error)
 }
 
 // Config describes the HTTP API server's listen and deployment metadata.
@@ -334,6 +348,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /v1/garages/{id}/vehicles", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleGarageVehicleList)))
 	mux.Handle("GET /v1/garages/{id}/vehicles/{vid}", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleGarageVehicleGet)))
 	mux.Handle("POST /v1/garages/{id}/vehicles/{vid}/revisions", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleGarageVehicleRevisionAppend)))
+	mux.Handle("POST /v1/garages/{id}/invites", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleGarageInviteCreate)))
+	mux.Handle("GET /v1/garages/{id}/invites", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleGarageInviteList)))
+	mux.Handle("POST /v1/garages/{id}/invites/{inviteId}/revoke", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleGarageInviteRevoke)))
+	mux.Handle("POST /v1/garage-invites/redeem", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleGarageInviteRedeem)))
 	// The journey-scoped routes require a session macaroon naming
 	// the requested journey and the appropriate action; the
 	// per-handler constraints run through
