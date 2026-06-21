@@ -152,6 +152,26 @@ POST /v1/journeys/{id}/vehicles/{vid}/acl-revisions
                                 vehicle's current_acl_version pointer
                                 advances when the supplied version is
                                 strictly greater
+POST /v1/journeys/{id}/vehicles/{vid}/driver-attestations
+                                (requires session macaroon scoped to
+                                the journey + journey.write) record a
+                                signed DriverAttestation; the server
+                                resolves the VehicleACL revision
+                                current at the attestation's
+                                effective_time and classifies the
+                                trust outcome as authorized,
+                                emergency_fallback, or acl_violation.
+                                Gossiped replays of the same
+                                (vehicle, driver, effective_time)
+                                tuple return 200 with the existing
+                                record instead of 409
+GET  /v1/journeys/{id}/vehicles/{vid}/driver-attestations
+                                (requires session macaroon scoped to
+                                the journey + journey.read) list
+                                every recorded DriverAttestation
+                                ordered by effective_time ascending,
+                                including low-trust rows so clients
+                                can audit the full chain of custody
 ```
 
 Future OpenCaravan API routes will be documented as they land. Go package
