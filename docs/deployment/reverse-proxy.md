@@ -22,6 +22,15 @@ SPIVOT_TRUST_PROXY=true
 `SPIVOT_PUBLIC_URL` is the canonical external URL advertised by the service.
 It should match the HTTPS URL served by Caddy, Traefik, or another edge proxy.
 
+`SPIVOT_ACCESS_LOG_PATH` (also `--access-log-path`) routes the per-request
+"request handled" log line to a file instead of stdout. Application events
+(startup, warnings, errors) stay on stdout so `docker logs` or your
+journal sink remains focused. The file is opened with `O_APPEND`; external
+rotation tools (logrotate copytruncate, container restart, sidecar
+shipper) manage size and retention. Leaving the variable unset keeps
+the historical behavior — access lines emit on the main logger
+alongside application events.
+
 `SPIVOT_TRUST_PROXY=true` allows Spivot Server to use `X-Forwarded-For`,
 `X-Forwarded-Proto`, and `X-Forwarded-Host` when the immediate peer is trusted.
 By default, trusted proxy CIDRs are loopback, RFC1918 private networks, and
