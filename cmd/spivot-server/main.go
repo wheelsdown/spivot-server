@@ -316,6 +316,7 @@ func runServe(ctx context.Context, stdout io.Writer, stderr io.Writer, args []st
 		MacaroonIssuer:   macaroonIssuer,
 		MacaroonVerifier: macaroonVerifier,
 		JourneyStore:     store,
+		VehicleStore:     store,
 		AccessLogger:     accessLogger,
 		PolicySnapshot:   policySnapshot,
 	}, logger)
