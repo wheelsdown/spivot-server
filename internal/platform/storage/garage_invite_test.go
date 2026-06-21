@@ -228,6 +228,98 @@ func TestRevokeGarageInviteIdempotent(t *testing.T) {
 	}
 }
 
+// TestRedeemGarageInviteConditionalIncrementBlocksOverlimit
+// deterministically exercises the conditional-UPDATE branch
+// in RedeemGarageInvite. Mirrors the PR #29 pattern: simulate a
+// concurrent redeem winning the race by pre-incrementing
+// redemption_count out-of-band, then attempt the conditional
+// UPDATE clause directly. The clause `redemption_count <
+// max_redemptions` must see the row at max and return 0 rows
+// affected — the storage method maps that to
+// ErrGarageInviteExhausted and the tx rolls back so no orphan
+// redemption row lands.
+func TestRedeemGarageInviteConditionalIncrementBlocksOverlimit(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	garageID, owner := seedGarageForVehicleTest(t, store)
+	_, rec, err := store.IssueGarageInvite(ctx, GarageInviteIssueParams{
+		GarageID:        garageID,
+		CreatedByUserID: string(owner),
+		Lifetime:        time.Hour,
+		MaxRedemptions:  1,
+	})
+	if err != nil {
+		t.Fatalf("IssueGarageInvite: %v", err)
+	}
+
+	// Simulate the winner having committed: bump count to max.
+	if _, err := store.db.ExecContext(ctx,
+		`UPDATE garage_invites SET redemption_count = max_redemptions WHERE id = ?`, rec.ID); err != nil {
+		t.Fatalf("pre-bump: %v", err)
+	}
+
+	// Loser: open a manual tx, run the same conditional UPDATE the
+	// storage method uses. The clause must block.
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("BeginTx: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := tx.ExecContext(ctx,
+		`UPDATE garage_invites SET redemption_count = redemption_count + 1 WHERE id = ? AND redemption_count < max_redemptions`,
+		rec.ID)
+	if err != nil {
+		t.Fatalf("conditional UPDATE: %v", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		t.Fatalf("RowsAffected: %v", err)
+	}
+	if affected != 0 {
+		t.Fatalf("conditional UPDATE did not block over-limit redeem: got %d, want 0", affected)
+	}
+
+	_ = tx.Rollback()
+
+	// Verify count is still at max (the loser's would-be increment didn't land).
+	var count int
+	if err := store.db.QueryRowContext(ctx,
+		`SELECT redemption_count FROM garage_invites WHERE id = ?`, rec.ID).Scan(&count); err != nil {
+		t.Fatalf("count query: %v", err)
+	}
+	if count != rec.MaxRedemptions {
+		t.Fatalf("count drifted: got %d want %d", count, rec.MaxRedemptions)
+	}
+}
+
+// TestGarageInviteCheckConstraintRejectsOverlimit ensures the DB
+// CHECK in the migration catches any future code path that tries
+// to push redemption_count past max_redemptions, even if the
+// application-layer conditional UPDATE is bypassed or buggy.
+func TestGarageInviteCheckConstraintRejectsOverlimit(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	garageID, owner := seedGarageForVehicleTest(t, store)
+	_, rec, err := store.IssueGarageInvite(ctx, GarageInviteIssueParams{
+		GarageID:        garageID,
+		CreatedByUserID: string(owner),
+		Lifetime:        time.Hour,
+		MaxRedemptions:  1,
+	})
+	if err != nil {
+		t.Fatalf("IssueGarageInvite: %v", err)
+	}
+	// Direct UPDATE bypassing the conditional clause — CHECK should reject.
+	_, err = store.db.ExecContext(ctx,
+		`UPDATE garage_invites SET redemption_count = 5 WHERE id = ?`, rec.ID)
+	if err == nil {
+		t.Fatal("expected CHECK violation, got nil error")
+	}
+}
+
 func TestRevokeGarageInviteWrongGarageIDNotFound(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

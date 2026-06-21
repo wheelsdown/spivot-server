@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -82,11 +83,16 @@ func (s *Server) handleGarageInviteCreate(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Decode whenever ContentLength != 0 — covers explicit-length
+	// requests AND chunked transfers (ContentLength == -1). An
+	// empty body / EOF is treated as "no params" so callers can
+	// POST with no body and get the defaults; only a malformed
+	// body returns 400.
 	var req GarageInviteCreateRequest
-	if r.ContentLength > 0 {
+	if r.ContentLength != 0 {
 		dec := json.NewDecoder(r.Body)
 		dec.DisallowUnknownFields()
-		if err := dec.Decode(&req); err != nil {
+		if err := dec.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
 			writeProblem(w, s.logger, http.StatusBadRequest, "invalid_request",
 				fmt.Sprintf("Could not decode request body: %s", err))
 			return

@@ -300,11 +300,28 @@ INSERT INTO garage_invite_redemptions (
 		return GarageInviteRedemptionResult{}, fmt.Errorf("storage: insert redemption: %w", err)
 	}
 
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE garage_invites SET redemption_count = redemption_count + 1 WHERE id = ?`,
+	// Conditional increment — atomically enforces the redemption
+	// limit even under concurrent redeems. Two transactions can
+	// both pass the pre-check above and both reach this UPDATE;
+	// only one will pass the `redemption_count < max_redemptions`
+	// clause. The loser sees RowsAffected = 0 and returns
+	// ErrGarageInviteExhausted; the tx rolls back so the
+	// redemption row inserted above doesn't land and no owner is
+	// added. Matches the conditional-UPDATE pattern used for
+	// signed-revision append head pointers.
+	res, err := tx.ExecContext(ctx,
+		`UPDATE garage_invites
+SET redemption_count = redemption_count + 1
+WHERE id = ? AND redemption_count < max_redemptions`,
 		invite.ID,
-	); err != nil {
+	)
+	if err != nil {
 		return GarageInviteRedemptionResult{}, fmt.Errorf("storage: bump redemption_count: %w", err)
+	}
+	if affected, affErr := res.RowsAffected(); affErr != nil {
+		return GarageInviteRedemptionResult{}, fmt.Errorf("storage: read rows affected: %w", affErr)
+	} else if affected == 0 {
+		return GarageInviteRedemptionResult{}, ErrGarageInviteExhausted
 	}
 
 	// Add (or promote) the redeemer in garage_owners as accepted.

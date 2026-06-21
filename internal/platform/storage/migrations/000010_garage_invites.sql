@@ -3,8 +3,10 @@
 -- /v1/garages/{id}/invites) and shares the plaintext token
 -- out-of-band — text message, in-person, QR code in the app — with
 -- the person they want to add. The recipient then redeems the
--- token (POST /v1/garage-invites/{token}/redeem) and is added to
--- the garage as an accepted owner directly. The redemption IS the
+-- token via POST /v1/garage-invites/redeem with the token in the
+-- JSON body (kept out of the URL path so it can't leak into
+-- access/proxy logs or browser history) and is added to the garage
+-- as an accepted owner directly. The redemption IS the
 -- acceptance; no separate signed GarageOwnershipAcceptance step.
 --
 -- This sidesteps the signed-revision invariant for invite-driven
@@ -28,7 +30,15 @@ CREATE TABLE garage_invites (
     expires_at                  TEXT NOT NULL,
     max_redemptions             INTEGER NOT NULL DEFAULT 1 CHECK (max_redemptions >= 1),
     redemption_count            INTEGER NOT NULL DEFAULT 0 CHECK (redemption_count >= 0),
-    revoked_at                  TEXT
+    revoked_at                  TEXT,
+    -- Defense in depth: the application's conditional UPDATE in
+    -- RedeemGarageInvite is supposed to prevent redemption_count
+    -- from exceeding max_redemptions under concurrent redeems,
+    -- but a future refactor that drops the conditional clause
+    -- would silently admit excess redemptions. This CHECK rejects
+    -- such an INSERT/UPDATE at the SQLite layer so the bug
+    -- surfaces immediately.
+    CHECK (redemption_count <= max_redemptions)
 );
 
 CREATE INDEX idx_garage_invites_garage
