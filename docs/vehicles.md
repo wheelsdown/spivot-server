@@ -116,11 +116,26 @@ session macaroon). Authority is enforced per-handler:
 
 ## Endpoints
 
-| Endpoint | Auth | Status codes |
+**Every endpoint below** can additionally return **503** with code
+`*_unavailable` when one of its required stores (or the integrity
+verifier for signed-payload writes) is not wired into the server's
+`api.Config`. This is a deployment misconfiguration signal — a
+production server should never hit it. It's listed once here and
+elided from the per-endpoint rows to keep the table scannable.
+**Every endpoint** also returns **500** for unexpected storage
+failures (logged on the server, opaque `internal_error` body for
+the caller) and **401** when the identity/session middleware
+rejects the caller's mTLS or macaroon up front.
+
+The columns below cover the **handler-specific** status codes — the
+ones that depend on the request shape or stored state, not the
+generic infra failures.
+
+| Endpoint | Auth | Handler-specific status codes |
 | --- | --- | --- |
-| `POST /v1/journeys/{id}/vehicles` | session: `journey.write` | 201 / 400 (invalid payload, bad signature shape) / 403 (session-vs-payload mismatch, signer-vs-cert mismatch, signature invalid) / 409 (duplicate owner, duplicate id) / 503 (verifier not wired) |
-| `GET /v1/journeys/{id}/vehicles` | session: `journey.read` | 200 / 503 |
-| `GET /v1/journeys/{id}/vehicles/{vid}` | session: `journey.read` | 200 / 404 / 503 |
+| `POST /v1/journeys/{id}/vehicles` | session: `journey.write` | 201 / 400 (invalid payload, bad signature shape) / 403 (session-vs-payload mismatch, signer-vs-cert mismatch, signature invalid) / 409 (duplicate owner, duplicate id) |
+| `GET /v1/journeys/{id}/vehicles` | session: `journey.read` | 200 |
+| `GET /v1/journeys/{id}/vehicles/{vid}` | session: `journey.read` | 200 / 404 |
 | `POST /v1/journeys/{id}/vehicles/{vid}/acl-revisions` | session: `journey.write` | 201 / 400 / 403 (owner mismatch, signature invalid) / 404 / 409 (version conflict) |
 | `POST /v1/journeys/{id}/vehicles/{vid}/driver-attestations` | session: `journey.write` | 201 (fresh) / 200 (gossiped replay returns stored record) / 400 (bad ACL-at-time, missing integrity) / 403 (driver mismatch) / 404 (vehicle missing) |
 | `GET /v1/journeys/{id}/vehicles/{vid}/driver-attestations` | session: `journey.read` | 200 / 404 |
@@ -278,9 +293,21 @@ place.
 
 The walkthrough below assumes you've already enrolled a client
 app (see [README](../README.md) Enrollment section) and minted
-session macaroons for the actions used. Replace `$JOURNEY`,
-`$VEHICLE`, `$MAC_WRITE`, `$MAC_READ`, `$CERT` with concrete
-values from your enrollment.
+session macaroons for the actions used. The shell variables
+referenced in the commands:
+
+| Variable | Source |
+| --- | --- |
+| `$JOURNEY` | journey id from `POST /v1/journeys` |
+| `$VEHICLE` | vehicle id (the UUID you generated for the create call) |
+| `$CERT` | path to your enrolled client cert PEM |
+| `$KEY` | path to the matching client private key PEM |
+| `$MAC_WRITE` | session macaroon with `journey.write` action |
+| `$MAC_READ` | session macaroon with `journey.read` action |
+| `$MAC_TELEMETRY` | session macaroon with `telemetry.write` action |
+
+All three macaroons are minted via `POST /v1/sessions`; see the
+README's session macaroon section for the request shape.
 
 ### 1. Upload a Vehicle when joining the journey
 
