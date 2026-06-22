@@ -1,0 +1,22 @@
+-- Add cert_pem column to issued_certificates so the server can later
+-- verify cryptographic signatures over OpenCaravan payloads without
+-- requiring a live mTLS connection from the signing device.
+--
+-- The protocol's gossip-tolerant flows (driver attestations, garage
+-- ownership acceptances, vehicle ACL revisions) accept payloads
+-- signed by one device and uploaded by another — possibly hours or
+-- days later. At verify time the server needs the signing device's
+-- public key. Pre-this-migration only the parsed cert metadata
+-- (serial, subject CN, validity window) was persisted; the full PEM
+-- containing the public key was forgotten the moment the
+-- enrollment handler returned. Stashing the PEM here lets a later
+-- integrity verifier load any enrolled cert's public key by
+-- (user_id, client_app_id) without re-issuing.
+--
+-- The column is NULL-able to keep this migration backward
+-- compatible with rows from earlier migrations. New enrollments
+-- (after this PR) populate it; any historical rows stay queryable
+-- for the existing audit views but can't be used as
+-- signature-verification sources until they're re-enrolled.
+
+ALTER TABLE issued_certificates ADD COLUMN cert_pem TEXT;

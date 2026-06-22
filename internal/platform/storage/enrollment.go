@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/x509"
 	"database/sql"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"time"
@@ -170,14 +171,18 @@ WHERE token_hash = ?
 
 	cert := reg.Certificate
 	serial := cert.SerialNumber.Text(16)
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})
+	if certPEM == nil {
+		return rollback(errors.New("encode certificate PEM"))
+	}
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO issued_certificates
-    (serial, subject_cn, not_before, not_after, issued_at, user_id, client_app_id)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+    (serial, subject_cn, not_before, not_after, issued_at, user_id, client_app_id, cert_pem)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 `, serial, cert.Subject.CommonName,
 		formatSQLiteTime(cert.NotBefore),
 		formatSQLiteTime(cert.NotAfter),
-		nowStr, reg.UserID, reg.ClientAppID); err != nil {
+		nowStr, reg.UserID, reg.ClientAppID, string(certPEM)); err != nil {
 		return rollback(fmt.Errorf("insert issued_certificate: %w", err))
 	}
 
