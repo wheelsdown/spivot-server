@@ -97,6 +97,18 @@ alone is just "the caller named themselves in the payload." Only
 the third layer requires a cryptographic proof that the user
 named in the payload actually signed it.
 
+### Owner-departure freeze
+
+Per the protocol's locked-in decision, a `Vehicle` becomes
+immutable once its recorded owner is no longer a journey
+participant — the vehicle stays in the journey, but `VehicleACL`
+appends are rejected with **403 / `owner_not_a_participant`**.
+Driver attestations against the existing ACL still validate; the
+freeze applies only to owner-side mutations. If the departed
+owner rejoins the journey, the freeze lifts automatically (the
+check is "is currently a participant," not "has ever left"). See
+[`handleJourneyVehicleACLAppend`](../internal/server/api/journey_vehicles.go).
+
 ### Garage-side authorization
 
 Garage endpoints use **identity-only** auth (no journey-scoped

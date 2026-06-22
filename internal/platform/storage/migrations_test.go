@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -51,7 +52,6 @@ func TestOpenCaravanFoundationTables(t *testing.T) {
 		"federated_servers",
 		"accounts",
 		"account_devices",
-		"vehicles",
 		"journeys",
 		"journey_invites",
 		"journey_participants",
@@ -110,4 +110,16 @@ func TestOpenCaravanFoundationCapturesSchemaDecisions(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestLegacyVehiclesTableRetired(t *testing.T) {
+	store := openTestStore(t)
+	var name string
+	err := store.DB().QueryRowContext(context.Background(),
+		`SELECT name FROM sqlite_master WHERE type='table' AND name='vehicles'`).Scan(&name)
+	if err == nil {
+		t.Fatalf("legacy `vehicles` table still exists after migration 000013 retired it; got name=%q", name)
+	}
+	// Any error here is the expected "no rows" — sql.ErrNoRows or
+	// the driver's equivalent. Either way, the table is gone.
 }
