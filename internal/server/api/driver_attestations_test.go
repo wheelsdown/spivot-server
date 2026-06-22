@@ -558,6 +558,92 @@ func TestCurrentDriverInvalidAtRejected(t *testing.T) {
 	}
 }
 
+func TestCurrentDriverForkSiblingsExcludeSelectedAttestation(t *testing.T) {
+	// When the picked attestation chains to a contested
+	// predecessor, fork_siblings should list the OTHER claimants —
+	// not the selected one itself.
+	env := newJourneyEnv(t)
+	owner := env.mintIdentity(t)
+	other := env.mintIdentity(t)
+	journey := env.mustCreateJourney(t, owner, "Pacific Coast Drive")
+	jid, err := opencaravan.ParseUUID(journey.ID)
+	if err != nil {
+		t.Fatalf("ParseUUID: %v", err)
+	}
+	vehicleID := uploadVehicleFor(t, env, owner, journey, &opencaravan.VehicleEmergencyRule{
+		Kind: opencaravan.VehicleEmergencyRuleAnyJourneyParticipant,
+	})
+	joinJourneyAsParticipant(t, env, other, journey)
+
+	priorHash := "sha256:" + "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	t0 := time.Now().Add(time.Minute).UTC()
+
+	// Owner attestation at t0.
+	ownerMac := env.issueSessionMacaroon(t, owner, jid, opencaravan.SessionActionJourneyWrite)
+	ownerAttestation := env.newSignedAttestationPayload(t, vehicleID, owner, t0, 1, &priorHash)
+	if rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles/"+string(vehicleID)+"/driver-attestations",
+		ownerAttestation, owner, ownerMac); rec.Code != http.StatusCreated {
+		t.Fatalf("owner attestation: got %d body=%s", rec.Code, rec.Body.String())
+	}
+	// Other attestation at t0 + 1min — same predecessor (fork).
+	otherMac := env.issueSessionMacaroon(t, other, jid, opencaravan.SessionActionJourneyWrite)
+	otherAttestation := env.newSignedAttestationPayload(t, vehicleID, other, t0.Add(time.Minute), 1, &priorHash)
+	if rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles/"+string(vehicleID)+"/driver-attestations",
+		otherAttestation, other, otherMac); rec.Code != http.StatusCreated {
+		t.Fatalf("other attestation: got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Query current-driver at t0 + 2min — the later one (other) is selected.
+	readMac := env.issueSessionMacaroon(t, owner, jid, opencaravan.SessionActionJourneyRead)
+	queryAt := t0.Add(2 * time.Minute)
+	rec := env.get(t, "/v1/journeys/"+journey.ID+"/vehicles/"+string(vehicleID)+"/current-driver?at="+queryAt.Format(time.RFC3339Nano), owner, readMac)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp CurrentDriverResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Attestation.DriverUserID != other.UserID {
+		t.Fatalf("selected attestation: got driver %q want %q", resp.Attestation.DriverUserID, other.UserID)
+	}
+	// fork_siblings must NOT include the selected attestation.
+	for _, sib := range resp.ForkSiblings {
+		if sib.ID == resp.Attestation.ID {
+			t.Fatalf("fork_siblings includes the selected attestation (%s) — should be other claimants only", sib.ID)
+		}
+	}
+	// And it MUST include the other claimant.
+	if len(resp.ForkSiblings) != 1 {
+		t.Fatalf("expected 1 fork sibling (the other claimant), got %d", len(resp.ForkSiblings))
+	}
+	if resp.ForkSiblings[0].DriverUserID != owner.UserID {
+		t.Fatalf("fork sibling driver: got %q want %q", resp.ForkSiblings[0].DriverUserID, owner.UserID)
+	}
+}
+
+func TestTelemetryRejectsEmptyDriverAttestationHash(t *testing.T) {
+	env := newJourneyEnv(t)
+	owner := env.mintIdentity(t)
+	journey := env.mustCreateJourney(t, owner, "Pacific Coast Drive")
+	jid, err := opencaravan.ParseUUID(journey.ID)
+	if err != nil {
+		t.Fatalf("ParseUUID: %v", err)
+	}
+	telemetryMac := env.issueSessionMacaroon(t, owner, jid, opencaravan.SessionActionTelemetryWrite)
+
+	empty := ""
+	req := TelemetryBatchRequest{
+		ClientBatchID:         "batch-empty-hash",
+		Samples:               nil,
+		DriverAttestationHash: &empty,
+	}
+	rec := env.post(t, "/v1/journeys/"+journey.ID+"/telemetry", req, owner, telemetryMac)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestTelemetryWithDriverAttestationHashPersists(t *testing.T) {
 	env := newJourneyEnv(t)
 	owner := env.mintIdentity(t)

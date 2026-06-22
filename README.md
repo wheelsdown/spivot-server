@@ -234,7 +234,7 @@ GET  /v1/journeys/{id}/vehicles/{vid}/driver-attestations
                                 can audit the full chain of custody
 GET  /v1/journeys/{id}/vehicles/{vid}/current-driver
                                 (requires session macaroon scoped to
-                                the journey + journey.read) return
+                                the journey + journey.read) returns
                                 the DriverAttestation in effect at
                                 the optional ?at=<rfc3339> timestamp
                                 (defaults to now); includes fork

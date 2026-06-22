@@ -157,6 +157,16 @@ func (s *Server) handleJourneyTelemetry(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	}
+	// Empty-string driver_attestation_hash is rejected when the
+	// caller bothered to include the field — sending "" defeats
+	// the "optional linkage" intent and would persist a
+	// meaningless join key. Omit the field entirely to leave the
+	// column NULL.
+	if req.DriverAttestationHash != nil && *req.DriverAttestationHash == "" {
+		writeProblem(w, s.logger, http.StatusBadRequest, "invalid_request",
+			"driver_attestation_hash must be non-empty when present; omit the field to leave it unset")
+		return
+	}
 
 	// Resolve the caller's participant in this journey. The
 	// macaroon's journey= caveat already passed

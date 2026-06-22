@@ -441,6 +441,16 @@ func (s *Server) handleCurrentDriver(w http.ResponseWriter, r *http.Request) {
 				"vehicle_id", vehicleID, "prior_hash", *rec.PriorAttestationHash)
 		} else {
 			for _, row := range rows {
+				// DriverAttestationForkSiblings includes the
+				// selected attestation by design (the POST
+				// response surfaces "every claimant on this
+				// predecessor, including me"). For the
+				// current-driver response, ForkSiblings is the
+				// "OTHER competing claims" set — exclude the
+				// selected record so clients don't see it twice.
+				if row.ID == rec.ID {
+					continue
+				}
 				siblings = append(siblings, DriverAttestationForkSibling{
 					ID:            row.ID,
 					DriverUserID:  row.DriverUserID,
