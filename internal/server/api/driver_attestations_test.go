@@ -39,9 +39,20 @@ func uploadVehicleFor(t *testing.T, env *journeyEnv, owner middleware.Identity, 
 
 // newSignedAttestationPayload builds a DriverAttestation owned
 // by `driver` (DriverUserID set + signed with that identity's
-// enrolled key). For tests that need the SIGNER and CLAIMED
-// driver to differ (driver-mismatch tests), sign as one identity
-// and overwrite DriverUserID before the post.
+// enrolled key).
+//
+// For tests that need the SIGNER and CLAIMED driver to differ
+// (driver-mismatch tests like
+// TestDriverAttestationRecordRejectsSignerDriverMismatch), build
+// the payload with the claimed driver passed here, then call
+// env.signDriverAttestation(t, otherIdentity, &payload) to
+// re-sign with a different identity's key. The re-sign preserves
+// DriverUserID while replacing Integrity, so the signature stays
+// cryptographically valid (over the unchanged canonical bytes)
+// and the cert-vs-driver cross-check at the handler is what
+// fires. Mutating DriverUserID after signing would invalidate
+// the signature and short-circuit to ErrSignatureInvalid before
+// the cross-check can run — useless for testing the cross-check.
 func (e *journeyEnv) newSignedAttestationPayload(t *testing.T, vehicleID opencaravan.UUID, driver middleware.Identity, effective time.Time, aclVersion int, priorHash *string) opencaravan.DriverAttestation {
 	t.Helper()
 	segmentID, err := opencaravan.NewUUID()
