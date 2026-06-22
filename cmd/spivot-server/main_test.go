@@ -292,6 +292,83 @@ func TestInviteRequiresSubcommand(t *testing.T) {
 	}
 }
 
+func TestFormatBootstrapBannerOmitsIOSHint(t *testing.T) {
+	tok, err := opencaravan.NewInviteToken(time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("mint token: %v", err)
+	}
+	banner := formatBootstrapBanner(tok)
+	for _, forbidden := range []string{"Settings", "Add Account", "iOS app", "Use Invite"} {
+		if strings.Contains(banner, forbidden) {
+			t.Fatalf("banner still mentions %q (was written before the iOS app existed):\n%s", forbidden, banner)
+		}
+	}
+	// The token value still appears prominently.
+	if !strings.Contains(banner, tok.Value) {
+		t.Fatalf("banner missing the token value:\n%s", banner)
+	}
+}
+
+func TestDataDirEphemeralWarning(t *testing.T) {
+	t.Run("no proc returns no warning", func(t *testing.T) {
+		orig := procSelfMountInfo
+		t.Cleanup(func() { procSelfMountInfo = orig })
+		procSelfMountInfo = func() ([]byte, error) {
+			return nil, &mockMountInfoErr{}
+		}
+		if got := dataDirEphemeralWarning("/var/lib/spivot"); got != "" {
+			t.Fatalf("want empty warning on non-Linux host; got %q", got)
+		}
+	})
+	t.Run("dir is a mount point returns no warning", func(t *testing.T) {
+		orig := procSelfMountInfo
+		t.Cleanup(func() { procSelfMountInfo = orig })
+		procSelfMountInfo = func() ([]byte, error) {
+			// Field 5 (mountPoint) is /var/lib/spivot — a mount exists.
+			return []byte("85 1 0:55 / /var/lib/spivot rw,relatime - ext4 /dev/sdb rw\n"), nil
+		}
+		if got := dataDirEphemeralWarning("/var/lib/spivot"); got != "" {
+			t.Fatalf("want empty warning when dir is mounted; got %q", got)
+		}
+	})
+	t.Run("dir is not a mount point returns warning", func(t *testing.T) {
+		orig := procSelfMountInfo
+		t.Cleanup(func() { procSelfMountInfo = orig })
+		procSelfMountInfo = func() ([]byte, error) {
+			// Only / is a mount; /var/lib/spivot is NOT.
+			return []byte("1 0 0:1 / / rw,relatime - overlay overlay rw\n"), nil
+		}
+		got := dataDirEphemeralWarning("/var/lib/spivot")
+		if got == "" {
+			t.Fatal("want warning when dir is not a mount; got empty")
+		}
+		if !strings.Contains(got, "/var/lib/spivot") {
+			t.Fatalf("warning should mention the data_dir path; got %q", got)
+		}
+	})
+	t.Run("operator mapped to wrong in-container path produces warning", func(t *testing.T) {
+		// Reproduces the production incident: volume mounted at
+		// /usr/lib/spivot instead of /var/lib/spivot. The Dockerfile
+		// sets SPIVOT_DATA_DIR=/var/lib/spivot, so dataDir is that —
+		// but only /usr/lib/spivot appears in mountinfo. Expect a
+		// warning about /var/lib/spivot.
+		orig := procSelfMountInfo
+		t.Cleanup(func() { procSelfMountInfo = orig })
+		procSelfMountInfo = func() ([]byte, error) {
+			return []byte("1 0 0:1 / / rw,relatime - overlay overlay rw\n" +
+				"42 1 0:55 / /usr/lib/spivot rw,relatime - ext4 /dev/sdb rw\n"), nil
+		}
+		got := dataDirEphemeralWarning("/var/lib/spivot")
+		if got == "" {
+			t.Fatal("want warning when operator mapped volume to wrong path")
+		}
+	})
+}
+
+type mockMountInfoErr struct{}
+
+func (mockMountInfoErr) Error() string { return "mock: /proc unavailable" }
+
 func TestEmitBootstrapInviteOnEmptyServer(t *testing.T) {
 	store := newBootstrapTestStore(t)
 

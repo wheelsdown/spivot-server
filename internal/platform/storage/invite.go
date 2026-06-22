@@ -290,6 +290,36 @@ func (s *Store) AccountCount(ctx context.Context) (int, error) {
 	return count, nil
 }
 
+// ClientAppCount returns the number of rows in the client_apps
+// table. Surfaced on startup so an operator can see at a glance
+// whether they've attached to a populated DB or a blank one — the
+// signal that disambiguates "first run" from "data dir is
+// ephemeral and being wiped between deploys."
+func (s *Store) ClientAppCount(ctx context.Context) (int, error) {
+	if s == nil || s.db == nil {
+		return 0, errors.New("storage: database is not open")
+	}
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM client_apps`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("storage: count client_apps: %w", err)
+	}
+	return count, nil
+}
+
+// IssuedCertificateCount returns the number of rows in the
+// issued_certificates table. Like [ClientAppCount], surfaced on
+// startup as an operator-visible signal of DB state.
+func (s *Store) IssuedCertificateCount(ctx context.Context) (int, error) {
+	if s == nil || s.db == nil {
+		return 0, errors.New("storage: database is not open")
+	}
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM issued_certificates`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("storage: count issued_certificates: %w", err)
+	}
+	return count, nil
+}
+
 // lookupInviteByHash loads the persisted row keyed by hash without
 // applying any "is it redeemable now?" interpretation. Shared by
 // LookupInvite (which adds the time/used checks afterward) and the

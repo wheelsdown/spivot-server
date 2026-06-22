@@ -40,8 +40,19 @@ The compose file mounts two stable runtime paths:
   uploaded resources, and other durable server state.
 
 Spivot Server runs as a non-root user, and the image pre-creates those paths
-with the right ownership. Keep the in-container paths stable unless you are also
-updating `SPIVOT_CONFIG_DIR`, `SPIVOT_DATA_DIR`, and `SPIVOT_DATABASE_PATH`.
+with the right ownership. Keep the in-container paths stable unless you are
+also updating `SPIVOT_CONFIG_DIR`, `SPIVOT_DATA_DIR`, and `SPIVOT_DATABASE_PATH`.
+
+> ⚠️ **Common pitfall**: mapping the host volume to the wrong in-container
+> path (e.g., `/usr/lib/spivot` instead of `/var/lib/spivot`) silently writes
+> SQLite state into the container's writable layer and loses everything on
+> the next `docker compose up --force-recreate` or image upgrade. Symptoms:
+> the first-run bootstrap banner reappears after a deploy, and previously
+> enrolled clients lose their trust path because the CA is regenerated.
+> Spivot Server WARNs on startup when `SPIVOT_DATA_DIR` does not appear in
+> the container's mount table — watch for `data_dir does not appear to be a
+> mount point` in the logs, and check `docker inspect <container>` shows a
+> volume at `/var/lib/spivot`.
 
 Start or update the service:
 
