@@ -241,6 +241,49 @@ func (e *journeyEnv) signDriverAttestation(t *testing.T, id middleware.Identity,
 	attestation.Integrity = &envelope
 }
 
+// signGarage replaces garage.Integrity with a freshly-signed
+// envelope produced by the supplied identity. The identity's
+// ClientAppID becomes the envelope KeyID; the garage's SignedBy
+// field is left untouched (callers set it to the user_id they
+// want the protocol to record as the publisher).
+func (e *journeyEnv) signGarage(t *testing.T, id middleware.Identity, garage *opencaravan.Garage) {
+	t.Helper()
+	garage.Integrity = nil
+	canonical, err := garage.CanonicalEncoding()
+	if err != nil {
+		t.Fatalf("Garage CanonicalEncoding: %v", err)
+	}
+	envelope := e.signCanonical(t, id, canonical)
+	garage.Integrity = &envelope
+}
+
+// signGarageVehicle replaces gv.Integrity with a freshly-signed
+// envelope produced by the supplied identity.
+func (e *journeyEnv) signGarageVehicle(t *testing.T, id middleware.Identity, gv *opencaravan.GarageVehicle) {
+	t.Helper()
+	gv.Integrity = nil
+	canonical, err := gv.CanonicalEncoding()
+	if err != nil {
+		t.Fatalf("GarageVehicle CanonicalEncoding: %v", err)
+	}
+	envelope := e.signCanonical(t, id, canonical)
+	gv.Integrity = &envelope
+}
+
+// signGarageOwnershipAcceptance replaces acceptance.Integrity
+// with a freshly-signed envelope produced by the supplied
+// identity.
+func (e *journeyEnv) signGarageOwnershipAcceptance(t *testing.T, id middleware.Identity, acceptance *opencaravan.GarageOwnershipAcceptance) {
+	t.Helper()
+	acceptance.Integrity = nil
+	canonical, err := acceptance.CanonicalEncoding()
+	if err != nil {
+		t.Fatalf("GarageOwnershipAcceptance CanonicalEncoding: %v", err)
+	}
+	envelope := e.signCanonical(t, id, canonical)
+	acceptance.Integrity = &envelope
+}
+
 // issueSessionMacaroon mints a session macaroon for the supplied
 // identity, journey, and action. Encoded as the base64url string
 // callers put on Authorization: Macaroon.

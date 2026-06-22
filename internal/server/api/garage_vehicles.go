@@ -109,6 +109,10 @@ func (s *Server) handleGarageVehicleCreate(w http.ResponseWriter, r *http.Reques
 			"Could not compute canonical garage vehicle bytes.")
 		return
 	}
+	if !verifySignedPayload(w, r, s.logger, s.cfg.IntegrityVerifier, s.cfg.GarageStore,
+		canonical, *gv.Integrity, string(gv.SignedBy), "garage-vehicles") {
+		return
+	}
 	rec, err := s.cfg.GarageStore.CreateGarageVehicle(r.Context(), storage.GarageVehicleCreateParams{
 		GarageVehicle:    gv,
 		CanonicalPayload: canonical,
@@ -292,6 +296,11 @@ func (s *Server) handleGarageVehicleRevisionAppend(w http.ResponseWriter, r *htt
 		s.logger.Error("garage-vehicles: revision canonical encode failed", "error", err)
 		writeProblem(w, s.logger, http.StatusInternalServerError, "internal_error",
 			"Could not compute canonical garage vehicle bytes.")
+		return
+	}
+
+	if !verifySignedPayload(w, r, s.logger, s.cfg.IntegrityVerifier, s.cfg.GarageStore,
+		canonical, *gv.Integrity, string(gv.SignedBy), "garage-vehicles-revision") {
 		return
 	}
 

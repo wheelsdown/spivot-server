@@ -151,6 +151,11 @@ func (s *Server) handleGarageCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !verifySignedPayload(w, r, s.logger, s.cfg.IntegrityVerifier, s.cfg.GarageStore,
+		canonical, *garage.Integrity, string(garage.SignedBy), "garages") {
+		return
+	}
+
 	rec, err := s.cfg.GarageStore.CreateGarage(r.Context(), storage.GarageCreateParams{
 		Garage:           garage,
 		CanonicalPayload: canonical,
@@ -341,6 +346,11 @@ func (s *Server) handleGarageRevisionAppend(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	if !verifySignedPayload(w, r, s.logger, s.cfg.IntegrityVerifier, s.cfg.GarageStore,
+		canonical, *garage.Integrity, string(garage.SignedBy), "garages-revision") {
+		return
+	}
+
 	rev, err := s.cfg.GarageStore.AppendGarageRevision(r.Context(), storage.GarageAppendRevisionParams{
 		Garage:           garage,
 		CanonicalPayload: canonical,
@@ -445,6 +455,11 @@ func (s *Server) handleGarageOwnershipAccept(w http.ResponseWriter, r *http.Requ
 		s.logger.Error("garages: acceptance canonical encode failed", "error", err)
 		writeProblem(w, s.logger, http.StatusInternalServerError, "internal_error",
 			"Could not compute canonical acceptance bytes.")
+		return
+	}
+
+	if !verifySignedPayload(w, r, s.logger, s.cfg.IntegrityVerifier, s.cfg.GarageStore,
+		canonical, *acceptance.Integrity, string(acceptance.AccepterUserID), "garages-acceptance") {
 		return
 	}
 

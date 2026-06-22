@@ -177,6 +177,12 @@ type GarageStore interface {
 	// ListGarageVehicles returns every vehicle in the supplied
 	// garage, ordered by created_at ascending.
 	ListGarageVehicles(ctx context.Context, garageID string) ([]storage.GarageVehicleRecord, error)
+	// EnrolledCertByClientAppID returns the enrolled client app's
+	// cert (with parsed *x509.Certificate carrying the public
+	// key) so garage handlers can cross-check the signer's
+	// identity against the payload's claimed signer before
+	// running cryptographic verification.
+	EnrolledCertByClientAppID(ctx context.Context, clientAppID string) (storage.EnrolledCertRecord, error)
 	// IssueGarageInvite mints a fresh invite token for the supplied
 	// garage. Returns the plaintext token (shown once) and the
 	// persisted metadata record.
