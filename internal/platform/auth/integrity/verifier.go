@@ -55,6 +55,14 @@ var ErrKeyTypeMismatch = errors.New("integrity: resolved key type does not match
 // 500 and shouldn't be confused with a malicious caller).
 var ErrResolverTransport = errors.New("integrity: key resolver transport failure")
 
+// ErrEmptyCanonicalPayload is returned when the caller supplies a
+// zero-length canonicalPayload. This is a programmer error — the
+// canonical-encoding routines on every signed OpenCaravan type
+// return at least the enclosing JSON braces — and surfaces as 500
+// at the handler so the caller-side bug is visible rather than
+// masquerading as a signature failure.
+var ErrEmptyCanonicalPayload = errors.New("integrity: canonical payload is empty")
+
 // KeyResolver looks up the public key for the supplied Integrity.KeyID.
 // Production wires a resolver backed by [storage.Store]; tests
 // inject a fake that returns a known *ecdsa.PublicKey by id.
@@ -100,18 +108,21 @@ func NewVerifier(resolver KeyResolver) *Verifier {
 // Error precedence:
 //
 //  1. integrity.Validate() fails → wrapped error (caller should 400).
-//  2. integrity.Algorithm is not [AlgorithmECDSAP256SHA256] →
+//  2. canonicalPayload is empty → [ErrEmptyCanonicalPayload] (caller
+//     should 500 — programmer error in the call site, not user
+//     input).
+//  3. integrity.Algorithm is not [AlgorithmECDSAP256SHA256] →
 //     [ErrUnsupportedAlgorithm] (caller should 400).
-//  3. integrity.Signature is not valid base64 OR doesn't parse as
+//  4. integrity.Signature is not valid base64 OR doesn't parse as
 //     an ASN.1 ECDSA SEQUENCE of two positive INTEGERs →
 //     [ErrSignatureMalformed] (caller should 400).
-//  4. KeyResolver returns [ErrKeyIDUnresolved] →
+//  5. KeyResolver returns [ErrKeyIDUnresolved] →
 //     [ErrKeyIDUnresolved] (caller should 401/403).
-//  5. KeyResolver returns any other error → [ErrResolverTransport]
+//  6. KeyResolver returns any other error → [ErrResolverTransport]
 //     (caller should 500).
-//  6. Resolved key isn't a P-256 ECDSA public key →
+//  7. Resolved key isn't a P-256 ECDSA public key →
 //     [ErrKeyTypeMismatch] (caller should 500 — config bug).
-//  7. ECDSA verification fails → [ErrSignatureInvalid] (caller
+//  8. ECDSA verification fails → [ErrSignatureInvalid] (caller
 //     should 403).
 //
 // All wrapped errors use %w so callers can [errors.Is] the sentinel
@@ -120,6 +131,9 @@ func NewVerifier(resolver KeyResolver) *Verifier {
 func (v *Verifier) VerifyPayload(ctx context.Context, canonicalPayload []byte, integrity opencaravan.Integrity) error {
 	if err := integrity.Validate(); err != nil {
 		return fmt.Errorf("integrity validate: %w", err)
+	}
+	if len(canonicalPayload) == 0 {
+		return ErrEmptyCanonicalPayload
 	}
 	if integrity.Algorithm != AlgorithmECDSAP256SHA256 {
 		return fmt.Errorf("%w: %q", ErrUnsupportedAlgorithm, integrity.Algorithm)
@@ -130,9 +144,6 @@ func (v *Verifier) VerifyPayload(ctx context.Context, canonicalPayload []byte, i
 	}
 	if err := validateECDSASignatureASN1(sig); err != nil {
 		return fmt.Errorf("%w: %w", ErrSignatureMalformed, err)
-	}
-	if len(canonicalPayload) == 0 {
-		return errors.New("integrity: canonical payload is empty")
 	}
 
 	pubAny, err := v.resolver.ResolvePublicKey(ctx, integrity.KeyID)

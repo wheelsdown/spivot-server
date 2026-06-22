@@ -193,8 +193,8 @@ func TestVerifyPayloadEmptyCanonical(t *testing.T) {
 	envelope, pub := signTestPayload(t, "app-1", []byte("data"))
 	v := NewVerifier(resolverReturning(pub, nil))
 	err := v.VerifyPayload(context.Background(), nil, envelope)
-	if err == nil {
-		t.Fatal("expected error for empty canonical payload, got nil")
+	if !errors.Is(err, ErrEmptyCanonicalPayload) {
+		t.Fatalf("got %v, want ErrEmptyCanonicalPayload", err)
 	}
 }
 
