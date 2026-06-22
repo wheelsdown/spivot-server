@@ -11,10 +11,11 @@ import (
 )
 
 // enrollFresh runs the full RegisterClientApp flow used by other
-// enrollment tests, returning the enrolled client app id + the
-// cert that was issued (so the test can compare the round-tripped
-// public key against the original).
-func enrollFresh(t *testing.T, store *Store) (clientAppID string, signingKeyParent string) {
+// enrollment tests. Returns the (client_app_id, user_id) pair that
+// was enrolled — both as plain strings — so the caller can use
+// them in subsequent EnrolledCertByClientAppID lookups and FK
+// references.
+func enrollFresh(t *testing.T, store *Store) (clientAppID, userID string) {
 	t.Helper()
 	ctx := context.Background()
 	token, _, err := store.IssueInvite(ctx, opencaravan.InviteScopeServerRegistration, time.Hour)
@@ -41,7 +42,7 @@ func enrollFresh(t *testing.T, store *Store) (clientAppID string, signingKeyPare
 func TestEnrolledCertByClientAppIDRoundTripsParsedCert(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
-	appID, uid := enrollFresh(t, store)
+	appID, userID := enrollFresh(t, store)
 
 	rec, err := store.EnrolledCertByClientAppID(ctx, appID)
 	if err != nil {
@@ -50,8 +51,8 @@ func TestEnrolledCertByClientAppIDRoundTripsParsedCert(t *testing.T) {
 	if rec.Identity.ClientAppID != appID {
 		t.Fatalf("client_app_id: got %q want %q", rec.Identity.ClientAppID, appID)
 	}
-	if rec.Identity.UserID != uid {
-		t.Fatalf("user_id: got %q want %q", rec.Identity.UserID, uid)
+	if rec.Identity.UserID != userID {
+		t.Fatalf("user_id: got %q want %q", rec.Identity.UserID, userID)
 	}
 	if rec.Certificate == nil {
 		t.Fatal("parsed certificate is nil")

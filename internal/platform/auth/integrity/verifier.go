@@ -5,9 +5,11 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/sha256"
+	"encoding/asn1"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"math/big"
 
 	"github.com/opencaravan/opencaravan-go"
 )
@@ -34,11 +36,12 @@ var ErrKeyIDUnresolved = errors.New("integrity: key id could not be resolved to 
 var ErrSignatureInvalid = errors.New("integrity: signature does not verify against resolved key")
 
 // ErrSignatureMalformed is returned when the Integrity.Signature
-// field can't be base64-decoded or isn't a valid ASN.1 ECDSA
-// signature. Distinct from [ErrSignatureInvalid] (which means the
-// signature is well-formed but doesn't match): malformed signatures
-// indicate a client serialization bug or a tampered payload, not a
-// key mismatch.
+// field can't be base64-decoded OR isn't a valid ASN.1 SEQUENCE of
+// two INTEGERs (the ECDSA wire shape). Distinct from
+// [ErrSignatureInvalid] (which means the signature is structurally
+// well-formed but doesn't verify against the resolved key):
+// malformed signatures indicate a client serialization bug or a
+// tampered payload, not a key mismatch.
 var ErrSignatureMalformed = errors.New("integrity: signature is malformed")
 
 // ErrKeyTypeMismatch is returned when the resolved public key isn't
@@ -99,7 +102,8 @@ func NewVerifier(resolver KeyResolver) *Verifier {
 //  1. integrity.Validate() fails → wrapped error (caller should 400).
 //  2. integrity.Algorithm is not [AlgorithmECDSAP256SHA256] →
 //     [ErrUnsupportedAlgorithm] (caller should 400).
-//  3. integrity.Signature is not valid base64 or ASN.1 ECDSA →
+//  3. integrity.Signature is not valid base64 OR doesn't parse as
+//     an ASN.1 ECDSA SEQUENCE of two positive INTEGERs →
 //     [ErrSignatureMalformed] (caller should 400).
 //  4. KeyResolver returns [ErrKeyIDUnresolved] →
 //     [ErrKeyIDUnresolved] (caller should 401/403).
@@ -109,6 +113,10 @@ func NewVerifier(resolver KeyResolver) *Verifier {
 //     [ErrKeyTypeMismatch] (caller should 500 — config bug).
 //  7. ECDSA verification fails → [ErrSignatureInvalid] (caller
 //     should 403).
+//
+// All wrapped errors use %w so callers can [errors.Is] the sentinel
+// AND [errors.Unwrap] to the root cause (base64 decode error,
+// resolver transport error, etc.).
 func (v *Verifier) VerifyPayload(ctx context.Context, canonicalPayload []byte, integrity opencaravan.Integrity) error {
 	if err := integrity.Validate(); err != nil {
 		return fmt.Errorf("integrity validate: %w", err)
@@ -118,7 +126,10 @@ func (v *Verifier) VerifyPayload(ctx context.Context, canonicalPayload []byte, i
 	}
 	sig, err := base64.StdEncoding.DecodeString(integrity.Signature)
 	if err != nil {
-		return fmt.Errorf("%w: base64 decode: %v", ErrSignatureMalformed, err)
+		return fmt.Errorf("%w: base64 decode: %w", ErrSignatureMalformed, err)
+	}
+	if err := validateECDSASignatureASN1(sig); err != nil {
+		return fmt.Errorf("%w: %w", ErrSignatureMalformed, err)
 	}
 	if len(canonicalPayload) == 0 {
 		return errors.New("integrity: canonical payload is empty")
@@ -129,7 +140,7 @@ func (v *Verifier) VerifyPayload(ctx context.Context, canonicalPayload []byte, i
 		if errors.Is(err, ErrKeyIDUnresolved) {
 			return err
 		}
-		return fmt.Errorf("%w: %v", ErrResolverTransport, err)
+		return fmt.Errorf("%w: %w", ErrResolverTransport, err)
 	}
 	pub, ok := pubAny.(*ecdsa.PublicKey)
 	if !ok || pub == nil {
@@ -142,6 +153,35 @@ func (v *Verifier) VerifyPayload(ctx context.Context, canonicalPayload []byte, i
 	digest := sha256.Sum256(canonicalPayload)
 	if !ecdsa.VerifyASN1(pub, digest[:], sig) {
 		return ErrSignatureInvalid
+	}
+	return nil
+}
+
+// validateECDSASignatureASN1 returns a descriptive error when sig
+// doesn't parse as the canonical ECDSA ASN.1 wire shape: a SEQUENCE
+// of exactly two positive INTEGER fields (R and S), with no
+// trailing bytes after the SEQUENCE. Production verify already
+// rejects malformed signatures via [ecdsa.VerifyASN1] returning
+// false, but doing the parse here lets the caller distinguish
+// "garbage bytes" from "well-formed signature against wrong key"
+// — useful for diagnostics and for matching the documented
+// [ErrSignatureMalformed] semantics.
+func validateECDSASignatureASN1(sig []byte) error {
+	var parsed struct {
+		R, S *big.Int
+	}
+	rest, err := asn1.Unmarshal(sig, &parsed)
+	if err != nil {
+		return fmt.Errorf("asn1 unmarshal: %w", err)
+	}
+	if len(rest) != 0 {
+		return fmt.Errorf("asn1 has %d trailing bytes", len(rest))
+	}
+	if parsed.R == nil || parsed.S == nil {
+		return errors.New("asn1 missing R or S")
+	}
+	if parsed.R.Sign() <= 0 || parsed.S.Sign() <= 0 {
+		return errors.New("asn1 R/S must be positive")
 	}
 	return nil
 }

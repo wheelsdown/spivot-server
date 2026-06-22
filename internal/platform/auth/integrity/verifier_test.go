@@ -134,13 +134,58 @@ func TestVerifyPayloadKeyTypeMismatchWrongCurve(t *testing.T) {
 	}
 }
 
-func TestVerifyPayloadMalformedSignature(t *testing.T) {
+func TestVerifyPayloadMalformedSignatureBase64(t *testing.T) {
 	envelope, pub := signTestPayload(t, "app-1", []byte("data"))
 	envelope.Signature = "!!!not-base64!!!"
 	v := NewVerifier(resolverReturning(pub, nil))
 	err := v.VerifyPayload(context.Background(), []byte("data"), envelope)
 	if !errors.Is(err, ErrSignatureMalformed) {
 		t.Fatalf("got %v, want ErrSignatureMalformed", err)
+	}
+}
+
+func TestVerifyPayloadMalformedSignatureASN1(t *testing.T) {
+	// Valid base64 but the decoded bytes are not valid ASN.1
+	// SEQUENCE-of-INTEGER. Without explicit ASN.1 validation this
+	// would fall through to ecdsa.VerifyASN1 returning false →
+	// ErrSignatureInvalid, which would be a misleading "wrong key"
+	// signal for what's actually garbage bytes.
+	envelope, pub := signTestPayload(t, "app-1", []byte("data"))
+	envelope.Signature = base64.StdEncoding.EncodeToString([]byte("not-asn1-garbage-bytes-xxxxxxx"))
+	v := NewVerifier(resolverReturning(pub, nil))
+	err := v.VerifyPayload(context.Background(), []byte("data"), envelope)
+	if !errors.Is(err, ErrSignatureMalformed) {
+		t.Fatalf("got %v, want ErrSignatureMalformed", err)
+	}
+}
+
+func TestVerifyPayloadErrorChainUnwrapsToRootCause(t *testing.T) {
+	// Asserts the doc claim: wrapped errors use %w so callers can
+	// errors.Is the sentinel AND errors.Unwrap to the root cause.
+	envelope, pub := signTestPayload(t, "app-1", []byte("data"))
+	envelope.Signature = "!!!not-base64!!!"
+	v := NewVerifier(resolverReturning(pub, nil))
+	err := v.VerifyPayload(context.Background(), []byte("data"), envelope)
+	if !errors.Is(err, ErrSignatureMalformed) {
+		t.Fatalf("missing sentinel: got %v", err)
+	}
+	// Unwrap to confirm the root base64.CorruptInputError is preserved.
+	var corrupt base64.CorruptInputError
+	if !errors.As(err, &corrupt) {
+		t.Fatalf("errors.As did not find base64.CorruptInputError in chain: %v", err)
+	}
+}
+
+func TestVerifyPayloadResolverTransportErrorChainUnwrapsToRootCause(t *testing.T) {
+	envelope, _ := signTestPayload(t, "app-1", []byte("data"))
+	root := errors.New("specific db error")
+	v := NewVerifier(resolverReturning(nil, root))
+	err := v.VerifyPayload(context.Background(), []byte("data"), envelope)
+	if !errors.Is(err, ErrResolverTransport) {
+		t.Fatalf("missing sentinel: got %v", err)
+	}
+	if !errors.Is(err, root) {
+		t.Fatalf("errors.Is did not find root error in chain: %v", err)
 	}
 }
 
