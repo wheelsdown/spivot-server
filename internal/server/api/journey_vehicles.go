@@ -202,9 +202,13 @@ func (s *Server) handleJourneyVehicleCreate(w http.ResponseWriter, r *http.Reque
 	// enrolled cert belongs to the claimed owner AND that the
 	// signature verifies against the cert's public key over the
 	// canonical bytes — separately for the Vehicle and the
-	// InitialACL. Both bundles must be owner-signed; we don't
-	// permit a fresh client app to sign one half while a different
-	// app signs the other half of the same create call.
+	// InitialACL. The verifier resolves each half's KeyID
+	// independently; the two halves MAY be signed by different
+	// client apps as long as both apps are enrolled to the same
+	// owner user. This is intentional — an owner with multiple
+	// devices (phone + tablet) often signs different payloads
+	// from different apps, and forcing both halves through one
+	// app would harm offline-first workflows.
 	if !verifySignedPayload(w, r, s.logger, s.cfg.IntegrityVerifier, s.cfg.VehicleStore,
 		vehicleCanonical, *vehicle.Integrity, string(vehicle.OwnerUserID), "vehicles") {
 		return
@@ -353,8 +357,7 @@ func (s *Server) handleJourneyVehicleACLAppend(w http.ResponseWriter, r *http.Re
 	journeyID := r.PathValue("id")
 	vehicleID := r.PathValue("vid")
 
-	stored, err := s.loadAndAuthorizeJourneyVehicleOwner(w, r, id.UserID, journeyID, vehicleID, "acl")
-	if err != nil {
+	if err := s.authorizeJourneyVehicleOwner(w, r, id.UserID, journeyID, vehicleID, "acl"); err != nil {
 		return
 	}
 
@@ -386,8 +389,6 @@ func (s *Server) handleJourneyVehicleACLAppend(w http.ResponseWriter, r *http.Re
 			"VehicleACL.owner_user_id must match the session caller.")
 		return
 	}
-	_ = stored
-
 	canonical, err := acl.CanonicalEncoding()
 	if err != nil {
 		s.logger.Error("vehicles: acl canonical encode failed", "error", err)
@@ -463,7 +464,7 @@ func (s *Server) handleJourneyVehicleRevisionAppend(w http.ResponseWriter, r *ht
 	journeyID := r.PathValue("id")
 	vehicleID := r.PathValue("vid")
 
-	if _, err := s.loadAndAuthorizeJourneyVehicleOwner(w, r, id.UserID, journeyID, vehicleID, "revision"); err != nil {
+	if err := s.authorizeJourneyVehicleOwner(w, r, id.UserID, journeyID, vehicleID, "revision"); err != nil {
 		return
 	}
 
@@ -545,7 +546,7 @@ func (s *Server) handleJourneyVehicleRevisionAppend(w http.ResponseWriter, r *ht
 	}, s.logger)
 }
 
-// loadAndAuthorizeJourneyVehicleOwner shares the four-step
+// authorizeJourneyVehicleOwner shares the four-step
 // authorization preamble between the ACL append and metadata
 // revision append handlers:
 //
@@ -560,22 +561,23 @@ func (s *Server) handleJourneyVehicleRevisionAppend(w http.ResponseWriter, r *ht
 //     owner-departure freeze).
 //
 // On any failure the helper writes a Problem to w and returns a
-// non-nil error so the caller halts. On success the helper
-// returns the loaded record so the caller can use it without a
-// second lookup. The "where" argument tags log lines so the two
-// callers don't collide in the logs.
-func (s *Server) loadAndAuthorizeJourneyVehicleOwner(w http.ResponseWriter, r *http.Request, sessionUserID, journeyID, vehicleID, where string) (storage.JourneyVehicleRecord, error) {
+// non-nil error so the caller halts. On success it returns nil
+// and the caller proceeds. Neither caller needs the loaded
+// record (the append paths take their state from the inbound
+// request body), so the helper does not return it; the "where"
+// argument tags log lines so the two callers don't collide.
+func (s *Server) authorizeJourneyVehicleOwner(w http.ResponseWriter, r *http.Request, sessionUserID, journeyID, vehicleID, where string) error {
 	stored, err := s.cfg.VehicleStore.JourneyVehicleByID(r.Context(), journeyID, vehicleID)
 	if err != nil {
 		if errors.Is(err, storage.ErrJourneyVehicleNotFound) {
 			writeProblem(w, s.logger, http.StatusNotFound, "vehicle_not_found",
 				"No vehicle exists at this journey and id.")
-			return storage.JourneyVehicleRecord{}, err
+			return err
 		}
 		s.logger.Error("vehicles: "+where+" precheck failed", "error", err, "journey_id", journeyID, "vehicle_id", vehicleID)
 		writeProblem(w, s.logger, http.StatusInternalServerError, "internal_error",
 			"Could not look up journey vehicle.")
-		return storage.JourneyVehicleRecord{}, err
+		return err
 	}
 	if stored.OwnerUserID != sessionUserID {
 		s.logger.Warn("vehicles: "+where+" by non-owner rejected",
@@ -586,7 +588,7 @@ func (s *Server) loadAndAuthorizeJourneyVehicleOwner(w http.ResponseWriter, r *h
 		)
 		writeProblem(w, s.logger, http.StatusForbidden, "owner_mismatch",
 			"Only the vehicle's recorded owner may publish new revisions.")
-		return storage.JourneyVehicleRecord{}, errors.New("owner mismatch")
+		return errors.New("owner mismatch")
 	}
 	// Owner-departure freeze: per the protocol's locked-in
 	// decision ([opencaravan-go/docs/vehicles.md], "Edit Rights
@@ -599,7 +601,7 @@ func (s *Server) loadAndAuthorizeJourneyVehicleOwner(w http.ResponseWriter, r *h
 	if s.cfg.JourneyStore == nil {
 		writeProblem(w, s.logger, http.StatusServiceUnavailable, "journey_unavailable",
 			"This server is not configured to verify journey participation.")
-		return storage.JourneyVehicleRecord{}, errors.New("journey store not wired")
+		return errors.New("journey store not wired")
 	}
 	if _, err := s.cfg.JourneyStore.JourneyParticipantByUserAndJourney(r.Context(), stored.OwnerUserID, journeyID); err != nil {
 		if errors.Is(err, storage.ErrJourneyParticipantNotFound) {
@@ -610,15 +612,15 @@ func (s *Server) loadAndAuthorizeJourneyVehicleOwner(w http.ResponseWriter, r *h
 			)
 			writeProblem(w, s.logger, http.StatusForbidden, "owner_not_a_participant",
 				"The vehicle's owner is no longer a journey participant; the vehicle is frozen.")
-			return storage.JourneyVehicleRecord{}, err
+			return err
 		}
 		s.logger.Error("vehicles: "+where+" owner-participant lookup failed", "error", err,
 			"journey_id", journeyID, "owner_user_id", stored.OwnerUserID)
 		writeProblem(w, s.logger, http.StatusInternalServerError, "internal_error",
 			"Could not verify journey participation.")
-		return storage.JourneyVehicleRecord{}, err
+		return err
 	}
-	return stored, nil
+	return nil
 }
 
 // journeyVehicleResponseFromRecord decodes the persisted

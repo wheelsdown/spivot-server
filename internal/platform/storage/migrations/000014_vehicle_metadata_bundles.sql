@@ -1,8 +1,13 @@
 -- Migration 000014 brings the schema in line with OpenCaravan
 -- 0.2-draft: the journey-scoped Vehicle becomes a metadata-only
--- signed bundle (authorization moves to VehicleACL exclusively),
--- AvatarImage/BannerImage become content-addressed BlobRefs, and
--- a new blobs table backs the protocol's blob storage layer.
+-- signed bundle (authorization moves to VehicleACL exclusively)
+-- and AvatarImage/BannerImage become content-addressed BlobRefs
+-- via the denormalized avatar_blob_hash / banner_blob_hash
+-- columns added below. The blobs table itself (and the
+-- POST/GET/HEAD /v1/blobs endpoints that mint and serve those
+-- refs) lands in a follow-up migration; this one ships only the
+-- schema needed to STORE bundle hash references, not to host
+-- the bytes.
 --
 -- Migration shape: DROP + CREATE rather than ALTER TABLE for
 -- journey_vehicles and garage_vehicles. SQLite's ALTER TABLE
