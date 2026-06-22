@@ -185,6 +185,15 @@ func (s *Server) handleDriverAttestationRecord(w http.ResponseWriter, r *http.Re
 				"Could not compute canonical attestation bytes.")
 			return
 		}
+		// Cryptographic signature check happens BEFORE classify so
+		// a tampered or wrong-key attestation is rejected without
+		// burning the cost of resolving the ACL-at-time. The
+		// signer must be the driver (KeyID's cert.user_id ==
+		// attestation.driver_user_id).
+		if !verifySignedPayload(w, r, s.logger, s.cfg.IntegrityVerifier, s.cfg.VehicleStore,
+			canonical, *attestation.Integrity, string(attestation.DriverUserID), "attestations") {
+			return
+		}
 		resolver := &driverAttestationTrustResolver{
 			store:              s.cfg.VehicleStore,
 			journeyParticipant: s.cfg.JourneyStore,

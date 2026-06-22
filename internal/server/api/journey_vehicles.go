@@ -345,6 +345,18 @@ func (s *Server) handleJourneyVehicleACLAppend(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	// Verify the signing client app's enrolled cert belongs to
+	// acl.owner_user_id AND the signature verifies. Matches the
+	// shape used by Vehicle create — the cert-vs-owner check
+	// closes the gap between "session caller claims to own this
+	// vehicle" (already enforced by stored.OwnerUserID == id.UserID
+	// above) and "the cert that signed this ACL actually belongs
+	// to that owner."
+	if !verifySignedPayload(w, r, s.logger, s.cfg.IntegrityVerifier, s.cfg.VehicleStore,
+		canonical, *acl.Integrity, string(acl.OwnerUserID), "vehicles-acl") {
+		return
+	}
+
 	rev, err := s.cfg.VehicleStore.AppendJourneyVehicleACL(r.Context(), storage.JourneyVehicleACLAppendParams{
 		JourneyVehicleID: vehicleID,
 		ACL:              acl,

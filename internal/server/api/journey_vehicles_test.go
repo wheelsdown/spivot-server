@@ -248,12 +248,8 @@ func TestJourneyVehicleACLAppendHappyPath(t *testing.T) {
 			Kind: opencaravan.VehicleEmergencyRuleNone,
 		},
 		EffectiveTime: time.Now().Add(time.Minute).UTC(),
-		Integrity: &opencaravan.Integrity{
-			Algorithm: "ecdsa-p256-sha256",
-			KeyID:     id.UserID,
-			Signature: "test-acl-signature",
-		},
 	}
+	env.signVehicleACL(t, id, &acl)
 	rec := env.post(t,
 		"/v1/journeys/"+journey.ID+"/vehicles/"+string(payload.ID)+"/acl-revisions",
 		acl, id, writeMac)
@@ -311,12 +307,8 @@ func TestJourneyVehicleACLAppendVehicleIDMismatchRejected(t *testing.T) {
 		ACLVersion:        2,
 		AuthorizedDrivers: payload.AuthorizedDrivers,
 		EffectiveTime:     time.Now().UTC(),
-		Integrity: &opencaravan.Integrity{
-			Algorithm: "ecdsa-p256-sha256",
-			KeyID:     id.UserID,
-			Signature: "x",
-		},
 	}
+	env.signVehicleACL(t, id, &acl)
 	rec := env.post(t,
 		"/v1/journeys/"+journey.ID+"/vehicles/"+string(payload.ID)+"/acl-revisions",
 		acl, id, writeMac)
@@ -357,12 +349,8 @@ func TestJourneyVehicleACLAppendRejectedForNonOwner(t *testing.T) {
 		ACLVersion:        2,
 		AuthorizedDrivers: payload.AuthorizedDrivers,
 		EffectiveTime:     time.Now().Add(time.Minute).UTC(),
-		Integrity: &opencaravan.Integrity{
-			Algorithm: "ecdsa-p256-sha256",
-			KeyID:     other.UserID,
-			Signature: "spoofed-signature",
-		},
 	}
+	env.signVehicleACL(t, other, &spoofed)
 	rec := env.post(t,
 		"/v1/journeys/"+journey.ID+"/vehicles/"+string(payload.ID)+"/acl-revisions",
 		spoofed, other, otherMac)
@@ -456,6 +444,47 @@ func TestJourneyVehicleCreateRejectsSignerOwnerMismatch(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "signer_owner_mismatch") {
 		t.Fatalf("expected signer_owner_mismatch problem code; body=%s", rec.Body.String())
+	}
+}
+
+func TestJourneyVehicleACLAppendRejectsTamperedSignature(t *testing.T) {
+	env := newJourneyEnv(t)
+	id := env.mintIdentity(t)
+	journey := env.mustCreateJourney(t, id, "Pacific Coast Drive")
+	jid, err := opencaravan.ParseUUID(journey.ID)
+	if err != nil {
+		t.Fatalf("ParseUUID: %v", err)
+	}
+	writeMac := env.issueSessionMacaroon(t, id, jid, opencaravan.SessionActionJourneyWrite)
+
+	payload := env.newSignedVehiclePayload(t, id)
+	if rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", payload, id, writeMac); rec.Code != http.StatusCreated {
+		t.Fatalf("create: got %d", rec.Code)
+	}
+
+	newDriver, err := opencaravan.NewUUID()
+	if err != nil {
+		t.Fatalf("NewUUID: %v", err)
+	}
+	acl := opencaravan.VehicleACL{
+		VehicleID:         payload.ID,
+		OwnerUserID:       opencaravan.UUID(id.UserID),
+		ACLVersion:        2,
+		AuthorizedDrivers: []opencaravan.UUID{opencaravan.UUID(id.UserID), newDriver},
+		EffectiveTime:     time.Now().Add(time.Minute).UTC(),
+	}
+	env.signVehicleACL(t, id, &acl)
+	// Tamper: bump ACL version without re-signing.
+	acl.ACLVersion = 99
+
+	rec := env.post(t,
+		"/v1/journeys/"+journey.ID+"/vehicles/"+string(payload.ID)+"/acl-revisions",
+		acl, id, writeMac)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status: got %d want 403; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "signature_invalid") {
+		t.Fatalf("expected signature_invalid problem code; body=%s", rec.Body.String())
 	}
 }
 

@@ -215,6 +215,32 @@ func (e *journeyEnv) signVehicle(t *testing.T, id middleware.Identity, vehicle *
 	vehicle.Integrity = &envelope
 }
 
+// signVehicleACL replaces acl.Integrity with a freshly-signed
+// envelope produced by the supplied identity.
+func (e *journeyEnv) signVehicleACL(t *testing.T, id middleware.Identity, acl *opencaravan.VehicleACL) {
+	t.Helper()
+	acl.Integrity = nil
+	canonical, err := acl.CanonicalEncoding()
+	if err != nil {
+		t.Fatalf("ACL CanonicalEncoding: %v", err)
+	}
+	envelope := e.signCanonical(t, id, canonical)
+	acl.Integrity = &envelope
+}
+
+// signDriverAttestation replaces attestation.Integrity with a
+// freshly-signed envelope produced by the supplied identity.
+func (e *journeyEnv) signDriverAttestation(t *testing.T, id middleware.Identity, attestation *opencaravan.DriverAttestation) {
+	t.Helper()
+	attestation.Integrity = nil
+	canonical, err := attestation.CanonicalEncoding()
+	if err != nil {
+		t.Fatalf("DriverAttestation CanonicalEncoding: %v", err)
+	}
+	envelope := e.signCanonical(t, id, canonical)
+	attestation.Integrity = &envelope
+}
+
 // issueSessionMacaroon mints a session macaroon for the supplied
 // identity, journey, and action. Encoded as the base64url string
 // callers put on Authorization: Macaroon.

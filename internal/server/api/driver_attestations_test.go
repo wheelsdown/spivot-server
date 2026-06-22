@@ -37,25 +37,38 @@ func uploadVehicleFor(t *testing.T, env *journeyEnv, owner middleware.Identity, 
 	return payload.ID
 }
 
-func newSignedAttestationPayload(t *testing.T, vehicleID opencaravan.UUID, driverID string, effective time.Time, aclVersion int, priorHash *string) opencaravan.DriverAttestation {
+// newSignedAttestationPayload builds a DriverAttestation owned
+// by `driver` (DriverUserID set + signed with that identity's
+// enrolled key).
+//
+// For tests that need the SIGNER and CLAIMED driver to differ
+// (driver-mismatch tests like
+// TestDriverAttestationRecordRejectsSignerDriverMismatch), build
+// the payload with the claimed driver passed here, then call
+// env.signDriverAttestation(t, otherIdentity, &payload) to
+// re-sign with a different identity's key. The re-sign preserves
+// DriverUserID while replacing Integrity, so the signature stays
+// cryptographically valid (over the unchanged canonical bytes)
+// and the cert-vs-driver cross-check at the handler is what
+// fires. Mutating DriverUserID after signing would invalidate
+// the signature and short-circuit to ErrSignatureInvalid before
+// the cross-check can run — useless for testing the cross-check.
+func (e *journeyEnv) newSignedAttestationPayload(t *testing.T, vehicleID opencaravan.UUID, driver middleware.Identity, effective time.Time, aclVersion int, priorHash *string) opencaravan.DriverAttestation {
 	t.Helper()
 	segmentID, err := opencaravan.NewUUID()
 	if err != nil {
 		t.Fatalf("NewUUID segment: %v", err)
 	}
-	return opencaravan.DriverAttestation{
+	a := opencaravan.DriverAttestation{
 		VehicleID:            vehicleID,
 		SegmentID:            segmentID,
-		DriverUserID:         opencaravan.UUID(driverID),
+		DriverUserID:         opencaravan.UUID(driver.UserID),
 		EffectiveTime:        effective,
 		ACLVersionConsulted:  aclVersion,
 		PriorAttestationHash: priorHash,
-		Integrity: &opencaravan.Integrity{
-			Algorithm: "ecdsa-p256-sha256",
-			KeyID:     driverID,
-			Signature: "test-attestation-signature",
-		},
 	}
+	e.signDriverAttestation(t, driver, &a)
+	return a
 }
 
 // joinJourneyAsParticipant inserts a journey_participants row in
@@ -106,7 +119,7 @@ func TestDriverAttestationRecordAuthorizedHappyPath(t *testing.T) {
 	// Owner is implicitly authorized — they should always classify
 	// as authorized regardless of ACL contents.
 	writeMac := env.issueSessionMacaroon(t, owner, jid, opencaravan.SessionActionJourneyWrite)
-	attestation := newSignedAttestationPayload(t, vehicleID, owner.UserID,
+	attestation := env.newSignedAttestationPayload(t, vehicleID, owner,
 		time.Now().Add(time.Minute).UTC(), 1, nil)
 	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles/"+string(vehicleID)+"/driver-attestations",
 		attestation, owner, writeMac)
@@ -145,7 +158,7 @@ func TestDriverAttestationRecordEmergencyFallbackPath(t *testing.T) {
 	joinJourneyAsParticipant(t, env, other, journey)
 
 	writeMac := env.issueSessionMacaroon(t, other, jid, opencaravan.SessionActionJourneyWrite)
-	attestation := newSignedAttestationPayload(t, vehicleID, other.UserID,
+	attestation := env.newSignedAttestationPayload(t, vehicleID, other,
 		time.Now().Add(time.Minute).UTC(), 1, nil)
 	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles/"+string(vehicleID)+"/driver-attestations",
 		attestation, other, writeMac)
@@ -179,7 +192,7 @@ func TestDriverAttestationRecordACLViolationPath(t *testing.T) {
 	})
 
 	writeMac := env.issueSessionMacaroon(t, other, jid, opencaravan.SessionActionJourneyWrite)
-	attestation := newSignedAttestationPayload(t, vehicleID, other.UserID,
+	attestation := env.newSignedAttestationPayload(t, vehicleID, other,
 		time.Now().Add(time.Minute).UTC(), 1, nil)
 	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles/"+string(vehicleID)+"/driver-attestations",
 		attestation, other, writeMac)
@@ -207,7 +220,7 @@ func TestDriverAttestationRecordReplayReturns200(t *testing.T) {
 
 	writeMac := env.issueSessionMacaroon(t, owner, jid, opencaravan.SessionActionJourneyWrite)
 	effective := time.Now().Add(time.Minute).UTC()
-	first := newSignedAttestationPayload(t, vehicleID, owner.UserID, effective, 1, nil)
+	first := env.newSignedAttestationPayload(t, vehicleID, owner, effective, 1, nil)
 	if rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles/"+string(vehicleID)+"/driver-attestations",
 		first, owner, writeMac); rec.Code != http.StatusCreated {
 		t.Fatalf("first: got %d", rec.Code)
@@ -215,7 +228,7 @@ func TestDriverAttestationRecordReplayReturns200(t *testing.T) {
 
 	// Replay with the same effective_time (gossip retry) — must
 	// return 200 OK with the existing record.
-	second := newSignedAttestationPayload(t, vehicleID, owner.UserID, effective, 1, nil)
+	second := env.newSignedAttestationPayload(t, vehicleID, owner, effective, 1, nil)
 	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles/"+string(vehicleID)+"/driver-attestations",
 		second, owner, writeMac)
 	if rec.Code != http.StatusOK {
@@ -247,7 +260,7 @@ func TestDriverAttestationRecordReplayPreservesOriginalTrust(t *testing.T) {
 	otherMac := env.issueSessionMacaroon(t, other, jid, opencaravan.SessionActionJourneyWrite)
 
 	effective := time.Now().Add(time.Minute).UTC()
-	first := newSignedAttestationPayload(t, vehicleID, other.UserID, effective, 1, nil)
+	first := env.newSignedAttestationPayload(t, vehicleID, other, effective, 1, nil)
 	if rec := env.post(t,
 		"/v1/journeys/"+journey.ID+"/vehicles/"+string(vehicleID)+"/driver-attestations",
 		first, other, otherMac); rec.Code != http.StatusCreated {
@@ -264,12 +277,8 @@ func TestDriverAttestationRecordReplayPreservesOriginalTrust(t *testing.T) {
 		ACLVersion:        2,
 		AuthorizedDrivers: []opencaravan.UUID{opencaravan.UUID(owner.UserID), opencaravan.UUID(other.UserID)},
 		EffectiveTime:     time.Now().Add(2 * time.Minute).UTC(),
-		Integrity: &opencaravan.Integrity{
-			Algorithm: "ecdsa-p256-sha256",
-			KeyID:     owner.UserID,
-			Signature: "test-acl-revision",
-		},
 	}
+	env.signVehicleACL(t, owner, &acl)
 	if rec := env.post(t,
 		"/v1/journeys/"+journey.ID+"/vehicles/"+string(vehicleID)+"/acl-revisions",
 		acl, owner, ownerWriteMac); rec.Code != http.StatusCreated {
@@ -279,7 +288,7 @@ func TestDriverAttestationRecordReplayPreservesOriginalTrust(t *testing.T) {
 	// Replay the original attestation — must return the original
 	// "acl_violation" classification, NOT a freshly-recomputed
 	// "authorized".
-	replay := newSignedAttestationPayload(t, vehicleID, other.UserID, effective, 1, nil)
+	replay := env.newSignedAttestationPayload(t, vehicleID, other, effective, 1, nil)
 	rec := env.post(t,
 		"/v1/journeys/"+journey.ID+"/vehicles/"+string(vehicleID)+"/driver-attestations",
 		replay, other, otherMac)
@@ -308,7 +317,7 @@ func TestDriverAttestationRecordDriverMismatchRejected(t *testing.T) {
 
 	// Caller is `other` but they claim to BE the owner. Must reject 403.
 	otherMac := env.issueSessionMacaroon(t, other, jid, opencaravan.SessionActionJourneyWrite)
-	spoofed := newSignedAttestationPayload(t, vehicleID, owner.UserID,
+	spoofed := env.newSignedAttestationPayload(t, vehicleID, owner,
 		time.Now().Add(time.Minute).UTC(), 1, nil)
 	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles/"+string(vehicleID)+"/driver-attestations",
 		spoofed, other, otherMac)
@@ -332,7 +341,7 @@ func TestDriverAttestationRecordVehicleIDMismatchRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewUUID: %v", err)
 	}
-	bad := newSignedAttestationPayload(t, wrongID, owner.UserID,
+	bad := env.newSignedAttestationPayload(t, wrongID, owner,
 		time.Now().Add(time.Minute).UTC(), 1, nil)
 	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles/"+string(vehicleID)+"/driver-attestations",
 		bad, owner, writeMac)
@@ -352,7 +361,7 @@ func TestDriverAttestationRecordMissingIntegrityRejected(t *testing.T) {
 	vehicleID := uploadVehicleFor(t, env, owner, journey, nil)
 
 	writeMac := env.issueSessionMacaroon(t, owner, jid, opencaravan.SessionActionJourneyWrite)
-	bad := newSignedAttestationPayload(t, vehicleID, owner.UserID,
+	bad := env.newSignedAttestationPayload(t, vehicleID, owner,
 		time.Now().Add(time.Minute).UTC(), 1, nil)
 	bad.Integrity = nil
 	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles/"+string(vehicleID)+"/driver-attestations",
@@ -377,7 +386,7 @@ func TestDriverAttestationRecordNoACLAtEffectiveTimeRejected(t *testing.T) {
 	// handler must reject with 400.
 	writeMac := env.issueSessionMacaroon(t, owner, jid, opencaravan.SessionActionJourneyWrite)
 	tooEarly := time.Now().Add(-365 * 24 * time.Hour).UTC()
-	bad := newSignedAttestationPayload(t, vehicleID, owner.UserID, tooEarly, 1, nil)
+	bad := env.newSignedAttestationPayload(t, vehicleID, owner, tooEarly, 1, nil)
 	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles/"+string(vehicleID)+"/driver-attestations",
 		bad, owner, writeMac)
 	if rec.Code != http.StatusBadRequest {
@@ -396,7 +405,7 @@ func TestDriverAttestationListReturnsRecorded(t *testing.T) {
 	vehicleID := uploadVehicleFor(t, env, owner, journey, nil)
 
 	writeMac := env.issueSessionMacaroon(t, owner, jid, opencaravan.SessionActionJourneyWrite)
-	attestation := newSignedAttestationPayload(t, vehicleID, owner.UserID,
+	attestation := env.newSignedAttestationPayload(t, vehicleID, owner,
 		time.Now().Add(time.Minute).UTC(), 1, nil)
 	if rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles/"+string(vehicleID)+"/driver-attestations",
 		attestation, owner, writeMac); rec.Code != http.StatusCreated {
@@ -418,6 +427,63 @@ func TestDriverAttestationListReturnsRecorded(t *testing.T) {
 	}
 }
 
+func TestDriverAttestationRecordRejectsTamperedSignature(t *testing.T) {
+	env := newJourneyEnv(t)
+	owner := env.mintIdentity(t)
+	journey := env.mustCreateJourney(t, owner, "Pacific Coast Drive")
+	jid, err := opencaravan.ParseUUID(journey.ID)
+	if err != nil {
+		t.Fatalf("ParseUUID: %v", err)
+	}
+	vehicleID := uploadVehicleFor(t, env, owner, journey, &opencaravan.VehicleEmergencyRule{
+		Kind: opencaravan.VehicleEmergencyRuleAnyJourneyParticipant,
+	})
+
+	writeMac := env.issueSessionMacaroon(t, owner, jid, opencaravan.SessionActionJourneyWrite)
+	attestation := env.newSignedAttestationPayload(t, vehicleID, owner,
+		time.Now().Add(time.Minute).UTC(), 1, nil)
+	// Tamper: change ACL version after signing.
+	attestation.ACLVersionConsulted = 999
+
+	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles/"+string(vehicleID)+"/driver-attestations",
+		attestation, owner, writeMac)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status: got %d want 403; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDriverAttestationRecordRejectsSignerDriverMismatch(t *testing.T) {
+	// driver = A, but signed by B's key. The cert-vs-driver
+	// cross-check must fire even though the signature itself is
+	// cryptographically valid (signed properly by B's key).
+	env := newJourneyEnv(t)
+	owner := env.mintIdentity(t)
+	other := env.mintIdentity(t)
+	journey := env.mustCreateJourney(t, owner, "Pacific Coast Drive")
+	jid, err := opencaravan.ParseUUID(journey.ID)
+	if err != nil {
+		t.Fatalf("ParseUUID: %v", err)
+	}
+	vehicleID := uploadVehicleFor(t, env, owner, journey, &opencaravan.VehicleEmergencyRule{
+		Kind: opencaravan.VehicleEmergencyRuleAnyJourneyParticipant,
+	})
+	joinJourneyAsParticipant(t, env, other, journey)
+
+	// Build the attestation claiming `other` is the driver, then
+	// re-sign with `owner`'s key. signDriverAttestation preserves
+	// DriverUserID; only Integrity is replaced.
+	otherMac := env.issueSessionMacaroon(t, other, jid, opencaravan.SessionActionJourneyWrite)
+	attestation := env.newSignedAttestationPayload(t, vehicleID, other,
+		time.Now().Add(time.Minute).UTC(), 1, nil)
+	env.signDriverAttestation(t, owner, &attestation)
+
+	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles/"+string(vehicleID)+"/driver-attestations",
+		attestation, other, otherMac)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status: got %d want 403; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestDriverAttestationForkSiblingsExposedOnRecord(t *testing.T) {
 	env := newJourneyEnv(t)
 	owner := env.mintIdentity(t)
@@ -436,7 +502,7 @@ func TestDriverAttestationForkSiblingsExposedOnRecord(t *testing.T) {
 
 	// Owner records first attestation chaining to the predecessor.
 	ownerMac := env.issueSessionMacaroon(t, owner, jid, opencaravan.SessionActionJourneyWrite)
-	first := newSignedAttestationPayload(t, vehicleID, owner.UserID,
+	first := env.newSignedAttestationPayload(t, vehicleID, owner,
 		time.Now().Add(time.Minute).UTC(), 1, &priorHash)
 	if rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles/"+string(vehicleID)+"/driver-attestations",
 		first, owner, ownerMac); rec.Code != http.StatusCreated {
@@ -445,7 +511,7 @@ func TestDriverAttestationForkSiblingsExposedOnRecord(t *testing.T) {
 
 	// Other claims the SAME predecessor — that's a fork.
 	otherMac := env.issueSessionMacaroon(t, other, jid, opencaravan.SessionActionJourneyWrite)
-	second := newSignedAttestationPayload(t, vehicleID, other.UserID,
+	second := env.newSignedAttestationPayload(t, vehicleID, other,
 		time.Now().Add(2*time.Minute).UTC(), 1, &priorHash)
 	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles/"+string(vehicleID)+"/driver-attestations",
 		second, other, otherMac)
