@@ -282,7 +282,3 @@ func TestGarageVehicleCreateRejectsTamperedSignature(t *testing.T) {
 		t.Fatalf("expected signature_invalid; body=%s", rec.Body.String())
 	}
 }
-
-// Silence unused-import warning if the only consumer of middleware
-// in this file is the test-helper signature.
-var _ = middleware.Identity{}

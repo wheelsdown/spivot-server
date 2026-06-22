@@ -453,7 +453,3 @@ func TestGarageOwnershipAcceptanceRejectsTamperedSignature(t *testing.T) {
 		t.Fatalf("status: got %d want 403; body=%s", rec.Code, rec.Body.String())
 	}
 }
-
-// Ensure middleware import isn't dropped by goimports once the
-// signer-mismatch test below sticks around.
-var _ = middleware.Identity{}
