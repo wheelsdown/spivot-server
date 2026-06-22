@@ -25,8 +25,11 @@ func uploadVehicleFor(t *testing.T, env *journeyEnv, owner middleware.Identity, 
 		t.Fatalf("ParseUUID: %v", err)
 	}
 	mac := env.issueSessionMacaroon(t, owner, jid, opencaravan.SessionActionJourneyWrite)
-	payload := newSignedVehiclePayload(t, owner.UserID)
+	payload := env.newSignedVehiclePayload(t, owner)
 	payload.EmergencyRule = emergency
+	// Re-sign after the EmergencyRule mutation since the signature
+	// produced by newSignedVehiclePayload covers the default rule.
+	env.signVehicle(t, owner, &payload)
 	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", payload, owner, mac)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("upload vehicle: got %d, body=%s", rec.Code, rec.Body.String())

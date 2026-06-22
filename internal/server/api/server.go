@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/opencaravan/opencaravan-go"
+	"github.com/wheelsdown/spivot-server/internal/platform/auth/integrity"
 	"github.com/wheelsdown/spivot-server/internal/platform/auth/macaroon"
 	"github.com/wheelsdown/spivot-server/internal/platform/buildinfo"
 	"github.com/wheelsdown/spivot-server/internal/platform/identity"
@@ -100,6 +101,12 @@ type VehicleStore interface {
 	// attestation trust evaluator to resolve "what could the
 	// driver have known about the ACL at handoff time?"
 	JourneyVehicleACLAt(ctx context.Context, journeyVehicleID string, at time.Time) (storage.JourneyVehicleACLRevision, error)
+	// EnrolledCertByClientAppID returns the enrolled client app's
+	// cert (with parsed *x509.Certificate carrying the public
+	// key) so the handler can cross-check the signer's identity
+	// against the payload's claimed owner before — and after —
+	// signature verification.
+	EnrolledCertByClientAppID(ctx context.Context, clientAppID string) (storage.EnrolledCertRecord, error)
 }
 
 // DriverAttestationStore is the narrow subset of storage
@@ -221,6 +228,16 @@ type Config struct {
 	// when not wired so a misconfigured deployment surfaces
 	// explicitly rather than silently 401-ing.
 	MacaroonIssuer *macaroon.Issuer
+	// IntegrityVerifier verifies ecdsa-p256-sha256 signatures
+	// over OpenCaravan signed payloads (Vehicle, VehicleACL,
+	// DriverAttestation, Garage, GarageVehicle,
+	// GarageOwnershipAcceptance). When nil, handlers that
+	// perform signature verification respond 503 so a
+	// misconfigured deployment surfaces explicitly rather than
+	// silently accepting unverified payloads. Production wires
+	// an [*integrity.Verifier] backed by a store-backed key
+	// resolver.
+	IntegrityVerifier *integrity.Verifier
 	// MacaroonVerifier backs the [middleware.AttachSession] broad
 	// attach pass. When nil, [Server.Handler] omits the attach
 	// pass and no request ever carries a context-attached

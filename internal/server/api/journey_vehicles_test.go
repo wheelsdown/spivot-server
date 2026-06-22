@@ -3,18 +3,25 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/opencaravan/opencaravan-go"
+
+	"github.com/wheelsdown/spivot-server/internal/server/middleware"
 )
 
-// newSignedVehiclePayload builds a Vehicle the handler will accept:
-// owned by ownerID, signed (Integrity envelope present), capacity
-// and ACL version filled. Signature bytes are placeholder — Phase 2
-// does not verify them; the test harness exercises the structural
-// + identity path that Phase 2 actually enforces.
-func newSignedVehiclePayload(t *testing.T, ownerID string) opencaravan.Vehicle {
+// newSignedVehiclePayload builds a Vehicle owned by the supplied
+// identity and signs it with that identity's enrolled signing key
+// (set up by [journeyEnv.mintIdentity]). The owner argument is an
+// identity (not just a UUID) so the helper can produce a real
+// ecdsa-p256-sha256 signature the production handler will accept.
+//
+// For tests that want a vehicle owned by user A but submitted by
+// user B (e.g., session-owner mismatch test), pass A's identity
+// here and post via B's identity; the helper signs as A regardless.
+func (e *journeyEnv) newSignedVehiclePayload(t *testing.T, owner middleware.Identity) opencaravan.Vehicle {
 	t.Helper()
 	vehicleID, err := opencaravan.NewUUID()
 	if err != nil {
@@ -24,26 +31,23 @@ func newSignedVehiclePayload(t *testing.T, ownerID string) opencaravan.Vehicle {
 	if err != nil {
 		t.Fatalf("NewUUID authorized: %v", err)
 	}
-	return opencaravan.Vehicle{
+	v := opencaravan.Vehicle{
 		ID:                vehicleID,
 		DisplayName:       "Riley's Subaru",
 		Make:              "Subaru",
 		Model:             "Outback",
 		ModelYear:         2022,
 		Color:             "Autumn Green",
-		OwnerUserID:       opencaravan.UUID(ownerID),
+		OwnerUserID:       opencaravan.UUID(owner.UserID),
 		Capacity:          5,
-		AuthorizedDrivers: []opencaravan.UUID{opencaravan.UUID(ownerID), authorized},
+		AuthorizedDrivers: []opencaravan.UUID{opencaravan.UUID(owner.UserID), authorized},
 		ACLVersion:        1,
 		EmergencyRule: &opencaravan.VehicleEmergencyRule{
 			Kind: opencaravan.VehicleEmergencyRuleAnyJourneyParticipant,
 		},
-		Integrity: &opencaravan.Integrity{
-			Algorithm: "ecdsa-p256-sha256",
-			KeyID:     ownerID,
-			Signature: "test-signature-placeholder",
-		},
 	}
+	e.signVehicle(t, owner, &v)
+	return v
 }
 
 func TestJourneyVehicleCreateHappyPath(t *testing.T) {
@@ -56,7 +60,7 @@ func TestJourneyVehicleCreateHappyPath(t *testing.T) {
 	}
 	mac := env.issueSessionMacaroon(t, id, jid, opencaravan.SessionActionJourneyWrite)
 
-	payload := newSignedVehiclePayload(t, id.UserID)
+	payload := env.newSignedVehiclePayload(t, id)
 	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", payload, id, mac)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status: got %d want 201; body=%s", rec.Code, rec.Body.String())
@@ -91,7 +95,7 @@ func TestJourneyVehicleCreateOwnerMismatchRejected(t *testing.T) {
 	mac := env.issueSessionMacaroon(t, caller, jid, opencaravan.SessionActionJourneyWrite)
 
 	// Payload attributes vehicle to other.UserID, but caller is the session.
-	payload := newSignedVehiclePayload(t, other.UserID)
+	payload := env.newSignedVehiclePayload(t, other)
 	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", payload, caller, mac)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status: got %d want 403; body=%s", rec.Code, rec.Body.String())
@@ -108,7 +112,7 @@ func TestJourneyVehicleCreateRequiresWriteAction(t *testing.T) {
 	}
 	// journey.read instead of journey.write — middleware must reject.
 	mac := env.issueSessionMacaroon(t, id, jid, opencaravan.SessionActionJourneyRead)
-	payload := newSignedVehiclePayload(t, id.UserID)
+	payload := env.newSignedVehiclePayload(t, id)
 	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", payload, id, mac)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status: got %d want 401; body=%s", rec.Code, rec.Body.String())
@@ -124,7 +128,7 @@ func TestJourneyVehicleCreateRejectsMissingIntegrity(t *testing.T) {
 		t.Fatalf("ParseUUID: %v", err)
 	}
 	mac := env.issueSessionMacaroon(t, id, jid, opencaravan.SessionActionJourneyWrite)
-	payload := newSignedVehiclePayload(t, id.UserID)
+	payload := env.newSignedVehiclePayload(t, id)
 	payload.Integrity = nil
 
 	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", payload, id, mac)
@@ -143,12 +147,12 @@ func TestJourneyVehicleCreateDuplicateOwnerConflict(t *testing.T) {
 	}
 	mac := env.issueSessionMacaroon(t, id, jid, opencaravan.SessionActionJourneyWrite)
 
-	first := newSignedVehiclePayload(t, id.UserID)
+	first := env.newSignedVehiclePayload(t, id)
 	if rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", first, id, mac); rec.Code != http.StatusCreated {
 		t.Fatalf("first create: got %d, body=%s", rec.Code, rec.Body.String())
 	}
 
-	second := newSignedVehiclePayload(t, id.UserID)
+	second := env.newSignedVehiclePayload(t, id)
 	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", second, id, mac)
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("second create: got %d want 409; body=%s", rec.Code, rec.Body.String())
@@ -166,7 +170,7 @@ func TestJourneyVehicleGetAndListRoundTrip(t *testing.T) {
 	writeMac := env.issueSessionMacaroon(t, id, jid, opencaravan.SessionActionJourneyWrite)
 	readMac := env.issueSessionMacaroon(t, id, jid, opencaravan.SessionActionJourneyRead)
 
-	payload := newSignedVehiclePayload(t, id.UserID)
+	payload := env.newSignedVehiclePayload(t, id)
 	if rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", payload, id, writeMac); rec.Code != http.StatusCreated {
 		t.Fatalf("create: got %d, body=%s", rec.Code, rec.Body.String())
 	}
@@ -226,7 +230,7 @@ func TestJourneyVehicleACLAppendHappyPath(t *testing.T) {
 	}
 	writeMac := env.issueSessionMacaroon(t, id, jid, opencaravan.SessionActionJourneyWrite)
 
-	payload := newSignedVehiclePayload(t, id.UserID)
+	payload := env.newSignedVehiclePayload(t, id)
 	if rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", payload, id, writeMac); rec.Code != http.StatusCreated {
 		t.Fatalf("create: got %d, body=%s", rec.Code, rec.Body.String())
 	}
@@ -292,7 +296,7 @@ func TestJourneyVehicleACLAppendVehicleIDMismatchRejected(t *testing.T) {
 	}
 	writeMac := env.issueSessionMacaroon(t, id, jid, opencaravan.SessionActionJourneyWrite)
 
-	payload := newSignedVehiclePayload(t, id.UserID)
+	payload := env.newSignedVehiclePayload(t, id)
 	if rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", payload, id, writeMac); rec.Code != http.StatusCreated {
 		t.Fatalf("create: got %d", rec.Code)
 	}
@@ -337,7 +341,7 @@ func TestJourneyVehicleACLAppendRejectedForNonOwner(t *testing.T) {
 
 	// Owner uploads the vehicle.
 	ownerMac := env.issueSessionMacaroon(t, owner, jid, opencaravan.SessionActionJourneyWrite)
-	payload := newSignedVehiclePayload(t, owner.UserID)
+	payload := env.newSignedVehiclePayload(t, owner)
 	if rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", payload, owner, ownerMac); rec.Code != http.StatusCreated {
 		t.Fatalf("owner create: got %d, body=%s", rec.Code, rec.Body.String())
 	}
@@ -367,6 +371,94 @@ func TestJourneyVehicleACLAppendRejectedForNonOwner(t *testing.T) {
 	}
 }
 
+func TestJourneyVehicleCreateRejectsTamperedSignature(t *testing.T) {
+	// Sign a payload, then mutate a payload field — the signature
+	// no longer covers the post-mutation canonical bytes, so the
+	// verifier must reject with 403.
+	env := newJourneyEnv(t)
+	id := env.mintIdentity(t)
+	journey := env.mustCreateJourney(t, id, "Pacific Coast Drive")
+	jid, err := opencaravan.ParseUUID(journey.ID)
+	if err != nil {
+		t.Fatalf("ParseUUID: %v", err)
+	}
+	mac := env.issueSessionMacaroon(t, id, jid, opencaravan.SessionActionJourneyWrite)
+
+	payload := env.newSignedVehiclePayload(t, id)
+	// Tamper: change the display name without re-signing.
+	payload.DisplayName = "Tampered Vehicle Name"
+
+	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", payload, id, mac)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status: got %d want 403 (tampered signature); body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "signature_invalid") {
+		t.Fatalf("expected signature_invalid problem code; body=%s", rec.Body.String())
+	}
+}
+
+func TestJourneyVehicleCreateRejectsUnknownKeyID(t *testing.T) {
+	// Sign with a valid key but set Integrity.KeyID to a UUID
+	// that isn't enrolled — the cert lookup must fail with 403.
+	env := newJourneyEnv(t)
+	id := env.mintIdentity(t)
+	journey := env.mustCreateJourney(t, id, "Pacific Coast Drive")
+	jid, err := opencaravan.ParseUUID(journey.ID)
+	if err != nil {
+		t.Fatalf("ParseUUID: %v", err)
+	}
+	mac := env.issueSessionMacaroon(t, id, jid, opencaravan.SessionActionJourneyWrite)
+
+	payload := env.newSignedVehiclePayload(t, id)
+	bogus, err := opencaravan.NewUUID()
+	if err != nil {
+		t.Fatalf("NewUUID: %v", err)
+	}
+	payload.Integrity.KeyID = string(bogus)
+
+	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", payload, id, mac)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status: got %d want 403 (unknown key id); body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "signer_not_enrolled") {
+		t.Fatalf("expected signer_not_enrolled problem code; body=%s", rec.Body.String())
+	}
+}
+
+func TestJourneyVehicleCreateRejectsSignerOwnerMismatch(t *testing.T) {
+	// Two enrolled identities A and B. Build a vehicle whose
+	// OwnerUserID claims A, but sign it with B's key (i.e.,
+	// Integrity.KeyID = B's client_app_id). The session-vs-owner
+	// check is satisfied (A's session, A's owner), but the
+	// cert-vs-owner cross-check must fire and reject because the
+	// signer cert belongs to B, not A.
+	env := newJourneyEnv(t)
+	a := env.mintIdentity(t)
+	b := env.mintIdentity(t)
+	journey := env.mustCreateJourney(t, a, "Pacific Coast Drive")
+	jid, err := opencaravan.ParseUUID(journey.ID)
+	if err != nil {
+		t.Fatalf("ParseUUID: %v", err)
+	}
+	mac := env.issueSessionMacaroon(t, a, jid, opencaravan.SessionActionJourneyWrite)
+
+	// Build the vehicle with owner=A as usual, then re-sign with
+	// B's key. signVehicle preserves OwnerUserID, only replaces
+	// Integrity — so the result is a perfectly valid signature
+	// by B over a payload owned by A. The cert-vs-owner check
+	// must catch this even though the signature itself verifies.
+	payload := env.newSignedVehiclePayload(t, a)
+	env.signVehicle(t, b, &payload)
+
+	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", payload, a, mac)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status: got %d want 403 (signer/owner mismatch); body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "signer_owner_mismatch") {
+		t.Fatalf("expected signer_owner_mismatch problem code; body=%s", rec.Body.String())
+	}
+}
+
 func TestJourneyVehicleCreate503WithoutVehicleStore(t *testing.T) {
 	// Defense-in-depth: a deployment that wires MacaroonVerifier
 	// but forgets VehicleStore returns 503 instead of silently
@@ -384,7 +476,7 @@ func TestJourneyVehicleCreate503WithoutVehicleStore(t *testing.T) {
 		t.Fatalf("ParseUUID: %v", err)
 	}
 	mac := env.issueSessionMacaroon(t, id, jid, opencaravan.SessionActionJourneyWrite)
-	payload := newSignedVehiclePayload(t, id.UserID)
+	payload := env.newSignedVehiclePayload(t, id)
 
 	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", payload, id, mac)
 	if rec.Code != http.StatusServiceUnavailable {

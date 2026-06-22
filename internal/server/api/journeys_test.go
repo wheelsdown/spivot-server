@@ -3,11 +3,17 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log/slog"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -17,6 +23,7 @@ import (
 
 	"github.com/opencaravan/opencaravan-go"
 
+	"github.com/wheelsdown/spivot-server/internal/platform/auth/integrity"
 	"github.com/wheelsdown/spivot-server/internal/platform/auth/macaroon"
 	"github.com/wheelsdown/spivot-server/internal/platform/storage"
 	"github.com/wheelsdown/spivot-server/internal/server/middleware"
@@ -28,10 +35,11 @@ import (
 // drive end-to-end stack composition, so the fixture stands up
 // the whole pipeline rather than mocking parts.
 type journeyEnv struct {
-	server   *Server
-	store    *storage.Store
-	issuer   *macaroon.Issuer
-	verifier *macaroon.Verifier
+	server      *Server
+	store       *storage.Store
+	issuer      *macaroon.Issuer
+	verifier    *macaroon.Verifier
+	signingKeys map[string]*ecdsa.PrivateKey
 }
 
 func newJourneyEnv(t *testing.T) *journeyEnv {
@@ -78,6 +86,7 @@ func newJourneyEnv(t *testing.T) *journeyEnv {
 		GarageStore:            store,
 		MacaroonIssuer:         issuer,
 		MacaroonVerifier:       verifier,
+		IntegrityVerifier:      integrity.NewVerifier(integrity.NewStoreResolver(store)),
 		PolicySnapshot: ServerPolicySnapshot{
 			ID:          "policy-1",
 			Hash:        "test-policy-hash",
@@ -86,20 +95,30 @@ func newJourneyEnv(t *testing.T) *journeyEnv {
 		},
 	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	return &journeyEnv{
-		server:   server,
-		store:    store,
-		issuer:   issuer,
-		verifier: verifier,
+		server:      server,
+		store:       store,
+		issuer:      issuer,
+		verifier:    verifier,
+		signingKeys: make(map[string]*ecdsa.PrivateKey),
 	}
 }
 
-// mintIdentity inserts an accounts row + returns a
-// middleware.Identity the tests can attach to a request to
-// simulate a successful Phase 3c attach pass. Real production
-// requests have AttachIdentity resolving an mTLS cert; tests
-// short-circuit that with WithIdentity.
+// mintIdentity runs the full enrollment flow against the test
+// store: generates a fresh ECDSA P-256 signing key, builds a
+// synthetic leaf cert, and persists the enrollment (accounts +
+// client_apps + issued_certificates with cert PEM) so production
+// integrity verification will work for any payload this identity
+// signs. The signing key is stashed on the env keyed by
+// ClientAppID; [journeyEnv.signCanonical] reads it back when
+// tests need to produce a real Integrity envelope.
+//
+// Returns a [middleware.Identity] matching what the production
+// identity middleware would attach after an mTLS handshake, so
+// the existing post/get helpers stay unchanged.
 func (e *journeyEnv) mintIdentity(t *testing.T) middleware.Identity {
 	t.Helper()
+	ctx := context.Background()
+
 	userUUID, err := opencaravan.NewUUID()
 	if err != nil {
 		t.Fatalf("NewUUID user: %v", err)
@@ -108,19 +127,92 @@ func (e *journeyEnv) mintIdentity(t *testing.T) middleware.Identity {
 	if err != nil {
 		t.Fatalf("NewUUID app: %v", err)
 	}
-	if _, err := e.store.DB().ExecContext(context.Background(), `
-INSERT INTO accounts (id, open_caravan_id, display_name, created_at)
-VALUES (?, ?, ?, ?)
-`, string(userUUID), string(userUUID), "", time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-		t.Fatalf("seed account: %v", err)
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("ecdsa.GenerateKey: %v", err)
 	}
+
+	// Self-signed leaf — tests don't need the production CA's
+	// chain; the integrity verifier only consumes the public key.
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(time.Now().UnixNano()),
+		Subject:      pkix.Name{CommonName: string(appUUID)},
+		NotBefore:    time.Now().Add(-time.Minute),
+		NotAfter:     time.Now().Add(7 * 24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, priv.Public(), priv)
+	if err != nil {
+		t.Fatalf("CreateCertificate: %v", err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatalf("ParseCertificate: %v", err)
+	}
+
+	token, _, err := e.store.IssueInvite(ctx, opencaravan.InviteScopeServerRegistration, time.Hour)
+	if err != nil {
+		t.Fatalf("IssueInvite: %v", err)
+	}
+	if _, err := e.store.RegisterClientApp(ctx, storage.ClientAppRegistration{
+		UserID:               string(userUUID),
+		UserDisplayName:      "Test User",
+		OpenCaravanID:        string(userUUID),
+		ClientAppID:          string(appUUID),
+		ClientAppDisplayName: "Test Device",
+		InviteTokenValue:     token.Value,
+		Certificate:          cert,
+	}); err != nil {
+		t.Fatalf("RegisterClientApp: %v", err)
+	}
+
+	e.signingKeys[string(appUUID)] = priv
 	return middleware.Identity{
 		UserID:      string(userUUID),
 		ClientAppID: string(appUUID),
-		Serial:      "deadbeef",
-		SubjectCN:   "test-client",
-		NotAfter:    time.Now().Add(7 * 24 * time.Hour),
+		Serial:      cert.SerialNumber.Text(16),
+		SubjectCN:   string(appUUID),
+		NotAfter:    cert.NotAfter,
 	}
+}
+
+// signCanonical builds an [opencaravan.Integrity] envelope by
+// signing canonical with the identity's enrolled signing key.
+// KeyID is the identity's ClientAppID, matching the production
+// [integrity.NewStoreResolver] convention. Fatal if no key is on
+// file for this identity (a test that calls signCanonical with an
+// unenrolled identity is buggy).
+func (e *journeyEnv) signCanonical(t *testing.T, id middleware.Identity, canonical []byte) opencaravan.Integrity {
+	t.Helper()
+	priv, ok := e.signingKeys[id.ClientAppID]
+	if !ok {
+		t.Fatalf("signCanonical: no signing key for client_app_id %q (was identity enrolled via mintIdentity?)", id.ClientAppID)
+	}
+	digest := sha256.Sum256(canonical)
+	sig, err := ecdsa.SignASN1(rand.Reader, priv, digest[:])
+	if err != nil {
+		t.Fatalf("SignASN1: %v", err)
+	}
+	return opencaravan.Integrity{
+		Algorithm: integrity.AlgorithmECDSAP256SHA256,
+		KeyID:     id.ClientAppID,
+		Signature: base64.StdEncoding.EncodeToString(sig),
+	}
+}
+
+// signVehicle replaces vehicle.Integrity with a freshly-signed
+// envelope produced by the supplied identity. Any prior Integrity
+// is discarded before canonical encoding so the signature doesn't
+// erroneously cover a stale field.
+func (e *journeyEnv) signVehicle(t *testing.T, id middleware.Identity, vehicle *opencaravan.Vehicle) {
+	t.Helper()
+	vehicle.Integrity = nil
+	canonical, err := vehicle.CanonicalEncoding()
+	if err != nil {
+		t.Fatalf("CanonicalEncoding: %v", err)
+	}
+	envelope := e.signCanonical(t, id, canonical)
+	vehicle.Integrity = &envelope
 }
 
 // issueSessionMacaroon mints a session macaroon for the supplied
