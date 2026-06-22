@@ -13,16 +13,22 @@ import (
 	"github.com/wheelsdown/spivot-server/internal/server/middleware"
 )
 
-// newSignedVehiclePayload builds a Vehicle owned by the supplied
-// identity and signs it with that identity's enrolled signing key
-// (set up by [journeyEnv.mintIdentity]). The owner argument is an
-// identity (not just a UUID) so the helper can produce a real
-// ecdsa-p256-sha256 signature the production handler will accept.
+// newSignedVehicleBundle builds a Vehicle metadata bundle + its
+// paired initial VehicleACL, both owned by the supplied identity
+// and both freshly signed with that identity's enrolled signing
+// key (set up by [journeyEnv.mintIdentity]).
+//
+// Vehicle is metadata-only in the 0.2-draft wire types — the
+// authorization data (AuthorizedDrivers, EmergencyRule) lives on
+// the paired VehicleACL bundle. Callers that want to vary
+// emergency rule semantics for a test mutate the returned acl
+// and re-sign via signVehicleACL.
 //
 // For tests that want a vehicle owned by user A but submitted by
 // user B (e.g., session-owner mismatch test), pass A's identity
-// here and post via B's identity; the helper signs as A regardless.
-func (e *journeyEnv) newSignedVehiclePayload(t *testing.T, owner middleware.Identity) opencaravan.Vehicle {
+// here and post via B's identity; the helper signs both bundles
+// as A regardless.
+func (e *journeyEnv) newSignedVehicleBundle(t *testing.T, owner middleware.Identity) (opencaravan.Vehicle, opencaravan.VehicleACL) {
 	t.Helper()
 	vehicleID, err := opencaravan.NewUUID()
 	if err != nil {
@@ -32,23 +38,39 @@ func (e *journeyEnv) newSignedVehiclePayload(t *testing.T, owner middleware.Iden
 	if err != nil {
 		t.Fatalf("NewUUID authorized: %v", err)
 	}
+	now := time.Now().UTC()
 	v := opencaravan.Vehicle{
-		ID:                vehicleID,
-		DisplayName:       "Riley's Subaru",
-		Make:              "Subaru",
-		Model:             "Outback",
-		ModelYear:         2022,
-		Color:             "Autumn Green",
+		ID:              vehicleID,
+		OwnerUserID:     opencaravan.UUID(owner.UserID),
+		RevisionVersion: 1,
+		RevisionTime:    now,
+		DisplayName:     "Riley's Subaru",
+		Make:            "Subaru",
+		Model:           "Outback",
+		ModelYear:       2022,
+		Color:           "Autumn Green",
+		Capacity:        5,
+	}
+	e.signVehicle(t, owner, &v)
+
+	acl := opencaravan.VehicleACL{
+		VehicleID:         vehicleID,
 		OwnerUserID:       opencaravan.UUID(owner.UserID),
-		Capacity:          5,
-		AuthorizedDrivers: []opencaravan.UUID{opencaravan.UUID(owner.UserID), authorized},
 		ACLVersion:        1,
+		AuthorizedDrivers: []opencaravan.UUID{opencaravan.UUID(owner.UserID), authorized},
 		EmergencyRule: &opencaravan.VehicleEmergencyRule{
 			Kind: opencaravan.VehicleEmergencyRuleAnyJourneyParticipant,
 		},
+		EffectiveTime: now,
 	}
-	e.signVehicle(t, owner, &v)
-	return v
+	e.signVehicleACL(t, owner, &acl)
+	return v, acl
+}
+
+// vehicleCreateRequest is a convenience wrapper around the create
+// request shape so tests don't repeat the struct literal.
+func vehicleCreateRequest(v opencaravan.Vehicle, acl opencaravan.VehicleACL) JourneyVehicleCreateRequest {
+	return JourneyVehicleCreateRequest{Vehicle: v, InitialACL: acl}
 }
 
 func TestJourneyVehicleCreateHappyPath(t *testing.T) {
@@ -61,8 +83,8 @@ func TestJourneyVehicleCreateHappyPath(t *testing.T) {
 	}
 	mac := env.issueSessionMacaroon(t, id, jid, opencaravan.SessionActionJourneyWrite)
 
-	payload := env.newSignedVehiclePayload(t, id)
-	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", payload, id, mac)
+	vehicle, acl := env.newSignedVehicleBundle(t, id)
+	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", vehicleCreateRequest(vehicle, acl), id, mac)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status: got %d want 201; body=%s", rec.Code, rec.Body.String())
 	}
@@ -70,17 +92,20 @@ func TestJourneyVehicleCreateHappyPath(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if resp.ID != string(payload.ID) {
-		t.Fatalf("id: got %q want %q", resp.ID, payload.ID)
+	if resp.ID != string(vehicle.ID) {
+		t.Fatalf("id: got %q want %q", resp.ID, vehicle.ID)
+	}
+	if resp.CurrentRevisionVersion != 1 {
+		t.Fatalf("current_revision_version: got %d want 1", resp.CurrentRevisionVersion)
 	}
 	if resp.CurrentACLVersion != 1 {
 		t.Fatalf("current_acl_version: got %d want 1", resp.CurrentACLVersion)
 	}
-	if resp.Capacity != 5 {
-		t.Fatalf("capacity: got %d want 5", resp.Capacity)
+	if resp.Vehicle.DisplayName != "Riley's Subaru" {
+		t.Fatalf("display_name: got %q", resp.Vehicle.DisplayName)
 	}
-	if resp.EmergencyRule == nil || resp.EmergencyRule.Kind != opencaravan.VehicleEmergencyRuleAnyJourneyParticipant {
-		t.Fatalf("emergency_rule: got %+v", resp.EmergencyRule)
+	if resp.Vehicle.Capacity != 5 {
+		t.Fatalf("capacity: got %d want 5", resp.Vehicle.Capacity)
 	}
 }
 
@@ -95,9 +120,9 @@ func TestJourneyVehicleCreateOwnerMismatchRejected(t *testing.T) {
 	}
 	mac := env.issueSessionMacaroon(t, caller, jid, opencaravan.SessionActionJourneyWrite)
 
-	// Payload attributes vehicle to other.UserID, but caller is the session.
-	payload := env.newSignedVehiclePayload(t, other)
-	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", payload, caller, mac)
+	// Bundle attributes vehicle to other.UserID, but caller is the session.
+	vehicle, acl := env.newSignedVehicleBundle(t, other)
+	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", vehicleCreateRequest(vehicle, acl), caller, mac)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status: got %d want 403; body=%s", rec.Code, rec.Body.String())
 	}
@@ -113,8 +138,8 @@ func TestJourneyVehicleCreateRequiresWriteAction(t *testing.T) {
 	}
 	// journey.read instead of journey.write — middleware must reject.
 	mac := env.issueSessionMacaroon(t, id, jid, opencaravan.SessionActionJourneyRead)
-	payload := env.newSignedVehiclePayload(t, id)
-	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", payload, id, mac)
+	vehicle, acl := env.newSignedVehicleBundle(t, id)
+	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", vehicleCreateRequest(vehicle, acl), id, mac)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status: got %d want 401; body=%s", rec.Code, rec.Body.String())
 	}
@@ -129,12 +154,104 @@ func TestJourneyVehicleCreateRejectsMissingIntegrity(t *testing.T) {
 		t.Fatalf("ParseUUID: %v", err)
 	}
 	mac := env.issueSessionMacaroon(t, id, jid, opencaravan.SessionActionJourneyWrite)
-	payload := env.newSignedVehiclePayload(t, id)
-	payload.Integrity = nil
+	vehicle, acl := env.newSignedVehicleBundle(t, id)
+	vehicle.Integrity = nil
 
-	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", payload, id, mac)
+	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", vehicleCreateRequest(vehicle, acl), id, mac)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status: got %d want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestJourneyVehicleCreateRejectsMissingACLIntegrity(t *testing.T) {
+	env := newJourneyEnv(t)
+	id := env.mintIdentity(t)
+	journey := env.mustCreateJourney(t, id, "Pacific Coast Drive")
+	jid, err := opencaravan.ParseUUID(journey.ID)
+	if err != nil {
+		t.Fatalf("ParseUUID: %v", err)
+	}
+	mac := env.issueSessionMacaroon(t, id, jid, opencaravan.SessionActionJourneyWrite)
+	vehicle, acl := env.newSignedVehicleBundle(t, id)
+	acl.Integrity = nil
+
+	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", vehicleCreateRequest(vehicle, acl), id, mac)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestJourneyVehicleCreateRejectsACLVehicleIDMismatch(t *testing.T) {
+	env := newJourneyEnv(t)
+	id := env.mintIdentity(t)
+	journey := env.mustCreateJourney(t, id, "Pacific Coast Drive")
+	jid, err := opencaravan.ParseUUID(journey.ID)
+	if err != nil {
+		t.Fatalf("ParseUUID: %v", err)
+	}
+	mac := env.issueSessionMacaroon(t, id, jid, opencaravan.SessionActionJourneyWrite)
+	vehicle, acl := env.newSignedVehicleBundle(t, id)
+	wrong, err := opencaravan.NewUUID()
+	if err != nil {
+		t.Fatalf("NewUUID: %v", err)
+	}
+	acl.VehicleID = wrong
+	env.signVehicleACL(t, id, &acl)
+
+	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", vehicleCreateRequest(vehicle, acl), id, mac)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestJourneyVehicleCreateRejectsNonGenesisRevisionVersion(t *testing.T) {
+	// The create endpoint is the genesis revision endpoint;
+	// subsequent metadata revisions go through /revisions.
+	// A non-1 revision_version on create must be a 400 so a
+	// client mistakenly posting v=2 here gets a clear error
+	// rather than silently creating a chain with no v=1.
+	env := newJourneyEnv(t)
+	id := env.mintIdentity(t)
+	journey := env.mustCreateJourney(t, id, "Pacific Coast Drive")
+	jid, err := opencaravan.ParseUUID(journey.ID)
+	if err != nil {
+		t.Fatalf("ParseUUID: %v", err)
+	}
+	mac := env.issueSessionMacaroon(t, id, jid, opencaravan.SessionActionJourneyWrite)
+	vehicle, acl := env.newSignedVehicleBundle(t, id)
+	vehicle.RevisionVersion = 2
+	env.signVehicle(t, id, &vehicle)
+
+	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", vehicleCreateRequest(vehicle, acl), id, mac)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "revision_version must be 1") {
+		t.Fatalf("body missing genesis-revision hint: %s", rec.Body.String())
+	}
+}
+
+func TestJourneyVehicleCreateRejectsNonGenesisACLVersion(t *testing.T) {
+	// Same rationale as the metadata-revision sibling above:
+	// subsequent ACL updates go through /acl-revisions.
+	env := newJourneyEnv(t)
+	id := env.mintIdentity(t)
+	journey := env.mustCreateJourney(t, id, "Pacific Coast Drive")
+	jid, err := opencaravan.ParseUUID(journey.ID)
+	if err != nil {
+		t.Fatalf("ParseUUID: %v", err)
+	}
+	mac := env.issueSessionMacaroon(t, id, jid, opencaravan.SessionActionJourneyWrite)
+	vehicle, acl := env.newSignedVehicleBundle(t, id)
+	acl.ACLVersion = 2
+	env.signVehicleACL(t, id, &acl)
+
+	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", vehicleCreateRequest(vehicle, acl), id, mac)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "acl_version must be 1") {
+		t.Fatalf("body missing genesis-acl hint: %s", rec.Body.String())
 	}
 }
 
@@ -148,13 +265,13 @@ func TestJourneyVehicleCreateDuplicateOwnerConflict(t *testing.T) {
 	}
 	mac := env.issueSessionMacaroon(t, id, jid, opencaravan.SessionActionJourneyWrite)
 
-	first := env.newSignedVehiclePayload(t, id)
-	if rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", first, id, mac); rec.Code != http.StatusCreated {
+	firstV, firstA := env.newSignedVehicleBundle(t, id)
+	if rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", vehicleCreateRequest(firstV, firstA), id, mac); rec.Code != http.StatusCreated {
 		t.Fatalf("first create: got %d, body=%s", rec.Code, rec.Body.String())
 	}
 
-	second := env.newSignedVehiclePayload(t, id)
-	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", second, id, mac)
+	secondV, secondA := env.newSignedVehicleBundle(t, id)
+	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", vehicleCreateRequest(secondV, secondA), id, mac)
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("second create: got %d want 409; body=%s", rec.Code, rec.Body.String())
 	}
@@ -171,12 +288,12 @@ func TestJourneyVehicleGetAndListRoundTrip(t *testing.T) {
 	writeMac := env.issueSessionMacaroon(t, id, jid, opencaravan.SessionActionJourneyWrite)
 	readMac := env.issueSessionMacaroon(t, id, jid, opencaravan.SessionActionJourneyRead)
 
-	payload := env.newSignedVehiclePayload(t, id)
-	if rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", payload, id, writeMac); rec.Code != http.StatusCreated {
+	vehicle, acl := env.newSignedVehicleBundle(t, id)
+	if rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", vehicleCreateRequest(vehicle, acl), id, writeMac); rec.Code != http.StatusCreated {
 		t.Fatalf("create: got %d, body=%s", rec.Code, rec.Body.String())
 	}
 
-	rec := env.get(t, "/v1/journeys/"+journey.ID+"/vehicles/"+string(payload.ID), id, readMac)
+	rec := env.get(t, "/v1/journeys/"+journey.ID+"/vehicles/"+string(vehicle.ID), id, readMac)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("get: got %d want 200; body=%s", rec.Code, rec.Body.String())
 	}
@@ -184,8 +301,8 @@ func TestJourneyVehicleGetAndListRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode get: %v", err)
 	}
-	if got.DisplayName != "Riley's Subaru" {
-		t.Fatalf("display_name: got %q", got.DisplayName)
+	if got.Vehicle.DisplayName != "Riley's Subaru" {
+		t.Fatalf("display_name: got %q", got.Vehicle.DisplayName)
 	}
 
 	listRec := env.get(t, "/v1/journeys/"+journey.ID+"/vehicles", id, readMac)
@@ -231,8 +348,8 @@ func TestJourneyVehicleACLAppendHappyPath(t *testing.T) {
 	}
 	writeMac := env.issueSessionMacaroon(t, id, jid, opencaravan.SessionActionJourneyWrite)
 
-	payload := env.newSignedVehiclePayload(t, id)
-	if rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", payload, id, writeMac); rec.Code != http.StatusCreated {
+	vehicle, acl := env.newSignedVehicleBundle(t, id)
+	if rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", vehicleCreateRequest(vehicle, acl), id, writeMac); rec.Code != http.StatusCreated {
 		t.Fatalf("create: got %d, body=%s", rec.Code, rec.Body.String())
 	}
 
@@ -240,8 +357,8 @@ func TestJourneyVehicleACLAppendHappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewUUID: %v", err)
 	}
-	acl := opencaravan.VehicleACL{
-		VehicleID:         payload.ID,
+	v2 := opencaravan.VehicleACL{
+		VehicleID:         vehicle.ID,
 		OwnerUserID:       opencaravan.UUID(id.UserID),
 		ACLVersion:        2,
 		AuthorizedDrivers: []opencaravan.UUID{opencaravan.UUID(id.UserID), newDriver},
@@ -250,10 +367,10 @@ func TestJourneyVehicleACLAppendHappyPath(t *testing.T) {
 		},
 		EffectiveTime: time.Now().Add(time.Minute).UTC(),
 	}
-	env.signVehicleACL(t, id, &acl)
+	env.signVehicleACL(t, id, &v2)
 	rec := env.post(t,
-		"/v1/journeys/"+journey.ID+"/vehicles/"+string(payload.ID)+"/acl-revisions",
-		acl, id, writeMac)
+		"/v1/journeys/"+journey.ID+"/vehicles/"+string(vehicle.ID)+"/acl-revisions",
+		v2, id, writeMac)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("acl status: got %d want 201; body=%s", rec.Code, rec.Body.String())
 	}
@@ -270,7 +387,7 @@ func TestJourneyVehicleACLAppendHappyPath(t *testing.T) {
 
 	// The vehicle GET reflects the advanced ACL version.
 	readMac := env.issueSessionMacaroon(t, id, jid, opencaravan.SessionActionJourneyRead)
-	getRec := env.get(t, "/v1/journeys/"+journey.ID+"/vehicles/"+string(payload.ID), id, readMac)
+	getRec := env.get(t, "/v1/journeys/"+journey.ID+"/vehicles/"+string(vehicle.ID), id, readMac)
 	if getRec.Code != http.StatusOK {
 		t.Fatalf("get: got %d", getRec.Code)
 	}
@@ -297,8 +414,8 @@ func TestJourneyVehicleACLAppendFrozenAfterOwnerDeparts(t *testing.T) {
 	}
 	writeMac := env.issueSessionMacaroon(t, owner, jid, opencaravan.SessionActionJourneyWrite)
 
-	payload := env.newSignedVehiclePayload(t, owner)
-	if rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", payload, owner, writeMac); rec.Code != http.StatusCreated {
+	vehicle, acl := env.newSignedVehicleBundle(t, owner)
+	if rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", vehicleCreateRequest(vehicle, acl), owner, writeMac); rec.Code != http.StatusCreated {
 		t.Fatalf("create: got %d body=%s", rec.Code, rec.Body.String())
 	}
 
@@ -313,8 +430,8 @@ func TestJourneyVehicleACLAppendFrozenAfterOwnerDeparts(t *testing.T) {
 		t.Fatalf("simulate owner departure: %v", err)
 	}
 
-	acl := opencaravan.VehicleACL{
-		VehicleID:         payload.ID,
+	v2 := opencaravan.VehicleACL{
+		VehicleID:         vehicle.ID,
 		OwnerUserID:       opencaravan.UUID(owner.UserID),
 		ACLVersion:        2,
 		AuthorizedDrivers: []opencaravan.UUID{opencaravan.UUID(owner.UserID)},
@@ -323,10 +440,10 @@ func TestJourneyVehicleACLAppendFrozenAfterOwnerDeparts(t *testing.T) {
 		},
 		EffectiveTime: time.Now().Add(time.Minute).UTC(),
 	}
-	env.signVehicleACL(t, owner, &acl)
+	env.signVehicleACL(t, owner, &v2)
 	rec := env.post(t,
-		"/v1/journeys/"+journey.ID+"/vehicles/"+string(payload.ID)+"/acl-revisions",
-		acl, owner, writeMac)
+		"/v1/journeys/"+journey.ID+"/vehicles/"+string(vehicle.ID)+"/acl-revisions",
+		v2, owner, writeMac)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status: got %d want 403; body=%s", rec.Code, rec.Body.String())
 	}
@@ -345,8 +462,8 @@ func TestJourneyVehicleACLAppendVehicleIDMismatchRejected(t *testing.T) {
 	}
 	writeMac := env.issueSessionMacaroon(t, id, jid, opencaravan.SessionActionJourneyWrite)
 
-	payload := env.newSignedVehiclePayload(t, id)
-	if rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", payload, id, writeMac); rec.Code != http.StatusCreated {
+	vehicle, acl := env.newSignedVehicleBundle(t, id)
+	if rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", vehicleCreateRequest(vehicle, acl), id, writeMac); rec.Code != http.StatusCreated {
 		t.Fatalf("create: got %d", rec.Code)
 	}
 
@@ -354,17 +471,17 @@ func TestJourneyVehicleACLAppendVehicleIDMismatchRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewUUID: %v", err)
 	}
-	acl := opencaravan.VehicleACL{
-		VehicleID:         otherID, // wrong — must equal payload.ID
+	v2 := opencaravan.VehicleACL{
+		VehicleID:         otherID, // wrong — must equal vehicle.ID
 		OwnerUserID:       opencaravan.UUID(id.UserID),
 		ACLVersion:        2,
-		AuthorizedDrivers: payload.AuthorizedDrivers,
+		AuthorizedDrivers: acl.AuthorizedDrivers,
 		EffectiveTime:     time.Now().UTC(),
 	}
-	env.signVehicleACL(t, id, &acl)
+	env.signVehicleACL(t, id, &v2)
 	rec := env.post(t,
-		"/v1/journeys/"+journey.ID+"/vehicles/"+string(payload.ID)+"/acl-revisions",
-		acl, id, writeMac)
+		"/v1/journeys/"+journey.ID+"/vehicles/"+string(vehicle.ID)+"/acl-revisions",
+		v2, id, writeMac)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status: got %d want 400; body=%s", rec.Code, rec.Body.String())
 	}
@@ -386,8 +503,8 @@ func TestJourneyVehicleACLAppendRejectedForNonOwner(t *testing.T) {
 
 	// Owner uploads the vehicle.
 	ownerMac := env.issueSessionMacaroon(t, owner, jid, opencaravan.SessionActionJourneyWrite)
-	payload := env.newSignedVehiclePayload(t, owner)
-	if rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", payload, owner, ownerMac); rec.Code != http.StatusCreated {
+	vehicle, acl := env.newSignedVehicleBundle(t, owner)
+	if rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", vehicleCreateRequest(vehicle, acl), owner, ownerMac); rec.Code != http.StatusCreated {
 		t.Fatalf("owner create: got %d, body=%s", rec.Code, rec.Body.String())
 	}
 
@@ -397,15 +514,15 @@ func TestJourneyVehicleACLAppendRejectedForNonOwner(t *testing.T) {
 	// `owner`, not `other`.
 	otherMac := env.issueSessionMacaroon(t, other, jid, opencaravan.SessionActionJourneyWrite)
 	spoofed := opencaravan.VehicleACL{
-		VehicleID:         payload.ID,
+		VehicleID:         vehicle.ID,
 		OwnerUserID:       opencaravan.UUID(other.UserID),
 		ACLVersion:        2,
-		AuthorizedDrivers: payload.AuthorizedDrivers,
+		AuthorizedDrivers: acl.AuthorizedDrivers,
 		EffectiveTime:     time.Now().Add(time.Minute).UTC(),
 	}
 	env.signVehicleACL(t, other, &spoofed)
 	rec := env.post(t,
-		"/v1/journeys/"+journey.ID+"/vehicles/"+string(payload.ID)+"/acl-revisions",
+		"/v1/journeys/"+journey.ID+"/vehicles/"+string(vehicle.ID)+"/acl-revisions",
 		spoofed, other, otherMac)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status: got %d want 403; body=%s", rec.Code, rec.Body.String())
@@ -413,9 +530,9 @@ func TestJourneyVehicleACLAppendRejectedForNonOwner(t *testing.T) {
 }
 
 func TestJourneyVehicleCreateRejectsTamperedSignature(t *testing.T) {
-	// Sign a payload, then mutate a payload field — the signature
-	// no longer covers the post-mutation canonical bytes, so the
-	// verifier must reject with 403.
+	// Sign the bundle, then mutate a payload field — the
+	// signature no longer covers the post-mutation canonical
+	// bytes, so the verifier must reject with 403.
 	env := newJourneyEnv(t)
 	id := env.mintIdentity(t)
 	journey := env.mustCreateJourney(t, id, "Pacific Coast Drive")
@@ -425,11 +542,11 @@ func TestJourneyVehicleCreateRejectsTamperedSignature(t *testing.T) {
 	}
 	mac := env.issueSessionMacaroon(t, id, jid, opencaravan.SessionActionJourneyWrite)
 
-	payload := env.newSignedVehiclePayload(t, id)
+	vehicle, acl := env.newSignedVehicleBundle(t, id)
 	// Tamper: change the display name without re-signing.
-	payload.DisplayName = "Tampered Vehicle Name"
+	vehicle.DisplayName = "Tampered Vehicle Name"
 
-	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", payload, id, mac)
+	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", vehicleCreateRequest(vehicle, acl), id, mac)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status: got %d want 403 (tampered signature); body=%s", rec.Code, rec.Body.String())
 	}
@@ -450,14 +567,14 @@ func TestJourneyVehicleCreateRejectsUnknownKeyID(t *testing.T) {
 	}
 	mac := env.issueSessionMacaroon(t, id, jid, opencaravan.SessionActionJourneyWrite)
 
-	payload := env.newSignedVehiclePayload(t, id)
+	vehicle, acl := env.newSignedVehicleBundle(t, id)
 	bogus, err := opencaravan.NewUUID()
 	if err != nil {
 		t.Fatalf("NewUUID: %v", err)
 	}
-	payload.Integrity.KeyID = string(bogus)
+	vehicle.Integrity.KeyID = string(bogus)
 
-	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", payload, id, mac)
+	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", vehicleCreateRequest(vehicle, acl), id, mac)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status: got %d want 403 (unknown key id); body=%s", rec.Code, rec.Body.String())
 	}
@@ -488,10 +605,10 @@ func TestJourneyVehicleCreateRejectsSignerOwnerMismatch(t *testing.T) {
 	// Integrity — so the result is a perfectly valid signature
 	// by B over a payload owned by A. The cert-vs-owner check
 	// must catch this even though the signature itself verifies.
-	payload := env.newSignedVehiclePayload(t, a)
-	env.signVehicle(t, b, &payload)
+	vehicle, acl := env.newSignedVehicleBundle(t, a)
+	env.signVehicle(t, b, &vehicle)
 
-	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", payload, a, mac)
+	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", vehicleCreateRequest(vehicle, acl), a, mac)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status: got %d want 403 (signer/owner mismatch); body=%s", rec.Code, rec.Body.String())
 	}
@@ -510,8 +627,8 @@ func TestJourneyVehicleACLAppendRejectsTamperedSignature(t *testing.T) {
 	}
 	writeMac := env.issueSessionMacaroon(t, id, jid, opencaravan.SessionActionJourneyWrite)
 
-	payload := env.newSignedVehiclePayload(t, id)
-	if rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", payload, id, writeMac); rec.Code != http.StatusCreated {
+	vehicle, acl := env.newSignedVehicleBundle(t, id)
+	if rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", vehicleCreateRequest(vehicle, acl), id, writeMac); rec.Code != http.StatusCreated {
 		t.Fatalf("create: got %d", rec.Code)
 	}
 
@@ -519,20 +636,20 @@ func TestJourneyVehicleACLAppendRejectsTamperedSignature(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewUUID: %v", err)
 	}
-	acl := opencaravan.VehicleACL{
-		VehicleID:         payload.ID,
+	v2 := opencaravan.VehicleACL{
+		VehicleID:         vehicle.ID,
 		OwnerUserID:       opencaravan.UUID(id.UserID),
 		ACLVersion:        2,
 		AuthorizedDrivers: []opencaravan.UUID{opencaravan.UUID(id.UserID), newDriver},
 		EffectiveTime:     time.Now().Add(time.Minute).UTC(),
 	}
-	env.signVehicleACL(t, id, &acl)
+	env.signVehicleACL(t, id, &v2)
 	// Tamper: bump ACL version without re-signing.
-	acl.ACLVersion = 99
+	v2.ACLVersion = 99
 
 	rec := env.post(t,
-		"/v1/journeys/"+journey.ID+"/vehicles/"+string(payload.ID)+"/acl-revisions",
-		acl, id, writeMac)
+		"/v1/journeys/"+journey.ID+"/vehicles/"+string(vehicle.ID)+"/acl-revisions",
+		v2, id, writeMac)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status: got %d want 403; body=%s", rec.Code, rec.Body.String())
 	}
@@ -558,10 +675,129 @@ func TestJourneyVehicleCreate503WithoutVehicleStore(t *testing.T) {
 		t.Fatalf("ParseUUID: %v", err)
 	}
 	mac := env.issueSessionMacaroon(t, id, jid, opencaravan.SessionActionJourneyWrite)
-	payload := env.newSignedVehiclePayload(t, id)
+	vehicle, acl := env.newSignedVehicleBundle(t, id)
 
-	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", payload, id, mac)
+	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", vehicleCreateRequest(vehicle, acl), id, mac)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status: got %d want 503; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestJourneyVehicleRevisionAppendHappyPath(t *testing.T) {
+	// New endpoint: POST /v1/journeys/{id}/vehicles/{vid}/revisions
+	// accepts a new signed Vehicle metadata bundle (no ACL change)
+	// and advances current_revision_version. The GET handler must
+	// then surface the new bundle.
+	env := newJourneyEnv(t)
+	id := env.mintIdentity(t)
+	journey := env.mustCreateJourney(t, id, "Pacific Coast Drive")
+	jid, err := opencaravan.ParseUUID(journey.ID)
+	if err != nil {
+		t.Fatalf("ParseUUID: %v", err)
+	}
+	writeMac := env.issueSessionMacaroon(t, id, jid, opencaravan.SessionActionJourneyWrite)
+
+	vehicle, acl := env.newSignedVehicleBundle(t, id)
+	if rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", vehicleCreateRequest(vehicle, acl), id, writeMac); rec.Code != http.StatusCreated {
+		t.Fatalf("create: got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	v2 := vehicle
+	v2.RevisionVersion = 2
+	v2.RevisionTime = time.Now().Add(time.Minute).UTC()
+	v2.DisplayName = "Riley's Renamed Subaru"
+	env.signVehicle(t, id, &v2)
+
+	rec := env.post(t,
+		"/v1/journeys/"+journey.ID+"/vehicles/"+string(vehicle.ID)+"/revisions",
+		v2, id, writeMac)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("revision status: got %d want 201; body=%s", rec.Code, rec.Body.String())
+	}
+	var revResp JourneyVehicleRevisionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &revResp); err != nil {
+		t.Fatalf("decode revision: %v", err)
+	}
+	if revResp.RevisionVersion != 2 {
+		t.Fatalf("revision_version: got %d want 2", revResp.RevisionVersion)
+	}
+
+	// GET reflects the new revision in canonical_payload-decoded form.
+	readMac := env.issueSessionMacaroon(t, id, jid, opencaravan.SessionActionJourneyRead)
+	getRec := env.get(t, "/v1/journeys/"+journey.ID+"/vehicles/"+string(vehicle.ID), id, readMac)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get: got %d", getRec.Code)
+	}
+	var got JourneyVehicleResponse
+	if err := json.Unmarshal(getRec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode get: %v", err)
+	}
+	if got.CurrentRevisionVersion != 2 {
+		t.Fatalf("current_revision_version: got %d want 2", got.CurrentRevisionVersion)
+	}
+	if got.Vehicle.DisplayName != "Riley's Renamed Subaru" {
+		t.Fatalf("display_name: got %q", got.Vehicle.DisplayName)
+	}
+}
+
+func TestJourneyVehicleRevisionAppendStaleVersionConflict(t *testing.T) {
+	env := newJourneyEnv(t)
+	id := env.mintIdentity(t)
+	journey := env.mustCreateJourney(t, id, "Pacific Coast Drive")
+	jid, err := opencaravan.ParseUUID(journey.ID)
+	if err != nil {
+		t.Fatalf("ParseUUID: %v", err)
+	}
+	writeMac := env.issueSessionMacaroon(t, id, jid, opencaravan.SessionActionJourneyWrite)
+
+	vehicle, acl := env.newSignedVehicleBundle(t, id)
+	if rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", vehicleCreateRequest(vehicle, acl), id, writeMac); rec.Code != http.StatusCreated {
+		t.Fatalf("create: got %d", rec.Code)
+	}
+	// Re-post v=1 — must 409.
+	rec := env.post(t,
+		"/v1/journeys/"+journey.ID+"/vehicles/"+string(vehicle.ID)+"/revisions",
+		vehicle, id, writeMac)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status: got %d want 409; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestJourneyVehicleRevisionAppendFrozenAfterOwnerDeparts(t *testing.T) {
+	// The owner-departure freeze applies symmetrically to
+	// metadata revisions and ACL revisions: a departed owner
+	// can't bump a photo any more than they can rotate drivers.
+	env := newJourneyEnv(t)
+	owner := env.mintIdentity(t)
+	journey := env.mustCreateJourney(t, owner, "Pacific Coast Drive")
+	jid, err := opencaravan.ParseUUID(journey.ID)
+	if err != nil {
+		t.Fatalf("ParseUUID: %v", err)
+	}
+	writeMac := env.issueSessionMacaroon(t, owner, jid, opencaravan.SessionActionJourneyWrite)
+
+	vehicle, acl := env.newSignedVehicleBundle(t, owner)
+	if rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", vehicleCreateRequest(vehicle, acl), owner, writeMac); rec.Code != http.StatusCreated {
+		t.Fatalf("create: got %d", rec.Code)
+	}
+	if _, err := env.store.DB().ExecContext(context.Background(),
+		`DELETE FROM journey_participants WHERE journey_id = ? AND account_id = ?`,
+		journey.ID, owner.UserID); err != nil {
+		t.Fatalf("simulate owner departure: %v", err)
+	}
+
+	v2 := vehicle
+	v2.RevisionVersion = 2
+	v2.RevisionTime = time.Now().Add(time.Minute).UTC()
+	v2.DisplayName = "After departure"
+	env.signVehicle(t, owner, &v2)
+	rec := env.post(t,
+		"/v1/journeys/"+journey.ID+"/vehicles/"+string(vehicle.ID)+"/revisions",
+		v2, owner, writeMac)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status: got %d want 403; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "owner_not_a_participant") {
+		t.Fatalf("body missing owner_not_a_participant: %s", rec.Body.String())
 	}
 }

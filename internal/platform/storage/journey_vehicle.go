@@ -11,34 +11,55 @@ import (
 	"github.com/opencaravan/opencaravan-go"
 )
 
-// JourneyVehicleRecord is the persisted shape of a journey-scoped
-// [opencaravan.Vehicle] together with its current ACL pointer. The
-// canonical signed payload is retained verbatim so a verifier can
-// reproduce the signature input bytes without re-canonicalizing from
-// the parsed fields (which would risk encoder-drift between Go and
-// other-language clients).
+// JourneyVehicleRecord is the head-pointer projection of a
+// persisted journey-scoped [opencaravan.Vehicle] together with its
+// current ACL pointer. With the OpenCaravan 0.2-draft transition
+// the per-attribute columns (display_name, make, model, …) have
+// collapsed into an opaque canonical bundle; the server no longer
+// interprets the descriptive fields. CanonicalPayloadJSON is the
+// owner-signed Vehicle bytes verbatim so verifiers reproduce
+// signature input deterministically and clients can decode the
+// latest bundle without a separate revision lookup.
+//
+// AvatarBlobHash / BannerBlobHash are denormalized from the
+// canonical bundle so a future blob-GC sweep can find references
+// without parsing every bundle. Both may be nil when the owner
+// has not attached a photo.
 //
 // The journey-scoped Vehicle is per-trip and signed by the journey
-// participant who uploaded it. The persistent garage-layer Vehicle a
-// user maintains in their account is a separate concept; see
-// opencaravan-go's docs/vehicles.md for the two-layer model.
+// participant who uploaded it. The persistent garage-layer
+// GarageVehicle a user maintains in their account is a separate
+// concept; see opencaravan-go's docs/vehicles.md for the two-layer
+// model.
 type JourneyVehicleRecord struct {
-	ID                 string
-	JourneyID          string
-	OwnerUserID        string
-	DisplayName        string
-	Make               string
-	Model              string
-	ModelYear          int
-	Color              string
-	Capacity           int
-	AvatarImageRefJSON string
-	BannerImageRefJSON string
-	CurrentACLVersion  int
-	EmergencyRuleKind  string
-	Integrity          opencaravan.Integrity
-	CanonicalPayload   []byte
-	CreatedAt          time.Time
+	ID                     string
+	JourneyID              string
+	OwnerUserID            string
+	CurrentRevisionVersion int
+	CurrentACLVersion      int
+	Integrity              opencaravan.Integrity
+	CanonicalPayloadJSON   []byte
+	AvatarBlobHash         *string
+	BannerBlobHash         *string
+	ReceivedAt             time.Time
+}
+
+// JourneyVehicleRevisionRecord is the persisted shape of one
+// signed Vehicle metadata bundle. Mirrors
+// [JourneyVehicleACLRevision] for the metadata side: every
+// revision retained so a recipient can audit how a vehicle's
+// metadata (display name, photos, capacity) evolved during the
+// journey, independent of the ACL chain.
+type JourneyVehicleRevisionRecord struct {
+	ID                   string
+	JourneyVehicleID     string
+	RevisionVersion      int
+	RevisionTime         time.Time
+	Integrity            opencaravan.Integrity
+	CanonicalPayloadJSON []byte
+	AvatarBlobHash       *string
+	BannerBlobHash       *string
+	ReceivedAt           time.Time
 }
 
 // JourneyVehicleACLRevision is the persisted shape of one signed
@@ -60,14 +81,20 @@ type JourneyVehicleACLRevision struct {
 }
 
 // JourneyVehicleCreateParams names the input to
-// [Store.CreateJourneyVehicle]. The caller is responsible for having
-// already validated the wire-level Vehicle (Validate()) and verified
-// its signature against the owner's enrolled client cert. This
-// storage method only persists.
+// [Store.CreateJourneyVehicle]. The caller is responsible for
+// having already validated both wire-level payloads (Validate())
+// and verified their signatures against the owner's enrolled
+// client cert. This storage method only persists. The canonical
+// payload bytes for the Vehicle and the initial VehicleACL are
+// supplied verbatim by the caller so the storage layer never
+// re-canonicalizes (which would risk encoder drift between Go and
+// other-language clients).
 type JourneyVehicleCreateParams struct {
-	JourneyID        string
-	Vehicle          opencaravan.Vehicle
-	CanonicalPayload []byte
+	JourneyID               string
+	Vehicle                 opencaravan.Vehicle
+	InitialACL              opencaravan.VehicleACL
+	CanonicalVehiclePayload []byte
+	CanonicalACLPayload     []byte
 }
 
 // JourneyVehicleACLAppendParams names the input to
@@ -75,6 +102,16 @@ type JourneyVehicleCreateParams struct {
 type JourneyVehicleACLAppendParams struct {
 	JourneyVehicleID string
 	ACL              opencaravan.VehicleACL
+	CanonicalPayload []byte
+}
+
+// JourneyVehicleRevisionAppendParams names the input to
+// [Store.AppendJourneyVehicleRevision]. The supplied Vehicle MUST
+// carry an Integrity envelope and carry a RevisionVersion
+// strictly greater than the head's current_revision_version.
+type JourneyVehicleRevisionAppendParams struct {
+	JourneyVehicleID string
+	Vehicle          opencaravan.Vehicle
 	CanonicalPayload []byte
 }
 
@@ -110,15 +147,29 @@ var ErrJourneyVehicleDuplicateID = errors.New("storage: journey vehicle id alrea
 // both return this sentinel so the handler can map to 409.
 var ErrJourneyVehicleACLVersionConflict = errors.New("storage: journey vehicle acl version must be strictly greater than current")
 
+// ErrJourneyVehicleRevisionConflict is returned by
+// [Store.AppendJourneyVehicleRevision] when the supplied
+// metadata revision_version is not strictly greater than the
+// vehicle's current_revision_version. The protocol's
+// monotonic-version contract requires each published metadata
+// bundle to advance the counter; replays of an already-seen
+// version and stale uploads both return this sentinel so the
+// handler can map to 409. Distinct sentinel from the ACL conflict
+// so handlers (and structured logs) can tell which chain regressed.
+var ErrJourneyVehicleRevisionConflict = errors.New("storage: journey vehicle revision version must be strictly greater than current")
+
 // CreateJourneyVehicle persists a journey-scoped Vehicle and its
-// initial ACL revision (ACLVersion = Vehicle.ACLVersion, with the
-// AuthorizedDrivers list copied from the Vehicle as the v=N
-// baseline). The Vehicle's canonical payload is stored verbatim so
-// verifiers reproduce signature input bytes deterministically.
+// initial ACL revision atomically. Three rows land in one
+// transaction:
 //
-// The two writes happen in a single transaction so the vehicle row
-// and its initial ACL revision become visible together or not at
-// all.
+//  1. journey_vehicles — the head pointer (current_revision_version,
+//     current_acl_version, denormalized blob hashes).
+//  2. journey_vehicle_revisions — the v=1 metadata bundle.
+//  3. journey_vehicle_acl_revisions — the v=1 ACL bundle.
+//
+// The canonical Vehicle and VehicleACL bytes are persisted
+// verbatim so verifiers reproduce signature input deterministically
+// without re-canonicalizing from parsed fields.
 func (s *Store) CreateJourneyVehicle(ctx context.Context, params JourneyVehicleCreateParams) (JourneyVehicleRecord, error) {
 	if s == nil || s.db == nil {
 		return JourneyVehicleRecord{}, errors.New("storage: database is not open")
@@ -126,8 +177,11 @@ func (s *Store) CreateJourneyVehicle(ctx context.Context, params JourneyVehicleC
 	if params.JourneyID == "" {
 		return JourneyVehicleRecord{}, errors.New("storage: journey id must be set")
 	}
-	if len(params.CanonicalPayload) == 0 {
-		return JourneyVehicleRecord{}, errors.New("storage: canonical payload must be supplied")
+	if len(params.CanonicalVehiclePayload) == 0 {
+		return JourneyVehicleRecord{}, errors.New("storage: canonical vehicle payload must be supplied")
+	}
+	if len(params.CanonicalACLPayload) == 0 {
+		return JourneyVehicleRecord{}, errors.New("storage: canonical acl payload must be supplied")
 	}
 	if err := params.Vehicle.Validate(); err != nil {
 		return JourneyVehicleRecord{}, fmt.Errorf("storage: vehicle validate: %w", err)
@@ -135,21 +189,43 @@ func (s *Store) CreateJourneyVehicle(ctx context.Context, params JourneyVehicleC
 	if params.Vehicle.Integrity == nil {
 		return JourneyVehicleRecord{}, errors.New("storage: vehicle must carry an Integrity envelope")
 	}
+	if err := params.InitialACL.Validate(); err != nil {
+		return JourneyVehicleRecord{}, fmt.Errorf("storage: initial acl validate: %w", err)
+	}
+	if params.InitialACL.Integrity == nil {
+		return JourneyVehicleRecord{}, errors.New("storage: initial acl must carry an Integrity envelope")
+	}
+	if params.InitialACL.VehicleID != params.Vehicle.ID {
+		return JourneyVehicleRecord{}, errors.New("storage: initial acl vehicle_id must match vehicle id")
+	}
+	if params.InitialACL.OwnerUserID != params.Vehicle.OwnerUserID {
+		return JourneyVehicleRecord{}, errors.New("storage: initial acl owner_user_id must match vehicle owner_user_id")
+	}
+	// Genesis-revision invariant: CreateJourneyVehicle's contract
+	// is to mint the v=1 metadata revision + v=1 ACL revision.
+	// Subsequent revisions go through AppendJourneyVehicleRevision
+	// / AppendJourneyVehicleACL. Enforcing this at the storage
+	// layer (not just the HTTP handler) keeps the contract true
+	// against any future caller that bypasses the HTTP path.
+	if params.Vehicle.RevisionVersion != 1 {
+		return JourneyVehicleRecord{}, errors.New("storage: vehicle revision_version must be 1 on create")
+	}
+	if params.InitialACL.ACLVersion != 1 {
+		return JourneyVehicleRecord{}, errors.New("storage: initial acl_version must be 1 on create")
+	}
 
-	avatarJSON, err := marshalImageRef(params.Vehicle.AvatarImage)
-	if err != nil {
-		return JourneyVehicleRecord{}, fmt.Errorf("storage: marshal avatar: %w", err)
-	}
-	bannerJSON, err := marshalImageRef(params.Vehicle.BannerImage)
-	if err != nil {
-		return JourneyVehicleRecord{}, fmt.Errorf("storage: marshal banner: %w", err)
-	}
-	authorizedDrivers, err := json.Marshal(params.Vehicle.AuthorizedDrivers)
+	avatarHash := blobRefHash(params.Vehicle.AvatarBlob)
+	bannerHash := blobRefHash(params.Vehicle.BannerBlob)
+	emergencyKind := emergencyRuleKind(params.InitialACL.EmergencyRule)
+	authorizedDrivers, err := json.Marshal(params.InitialACL.AuthorizedDrivers)
 	if err != nil {
 		return JourneyVehicleRecord{}, fmt.Errorf("storage: marshal authorized_drivers: %w", err)
 	}
-	emergencyKind := emergencyRuleKind(params.Vehicle.EmergencyRule)
 	now := time.Now().UTC()
+	revisionID, err := opencaravan.NewUUID()
+	if err != nil {
+		return JourneyVehicleRecord{}, fmt.Errorf("storage: mint revision id: %w", err)
+	}
 	aclRevID, err := opencaravan.NewUUID()
 	if err != nil {
 		return JourneyVehicleRecord{}, fmt.Errorf("storage: mint acl revision id: %w", err)
@@ -183,35 +259,52 @@ func (s *Store) CreateJourneyVehicle(ctx context.Context, params JourneyVehicleC
 
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO journey_vehicles (
-    id, journey_id, owner_user_id, display_name, make, model, model_year,
-    color, capacity, avatar_image_ref_json, banner_image_ref_json,
-    current_acl_version, emergency_rule_kind, integrity_algorithm,
-    integrity_key_id, integrity_signature, canonical_payload_json, created_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    id, journey_id, owner_user_id, current_revision_version,
+    current_acl_version, integrity_algorithm, integrity_key_id,
+    integrity_signature, canonical_payload_json,
+    avatar_blob_hash, banner_blob_hash, received_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `,
 		string(params.Vehicle.ID),
 		params.JourneyID,
 		string(params.Vehicle.OwnerUserID),
-		params.Vehicle.DisplayName,
-		params.Vehicle.Make,
-		params.Vehicle.Model,
-		modelYearOrNil(params.Vehicle.ModelYear),
-		params.Vehicle.Color,
-		params.Vehicle.Capacity,
-		avatarJSON,
-		bannerJSON,
-		params.Vehicle.ACLVersion,
-		emergencyKind,
+		params.Vehicle.RevisionVersion,
+		params.InitialACL.ACLVersion,
 		params.Vehicle.Integrity.Algorithm,
 		params.Vehicle.Integrity.KeyID,
 		params.Vehicle.Integrity.Signature,
-		string(params.CanonicalPayload),
+		string(params.CanonicalVehiclePayload),
+		nullableString(avatarHash),
+		nullableString(bannerHash),
 		formatSQLiteTime(now),
 	); err != nil {
 		if isUniqueViolation(err) {
 			return JourneyVehicleRecord{}, ErrJourneyVehicleDuplicateOwner
 		}
 		return JourneyVehicleRecord{}, fmt.Errorf("storage: insert journey vehicle: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO journey_vehicle_revisions (
+    id, journey_vehicle_id, revision_version, revision_time,
+    integrity_algorithm, integrity_key_id, integrity_signature,
+    canonical_payload_json, avatar_blob_hash, banner_blob_hash,
+    received_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`,
+		string(revisionID),
+		string(params.Vehicle.ID),
+		params.Vehicle.RevisionVersion,
+		formatSQLiteTime(params.Vehicle.RevisionTime),
+		params.Vehicle.Integrity.Algorithm,
+		params.Vehicle.Integrity.KeyID,
+		params.Vehicle.Integrity.Signature,
+		string(params.CanonicalVehiclePayload),
+		nullableString(avatarHash),
+		nullableString(bannerHash),
+		formatSQLiteTime(now),
+	); err != nil {
+		return JourneyVehicleRecord{}, fmt.Errorf("storage: insert initial vehicle revision: %w", err)
 	}
 
 	if _, err := tx.ExecContext(ctx, `
@@ -224,14 +317,14 @@ INSERT INTO journey_vehicle_acl_revisions (
 `,
 		string(aclRevID),
 		string(params.Vehicle.ID),
-		params.Vehicle.ACLVersion,
-		formatSQLiteTime(now),
+		params.InitialACL.ACLVersion,
+		formatSQLiteTime(params.InitialACL.EffectiveTime),
 		string(authorizedDrivers),
 		emergencyKind,
-		params.Vehicle.Integrity.Algorithm,
-		params.Vehicle.Integrity.KeyID,
-		params.Vehicle.Integrity.Signature,
-		string(params.CanonicalPayload),
+		params.InitialACL.Integrity.Algorithm,
+		params.InitialACL.Integrity.KeyID,
+		params.InitialACL.Integrity.Signature,
+		string(params.CanonicalACLPayload),
 		formatSQLiteTime(now),
 	); err != nil {
 		return JourneyVehicleRecord{}, fmt.Errorf("storage: insert initial acl revision: %w", err)
@@ -242,27 +335,21 @@ INSERT INTO journey_vehicle_acl_revisions (
 	}
 
 	return JourneyVehicleRecord{
-		ID:                 string(params.Vehicle.ID),
-		JourneyID:          params.JourneyID,
-		OwnerUserID:        string(params.Vehicle.OwnerUserID),
-		DisplayName:        params.Vehicle.DisplayName,
-		Make:               params.Vehicle.Make,
-		Model:              params.Vehicle.Model,
-		ModelYear:          params.Vehicle.ModelYear,
-		Color:              params.Vehicle.Color,
-		Capacity:           params.Vehicle.Capacity,
-		AvatarImageRefJSON: avatarJSON,
-		BannerImageRefJSON: bannerJSON,
-		CurrentACLVersion:  params.Vehicle.ACLVersion,
-		EmergencyRuleKind:  emergencyKind,
-		Integrity:          *params.Vehicle.Integrity,
-		CanonicalPayload:   params.CanonicalPayload,
-		CreatedAt:          now,
+		ID:                     string(params.Vehicle.ID),
+		JourneyID:              params.JourneyID,
+		OwnerUserID:            string(params.Vehicle.OwnerUserID),
+		CurrentRevisionVersion: params.Vehicle.RevisionVersion,
+		CurrentACLVersion:      params.InitialACL.ACLVersion,
+		Integrity:              *params.Vehicle.Integrity,
+		CanonicalPayloadJSON:   params.CanonicalVehiclePayload,
+		AvatarBlobHash:         avatarHash,
+		BannerBlobHash:         bannerHash,
+		ReceivedAt:             now,
 	}, nil
 }
 
-// JourneyVehicleByID returns the persisted vehicle and its current
-// ACL pointer. Returns [ErrJourneyVehicleNotFound] when the id does
+// JourneyVehicleByID returns the persisted vehicle's head-pointer
+// projection. Returns [ErrJourneyVehicleNotFound] when the id does
 // not match.
 func (s *Store) JourneyVehicleByID(ctx context.Context, journeyID, vehicleID string) (JourneyVehicleRecord, error) {
 	if s == nil || s.db == nil {
@@ -272,11 +359,10 @@ func (s *Store) JourneyVehicleByID(ctx context.Context, journeyID, vehicleID str
 		return JourneyVehicleRecord{}, ErrJourneyVehicleNotFound
 	}
 	row := s.db.QueryRowContext(ctx, `
-SELECT id, journey_id, owner_user_id, display_name, make, model, model_year,
-       color, capacity, avatar_image_ref_json, banner_image_ref_json,
-       current_acl_version, emergency_rule_kind, integrity_algorithm,
-       integrity_key_id, integrity_signature, canonical_payload_json,
-       created_at
+SELECT id, journey_id, owner_user_id, current_revision_version,
+       current_acl_version, integrity_algorithm, integrity_key_id,
+       integrity_signature, canonical_payload_json,
+       avatar_blob_hash, banner_blob_hash, received_at
 FROM journey_vehicles
 WHERE journey_id = ? AND id = ?
 `, journeyID, vehicleID)
@@ -284,21 +370,20 @@ WHERE journey_id = ? AND id = ?
 }
 
 // ListJourneyVehicles returns every vehicle uploaded against a journey,
-// ordered by created_at ascending so callers see the order participants
+// ordered by received_at ascending so callers see the order participants
 // joined.
 func (s *Store) ListJourneyVehicles(ctx context.Context, journeyID string) ([]JourneyVehicleRecord, error) {
 	if s == nil || s.db == nil {
 		return nil, errors.New("storage: database is not open")
 	}
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, journey_id, owner_user_id, display_name, make, model, model_year,
-       color, capacity, avatar_image_ref_json, banner_image_ref_json,
-       current_acl_version, emergency_rule_kind, integrity_algorithm,
-       integrity_key_id, integrity_signature, canonical_payload_json,
-       created_at
+SELECT id, journey_id, owner_user_id, current_revision_version,
+       current_acl_version, integrity_algorithm, integrity_key_id,
+       integrity_signature, canonical_payload_json,
+       avatar_blob_hash, banner_blob_hash, received_at
 FROM journey_vehicles
 WHERE journey_id = ?
-ORDER BY created_at ASC
+ORDER BY received_at ASC
 `, journeyID)
 	if err != nil {
 		return nil, fmt.Errorf("storage: query journey vehicles: %w", err)
@@ -411,8 +496,8 @@ INSERT INTO journey_vehicle_acl_revisions (
 	// in the audit log either — clients see 409 and retry with a
 	// fresh version number.
 	res, err := tx.ExecContext(ctx,
-		`UPDATE journey_vehicles SET current_acl_version = ?, emergency_rule_kind = ? WHERE id = ? AND current_acl_version < ?`,
-		params.ACL.ACLVersion, emergencyKind, params.JourneyVehicleID, params.ACL.ACLVersion)
+		`UPDATE journey_vehicles SET current_acl_version = ? WHERE id = ? AND current_acl_version < ?`,
+		params.ACL.ACLVersion, params.JourneyVehicleID, params.ACL.ACLVersion)
 	if err != nil {
 		return JourneyVehicleACLRevision{}, fmt.Errorf("storage: advance current acl: %w", err)
 	}
@@ -436,6 +521,135 @@ INSERT INTO journey_vehicle_acl_revisions (
 		Integrity:             *params.ACL.Integrity,
 		CanonicalPayload:      params.CanonicalPayload,
 		ReceivedAt:            now,
+	}, nil
+}
+
+// AppendJourneyVehicleRevision records a new signed Vehicle
+// metadata bundle and advances the journey vehicle's
+// current_revision_version pointer. Mirrors
+// [Store.AppendJourneyVehicleACL] in shape: monotonic version
+// contract, conditional UPDATE for race protection,
+// canonical-payload retention verbatim. The metadata chain is
+// independent of the ACL chain — bumping a photo doesn't require
+// a new ACL revision and vice-versa.
+//
+// Returns [ErrJourneyVehicleRevisionConflict] when the supplied
+// revision_version is not strictly greater than the existing
+// current_revision_version, and [ErrJourneyVehicleNotFound] when
+// the journey vehicle id does not exist.
+func (s *Store) AppendJourneyVehicleRevision(ctx context.Context, params JourneyVehicleRevisionAppendParams) (JourneyVehicleRevisionRecord, error) {
+	if s == nil || s.db == nil {
+		return JourneyVehicleRevisionRecord{}, errors.New("storage: database is not open")
+	}
+	if err := params.Vehicle.Validate(); err != nil {
+		return JourneyVehicleRevisionRecord{}, fmt.Errorf("storage: vehicle validate: %w", err)
+	}
+	if params.Vehicle.Integrity == nil {
+		return JourneyVehicleRevisionRecord{}, errors.New("storage: vehicle must carry an Integrity envelope")
+	}
+	if len(params.CanonicalPayload) == 0 {
+		return JourneyVehicleRevisionRecord{}, errors.New("storage: canonical payload must be supplied")
+	}
+
+	avatarHash := blobRefHash(params.Vehicle.AvatarBlob)
+	bannerHash := blobRefHash(params.Vehicle.BannerBlob)
+	now := time.Now().UTC()
+	revID, err := opencaravan.NewUUID()
+	if err != nil {
+		return JourneyVehicleRevisionRecord{}, fmt.Errorf("storage: mint revision id: %w", err)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return JourneyVehicleRevisionRecord{}, fmt.Errorf("storage: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var currentVersion int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT current_revision_version FROM journey_vehicles WHERE id = ?`,
+		params.JourneyVehicleID).Scan(&currentVersion); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return JourneyVehicleRevisionRecord{}, ErrJourneyVehicleNotFound
+		}
+		return JourneyVehicleRevisionRecord{}, fmt.Errorf("storage: load current revision: %w", err)
+	}
+	if params.Vehicle.RevisionVersion <= currentVersion {
+		return JourneyVehicleRevisionRecord{}, ErrJourneyVehicleRevisionConflict
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO journey_vehicle_revisions (
+    id, journey_vehicle_id, revision_version, revision_time,
+    integrity_algorithm, integrity_key_id, integrity_signature,
+    canonical_payload_json, avatar_blob_hash, banner_blob_hash,
+    received_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`,
+		string(revID),
+		params.JourneyVehicleID,
+		params.Vehicle.RevisionVersion,
+		formatSQLiteTime(params.Vehicle.RevisionTime),
+		params.Vehicle.Integrity.Algorithm,
+		params.Vehicle.Integrity.KeyID,
+		params.Vehicle.Integrity.Signature,
+		string(params.CanonicalPayload),
+		nullableString(avatarHash),
+		nullableString(bannerHash),
+		formatSQLiteTime(now),
+	); err != nil {
+		if isUniqueViolation(err) {
+			return JourneyVehicleRevisionRecord{}, ErrJourneyVehicleRevisionConflict
+		}
+		return JourneyVehicleRevisionRecord{}, fmt.Errorf("storage: insert vehicle revision: %w", err)
+	}
+
+	// Conditional head UPDATE + RowsAffected check. Same race
+	// rationale as AppendJourneyVehicleACL above. RowsAffected = 0
+	// means another writer raced ahead; we return
+	// ErrJourneyVehicleRevisionConflict and the tx rolls back so
+	// the loser revision row never lands in the history table.
+	res, err := tx.ExecContext(ctx, `
+UPDATE journey_vehicles
+SET current_revision_version = ?, integrity_algorithm = ?,
+    integrity_key_id = ?, integrity_signature = ?,
+    canonical_payload_json = ?, avatar_blob_hash = ?,
+    banner_blob_hash = ?
+WHERE id = ? AND current_revision_version < ?
+`,
+		params.Vehicle.RevisionVersion,
+		params.Vehicle.Integrity.Algorithm,
+		params.Vehicle.Integrity.KeyID,
+		params.Vehicle.Integrity.Signature,
+		string(params.CanonicalPayload),
+		nullableString(avatarHash),
+		nullableString(bannerHash),
+		params.JourneyVehicleID,
+		params.Vehicle.RevisionVersion,
+	)
+	if err != nil {
+		return JourneyVehicleRevisionRecord{}, fmt.Errorf("storage: advance current revision: %w", err)
+	}
+	if affected, affErr := res.RowsAffected(); affErr != nil {
+		return JourneyVehicleRevisionRecord{}, fmt.Errorf("storage: read rows affected: %w", affErr)
+	} else if affected == 0 {
+		return JourneyVehicleRevisionRecord{}, ErrJourneyVehicleRevisionConflict
+	}
+
+	if err := tx.Commit(); err != nil {
+		return JourneyVehicleRevisionRecord{}, fmt.Errorf("storage: commit vehicle revision: %w", err)
+	}
+
+	return JourneyVehicleRevisionRecord{
+		ID:                   string(revID),
+		JourneyVehicleID:     params.JourneyVehicleID,
+		RevisionVersion:      params.Vehicle.RevisionVersion,
+		RevisionTime:         params.Vehicle.RevisionTime,
+		Integrity:            *params.Vehicle.Integrity,
+		CanonicalPayloadJSON: params.CanonicalPayload,
+		AvatarBlobHash:       avatarHash,
+		BannerBlobHash:       bannerHash,
+		ReceivedAt:           now,
 	}, nil
 }
 
@@ -495,29 +709,34 @@ type rowScanner interface {
 
 func scanJourneyVehicle(row rowScanner) (JourneyVehicleRecord, error) {
 	var (
-		rec       JourneyVehicleRecord
-		modelYear sql.NullInt64
-		createdAt string
+		rec        JourneyVehicleRecord
+		avatarHash sql.NullString
+		bannerHash sql.NullString
+		receivedAt string
 	)
 	if err := row.Scan(&rec.ID, &rec.JourneyID, &rec.OwnerUserID,
-		&rec.DisplayName, &rec.Make, &rec.Model, &modelYear, &rec.Color,
-		&rec.Capacity, &rec.AvatarImageRefJSON, &rec.BannerImageRefJSON,
-		&rec.CurrentACLVersion, &rec.EmergencyRuleKind,
+		&rec.CurrentRevisionVersion, &rec.CurrentACLVersion,
 		&rec.Integrity.Algorithm, &rec.Integrity.KeyID,
-		&rec.Integrity.Signature, &rec.CanonicalPayload, &createdAt); err != nil {
+		&rec.Integrity.Signature, &rec.CanonicalPayloadJSON,
+		&avatarHash, &bannerHash, &receivedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return JourneyVehicleRecord{}, ErrJourneyVehicleNotFound
 		}
 		return JourneyVehicleRecord{}, fmt.Errorf("storage: scan journey vehicle: %w", err)
 	}
-	if modelYear.Valid {
-		rec.ModelYear = int(modelYear.Int64)
+	if avatarHash.Valid {
+		v := avatarHash.String
+		rec.AvatarBlobHash = &v
 	}
-	parsed, err := time.Parse(sqliteTimeFormat, createdAt)
+	if bannerHash.Valid {
+		v := bannerHash.String
+		rec.BannerBlobHash = &v
+	}
+	parsed, err := time.Parse(sqliteTimeFormat, receivedAt)
 	if err != nil {
-		return JourneyVehicleRecord{}, fmt.Errorf("storage: parse journey vehicle created_at: %w", err)
+		return JourneyVehicleRecord{}, fmt.Errorf("storage: parse journey vehicle received_at: %w", err)
 	}
-	rec.CreatedAt = parsed
+	rec.ReceivedAt = parsed
 	return rec, nil
 }
 
@@ -525,22 +744,27 @@ func scanJourneyVehicleRows(rows *sql.Rows) (JourneyVehicleRecord, error) {
 	return scanJourneyVehicle(rows)
 }
 
-func marshalImageRef(ref *opencaravan.ImageResourceRef) (string, error) {
+// blobRefHash returns the hash string of a *BlobRef when non-nil,
+// or nil when the ref is absent. Used to denormalize the
+// canonical-bundle's optional avatar/banner refs into the
+// indexed columns the future blob-GC sweep needs.
+func blobRefHash(ref *opencaravan.BlobRef) *string {
 	if ref == nil {
-		return "", nil
-	}
-	b, err := json.Marshal(ref)
-	if err != nil {
-		return "", err
-	}
-	return string(b), nil
-}
-
-func modelYearOrNil(year int) any {
-	if year == 0 {
 		return nil
 	}
-	return year
+	h := ref.Hash
+	return &h
+}
+
+// nullableString returns an interface value suitable for SQL
+// driver binding: nil for a nil pointer (writes SQL NULL) or
+// the dereferenced string otherwise. Pairs with blobRefHash for
+// the optional blob columns.
+func nullableString(p *string) any {
+	if p == nil {
+		return nil
+	}
+	return *p
 }
 
 func emergencyRuleKind(rule *opencaravan.VehicleEmergencyRule) string {

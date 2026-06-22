@@ -19,11 +19,13 @@ import (
 func seedJourneyVehicleForAttestation(t *testing.T, store *Store) (journeyID, vehicleID string, ownerID opencaravan.UUID) {
 	t.Helper()
 	jID, owner := seedJourneyForVehicleTest(t, store)
-	vehicle, canonical := newSignedVehicle(t, owner)
+	vehicle, vehicleCanonical, acl, aclCanonical := newSignedVehicleBundle(t, owner)
 	rec, err := store.CreateJourneyVehicle(context.Background(), JourneyVehicleCreateParams{
-		JourneyID:        jID,
-		Vehicle:          vehicle,
-		CanonicalPayload: canonical,
+		JourneyID:               jID,
+		Vehicle:                 vehicle,
+		InitialACL:              acl,
+		CanonicalVehiclePayload: vehicleCanonical,
+		CanonicalACLPayload:     aclCanonical,
 	})
 	if err != nil {
 		t.Fatalf("CreateJourneyVehicle: %v", err)
