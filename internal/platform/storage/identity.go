@@ -2,7 +2,9 @@ package storage
 
 import (
 	"context"
+	"crypto/x509"
 	"database/sql"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"time"
@@ -81,5 +83,87 @@ WHERE ic.serial = ?
 		return CertIdentity{}, fmt.Errorf("storage: parse identity not_after: %w", err)
 	}
 	out.NotAfter = parsed
+	return out, nil
+}
+
+// EnrolledCertRecord carries the parsed [x509.Certificate] alongside
+// the identity metadata. Used by integrity verifiers that need the
+// signing client app's public key to check ECDSA signatures over
+// gossiped OpenCaravan payloads.
+type EnrolledCertRecord struct {
+	Identity    CertIdentity
+	Certificate *x509.Certificate
+}
+
+// ErrEnrolledCertMissingPEM is returned by [Store.EnrolledCertByClientAppID]
+// when the row exists but its cert_pem column is NULL — typically a
+// historical row from before the cert-PEM migration. Detected via
+// [errors.Is].
+var ErrEnrolledCertMissingPEM = errors.New("storage: enrolled cert has no stored PEM (pre-migration row)")
+
+// EnrolledCertByClientAppID returns the most recent active enrolled
+// certificate for the supplied client app id, parsed and ready for
+// signature verification. Returns:
+//
+//   - [ErrCertNotEnrolled] when no active row exists for that client
+//     app (revoked, never enrolled, or wrong id).
+//   - [ErrEnrolledCertMissingPEM] when the row exists but predates the
+//     cert-PEM persistence migration.
+//   - a wrapped parse error when the stored PEM can't be decoded
+//     (corruption or a future format change).
+//
+// The "active" filter mirrors [Store.IdentityBySerial]: revoked_at
+// IS NULL only. Multiple un-revoked rows for the same client app
+// would only happen during a re-enrollment, and we want the most
+// recent issuance so a signature minted by a current device key
+// resolves correctly.
+func (s *Store) EnrolledCertByClientAppID(ctx context.Context, clientAppID string) (EnrolledCertRecord, error) {
+	if s == nil || s.db == nil {
+		return EnrolledCertRecord{}, errors.New("storage: database is not open")
+	}
+	if clientAppID == "" {
+		return EnrolledCertRecord{}, ErrCertNotEnrolled
+	}
+
+	row := s.db.QueryRowContext(ctx, `
+SELECT ic.serial, ic.subject_cn, ic.not_after, ic.user_id, ic.client_app_id, ic.cert_pem
+FROM issued_certificates ic
+WHERE ic.client_app_id = ?
+  AND ic.revoked_at IS NULL
+  AND ic.user_id IS NOT NULL
+ORDER BY ic.issued_at DESC
+LIMIT 1
+`, clientAppID)
+
+	var (
+		out      EnrolledCertRecord
+		notAfter string
+		certPEM  sql.NullString
+	)
+	if err := row.Scan(&out.Identity.Serial, &out.Identity.SubjectCN, &notAfter,
+		&out.Identity.UserID, &out.Identity.ClientAppID, &certPEM); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return EnrolledCertRecord{}, ErrCertNotEnrolled
+		}
+		return EnrolledCertRecord{}, fmt.Errorf("storage: load enrolled cert for client_app %q: %w", clientAppID, err)
+	}
+	parsedTime, err := time.Parse(sqliteTimeFormat, notAfter)
+	if err != nil {
+		return EnrolledCertRecord{}, fmt.Errorf("storage: parse enrolled cert not_after: %w", err)
+	}
+	out.Identity.NotAfter = parsedTime
+
+	if !certPEM.Valid {
+		return EnrolledCertRecord{}, ErrEnrolledCertMissingPEM
+	}
+	block, _ := pem.Decode([]byte(certPEM.String))
+	if block == nil {
+		return EnrolledCertRecord{}, fmt.Errorf("storage: enrolled cert PEM is not valid PEM-encoded")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return EnrolledCertRecord{}, fmt.Errorf("storage: parse enrolled cert: %w", err)
+	}
+	out.Certificate = cert
 	return out, nil
 }
