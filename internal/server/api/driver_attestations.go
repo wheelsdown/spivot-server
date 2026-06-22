@@ -353,6 +353,111 @@ func (s *Server) replayExistingAttestation(ctx context.Context, journeyVehicleID
 	return existing, http.StatusOK, nil
 }
 
+// CurrentDriverResponse is what the current-driver endpoint
+// returns. Carries the attestation the server picked as "in
+// effect at the queried time" plus any fork siblings that share
+// the picked attestation's prior_attestation_hash — so clients
+// can render "right now you're being attributed to driver X, but
+// also driver Y has a competing claim on the same predecessor."
+//
+// AsOf echoes the resolved query timestamp so the response is
+// auditable when the caller didn't supply one (server used
+// time.Now()).
+type CurrentDriverResponse struct {
+	AsOf         time.Time                      `json:"as_of"`
+	Attestation  DriverAttestationResponse      `json:"attestation"`
+	ForkSiblings []DriverAttestationForkSibling `json:"fork_siblings,omitempty"`
+}
+
+// handleCurrentDriver implements
+// GET /v1/journeys/{id}/vehicles/{vid}/current-driver[?at=<rfc3339>].
+//
+// Returns the driver attestation in effect at the supplied time
+// (defaults to time.Now() when ?at is omitted). The attestation
+// is the one with the highest effective_time <= the queried
+// time; ties broken by received_at descending.
+//
+// Failures map to:
+//
+//   - 503 when storage interfaces aren't wired.
+//   - 400 when the ?at query value isn't valid RFC3339.
+//   - 404 when the vehicle doesn't exist OR no attestation is on
+//     file for it at or before the queried time (i.e., no driver
+//     has yet attested to taking the wheel).
+//   - 500 for unexpected storage failures.
+func (s *Server) handleCurrentDriver(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.DriverAttestationStore == nil || s.cfg.VehicleStore == nil {
+		writeProblem(w, s.logger, http.StatusServiceUnavailable, "attestations_unavailable",
+			"This server is not configured to record driver attestations.")
+		return
+	}
+	journeyID := r.PathValue("id")
+	vehicleID := r.PathValue("vid")
+
+	at := time.Now().UTC()
+	if raw := r.URL.Query().Get("at"); raw != "" {
+		parsed, err := time.Parse(time.RFC3339Nano, raw)
+		if err != nil {
+			writeProblem(w, s.logger, http.StatusBadRequest, "invalid_request",
+				fmt.Sprintf("?at must be a valid RFC3339 timestamp: %s", err))
+			return
+		}
+		at = parsed.UTC()
+	}
+
+	if _, err := s.cfg.VehicleStore.JourneyVehicleByID(r.Context(), journeyID, vehicleID); err != nil {
+		if errors.Is(err, storage.ErrJourneyVehicleNotFound) {
+			writeProblem(w, s.logger, http.StatusNotFound, "vehicle_not_found",
+				"No vehicle exists at this journey and id.")
+			return
+		}
+		s.logger.Error("current-driver: vehicle precheck failed", "error", err,
+			"journey_id", journeyID, "vehicle_id", vehicleID)
+		writeProblem(w, s.logger, http.StatusInternalServerError, "internal_error",
+			"Could not look up journey vehicle.")
+		return
+	}
+
+	rec, err := s.cfg.DriverAttestationStore.CurrentDriverForJourneyVehicle(r.Context(), vehicleID, at)
+	if err != nil {
+		if errors.Is(err, storage.ErrDriverAttestationNotFound) {
+			writeProblem(w, s.logger, http.StatusNotFound, "no_driver_attested",
+				"No driver has attested to taking this vehicle at or before the queried time.")
+			return
+		}
+		s.logger.Error("current-driver: load failed", "error", err,
+			"vehicle_id", vehicleID, "at", at)
+		writeProblem(w, s.logger, http.StatusInternalServerError, "internal_error",
+			"Could not load current driver.")
+		return
+	}
+
+	var siblings []DriverAttestationForkSibling
+	if rec.PriorAttestationHash != nil {
+		rows, sibErr := s.cfg.DriverAttestationStore.DriverAttestationForkSiblings(
+			r.Context(), vehicleID, *rec.PriorAttestationHash)
+		if sibErr != nil {
+			s.logger.Warn("current-driver: fork sibling lookup failed", "error", sibErr,
+				"vehicle_id", vehicleID, "prior_hash", *rec.PriorAttestationHash)
+		} else {
+			for _, row := range rows {
+				siblings = append(siblings, DriverAttestationForkSibling{
+					ID:            row.ID,
+					DriverUserID:  row.DriverUserID,
+					EffectiveTime: row.EffectiveTime.UTC(),
+					TrustFlag:     row.TrustFlag,
+				})
+			}
+		}
+	}
+
+	writeJSON(w, CurrentDriverResponse{
+		AsOf:         at,
+		Attestation:  driverAttestationResponseFrom(rec, nil),
+		ForkSiblings: siblings,
+	}, s.logger)
+}
+
 func driverAttestationResponseFrom(rec storage.DriverAttestationRecord, siblings []DriverAttestationForkSibling) DriverAttestationResponse {
 	return DriverAttestationResponse{
 		ID:                   rec.ID,

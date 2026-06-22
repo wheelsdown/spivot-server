@@ -196,6 +196,72 @@ func TestDriverAttestationForkSiblingsFindsMatchingPriorHash(t *testing.T) {
 	}
 }
 
+func TestCurrentDriverForJourneyVehicleResolvesAtTime(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	_, vehicleID, ownerID := seedJourneyVehicleForAttestation(t, store)
+	driverB := mustUUID(t)
+	seedHostUser(t, store, string(driverB))
+
+	t0 := time.Now().UTC()
+	// v=1 by owner at t0 + 1 min
+	a1, c1 := newSignedAttestation(t, opencaravan.UUID(vehicleID), ownerID, t0.Add(time.Minute), 1, nil)
+	if _, err := store.RecordDriverAttestation(ctx, DriverAttestationRecordParams{
+		Attestation: a1, JourneyVehicleID: vehicleID,
+		TrustFlag: DriverAttestationTrustAuthorized, CanonicalPayload: c1,
+	}); err != nil {
+		t.Fatalf("a1: %v", err)
+	}
+	// v=2 by driverB at t0 + 5 min — supersedes a1 as the current driver.
+	a2, c2 := newSignedAttestation(t, opencaravan.UUID(vehicleID), driverB, t0.Add(5*time.Minute), 1, nil)
+	if _, err := store.RecordDriverAttestation(ctx, DriverAttestationRecordParams{
+		Attestation: a2, JourneyVehicleID: vehicleID,
+		TrustFlag: DriverAttestationTrustAuthorized, CanonicalPayload: c2,
+	}); err != nil {
+		t.Fatalf("a2: %v", err)
+	}
+
+	// At t0 + 3 min: a1 is current.
+	gotA1, err := store.CurrentDriverForJourneyVehicle(ctx, vehicleID, t0.Add(3*time.Minute))
+	if err != nil {
+		t.Fatalf("CurrentDriverForJourneyVehicle a1: %v", err)
+	}
+	if gotA1.DriverUserID != string(ownerID) {
+		t.Fatalf("at t+3min: expected owner, got %q", gotA1.DriverUserID)
+	}
+
+	// At t0 + 10 min: a2 is current.
+	gotA2, err := store.CurrentDriverForJourneyVehicle(ctx, vehicleID, t0.Add(10*time.Minute))
+	if err != nil {
+		t.Fatalf("CurrentDriverForJourneyVehicle a2: %v", err)
+	}
+	if gotA2.DriverUserID != string(driverB) {
+		t.Fatalf("at t+10min: expected driverB, got %q", gotA2.DriverUserID)
+	}
+}
+
+func TestCurrentDriverForJourneyVehicleBeforeAnyAttestation(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	_, vehicleID, ownerID := seedJourneyVehicleForAttestation(t, store)
+
+	// Record one attestation 10 minutes from now.
+	future := time.Now().Add(10 * time.Minute).UTC()
+	a, c := newSignedAttestation(t, opencaravan.UUID(vehicleID), ownerID, future, 1, nil)
+	if _, err := store.RecordDriverAttestation(ctx, DriverAttestationRecordParams{
+		Attestation: a, JourneyVehicleID: vehicleID,
+		TrustFlag: DriverAttestationTrustAuthorized, CanonicalPayload: c,
+	}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+
+	// Query before the attestation — nothing in effect yet.
+	_, err := store.CurrentDriverForJourneyVehicle(ctx, vehicleID, time.Now().UTC())
+	if !errors.Is(err, ErrDriverAttestationNotFound) {
+		t.Fatalf("got %v, want ErrDriverAttestationNotFound", err)
+	}
+}
+
 func TestDriverAttestationByReplayKeyMissing(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

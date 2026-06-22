@@ -484,6 +484,113 @@ func TestDriverAttestationRecordRejectsSignerDriverMismatch(t *testing.T) {
 	}
 }
 
+func TestCurrentDriverReturnsAttestationInEffect(t *testing.T) {
+	env := newJourneyEnv(t)
+	owner := env.mintIdentity(t)
+	journey := env.mustCreateJourney(t, owner, "Pacific Coast Drive")
+	jid, err := opencaravan.ParseUUID(journey.ID)
+	if err != nil {
+		t.Fatalf("ParseUUID: %v", err)
+	}
+	vehicleID := uploadVehicleFor(t, env, owner, journey, &opencaravan.VehicleEmergencyRule{
+		Kind: opencaravan.VehicleEmergencyRuleAnyJourneyParticipant,
+	})
+
+	writeMac := env.issueSessionMacaroon(t, owner, jid, opencaravan.SessionActionJourneyWrite)
+	attestationEffective := time.Now().Add(time.Minute).UTC()
+	attestation := env.newSignedAttestationPayload(t, vehicleID, owner, attestationEffective, 1, nil)
+	if rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles/"+string(vehicleID)+"/driver-attestations",
+		attestation, owner, writeMac); rec.Code != http.StatusCreated {
+		t.Fatalf("record: got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	readMac := env.issueSessionMacaroon(t, owner, jid, opencaravan.SessionActionJourneyRead)
+	// Query at a time AFTER the attestation's effective time.
+	queryAt := attestationEffective.Add(time.Minute)
+	rec := env.get(t, "/v1/journeys/"+journey.ID+"/vehicles/"+string(vehicleID)+"/current-driver?at="+queryAt.Format(time.RFC3339Nano), owner, readMac)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp CurrentDriverResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Attestation.DriverUserID != owner.UserID {
+		t.Fatalf("driver_user_id: got %q want %q", resp.Attestation.DriverUserID, owner.UserID)
+	}
+	if !resp.AsOf.Equal(queryAt) {
+		t.Fatalf("as_of: got %v want %v", resp.AsOf, queryAt)
+	}
+}
+
+func TestCurrentDriverNoAttestationYet(t *testing.T) {
+	env := newJourneyEnv(t)
+	owner := env.mintIdentity(t)
+	journey := env.mustCreateJourney(t, owner, "Pacific Coast Drive")
+	jid, err := opencaravan.ParseUUID(journey.ID)
+	if err != nil {
+		t.Fatalf("ParseUUID: %v", err)
+	}
+	vehicleID := uploadVehicleFor(t, env, owner, journey, nil)
+	readMac := env.issueSessionMacaroon(t, owner, jid, opencaravan.SessionActionJourneyRead)
+
+	// No attestation has been recorded — expect 404.
+	rec := env.get(t, "/v1/journeys/"+journey.ID+"/vehicles/"+string(vehicleID)+"/current-driver", owner, readMac)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status: got %d want 404; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCurrentDriverInvalidAtRejected(t *testing.T) {
+	env := newJourneyEnv(t)
+	owner := env.mintIdentity(t)
+	journey := env.mustCreateJourney(t, owner, "Pacific Coast Drive")
+	jid, err := opencaravan.ParseUUID(journey.ID)
+	if err != nil {
+		t.Fatalf("ParseUUID: %v", err)
+	}
+	vehicleID := uploadVehicleFor(t, env, owner, journey, nil)
+	readMac := env.issueSessionMacaroon(t, owner, jid, opencaravan.SessionActionJourneyRead)
+
+	rec := env.get(t, "/v1/journeys/"+journey.ID+"/vehicles/"+string(vehicleID)+"/current-driver?at=not-a-timestamp", owner, readMac)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestTelemetryWithDriverAttestationHashPersists(t *testing.T) {
+	env := newJourneyEnv(t)
+	owner := env.mintIdentity(t)
+	journey := env.mustCreateJourney(t, owner, "Pacific Coast Drive")
+	jid, err := opencaravan.ParseUUID(journey.ID)
+	if err != nil {
+		t.Fatalf("ParseUUID: %v", err)
+	}
+	telemetryMac := env.issueSessionMacaroon(t, owner, jid, opencaravan.SessionActionTelemetryWrite)
+
+	hash := "sha256:" + "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	req := TelemetryBatchRequest{
+		ClientBatchID:         "batch-with-attestation",
+		Samples:               nil,
+		DriverAttestationHash: &hash,
+	}
+	rec := env.post(t, "/v1/journeys/"+journey.ID+"/telemetry", req, owner, telemetryMac)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("telemetry: got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Verify the row persists with the hash by querying directly.
+	var got string
+	if err := env.store.DB().QueryRowContext(context.Background(),
+		`SELECT driver_attestation_hash FROM telemetry_batches WHERE client_batch_id = ?`,
+		"batch-with-attestation").Scan(&got); err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if got != hash {
+		t.Fatalf("driver_attestation_hash: got %q want %q", got, hash)
+	}
+}
+
 func TestDriverAttestationForkSiblingsExposedOnRecord(t *testing.T) {
 	env := newJourneyEnv(t)
 	owner := env.mintIdentity(t)

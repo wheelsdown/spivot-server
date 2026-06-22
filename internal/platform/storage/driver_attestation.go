@@ -170,6 +170,37 @@ INSERT INTO driver_attestations (
 	}, nil
 }
 
+// CurrentDriverForJourneyVehicle returns the driver attestation
+// that was in effect at the supplied time — i.e., the highest
+// effective_time value <= at for the supplied journey vehicle.
+// Used by the GET /v1/journeys/{id}/vehicles/{vid}/current-driver
+// endpoint so consumers can ask "who's driving right now" (at =
+// time.Now()) or "who was driving when sample S was captured"
+// (at = sample.captured_time).
+//
+// Returns [ErrDriverAttestationNotFound] when no attestation
+// exists at or before `at`. Tie-breaks on identical
+// effective_time values by received_at descending so a server
+// replay that records both attestations of a fork picks the
+// later-received one as "current" (the client surfaces fork
+// detection via [Store.DriverAttestationForkSiblings]).
+func (s *Store) CurrentDriverForJourneyVehicle(ctx context.Context, journeyVehicleID string, at time.Time) (DriverAttestationRecord, error) {
+	if s == nil || s.db == nil {
+		return DriverAttestationRecord{}, errors.New("storage: database is not open")
+	}
+	row := s.db.QueryRowContext(ctx, `
+SELECT id, journey_vehicle_id, segment_id, driver_user_id, effective_time,
+       acl_version_consulted, prior_attestation_hash, trust_flag,
+       integrity_algorithm, integrity_key_id, integrity_signature,
+       canonical_payload_json, received_at
+FROM driver_attestations
+WHERE journey_vehicle_id = ? AND effective_time <= ?
+ORDER BY effective_time DESC, received_at DESC
+LIMIT 1
+`, journeyVehicleID, formatSQLiteTime(at))
+	return scanDriverAttestation(row)
+}
+
 // DriverAttestationByReplayKey returns the existing attestation
 // matching the supplied (journey_vehicle_id, driver_user_id,
 // effective_time) tuple. Used by the handler to return the

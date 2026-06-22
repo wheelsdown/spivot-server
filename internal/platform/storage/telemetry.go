@@ -18,13 +18,14 @@ import (
 // integration-proof endpoint only needs to confirm the auth stack
 // gates writes correctly.
 type TelemetryBatch struct {
-	ID            string
-	JourneyID     string
-	ParticipantID string
-	ClientBatchID string
-	SampleCount   int
-	PayloadDigest string
-	ReceivedAt    time.Time
+	ID                    string
+	JourneyID             string
+	ParticipantID         string
+	ClientBatchID         string
+	SampleCount           int
+	PayloadDigest         string
+	DriverAttestationHash *string
+	ReceivedAt            time.Time
 }
 
 // TelemetryBatchParams names the input to
@@ -49,6 +50,14 @@ type TelemetryBatchParams struct {
 	ClientBatchID string
 	SampleCount   int
 	PayloadDigest string
+	// DriverAttestationHash optionally links this batch to the
+	// [opencaravan.DriverAttestation] that was in effect when the
+	// samples were captured. The hash is stored verbatim — no FK
+	// to driver_attestations, since gossipped attestations may
+	// reach the server after the telemetry batch they describe.
+	// A future audit replay correlates by hash once both rows are
+	// present. Nil leaves the column NULL.
+	DriverAttestationHash *string
 }
 
 // ErrTelemetryBatchDuplicate is returned by
@@ -95,11 +104,15 @@ func (s *Store) RecordTelemetryBatch(ctx context.Context, params TelemetryBatchP
 	batchID := string(batchUUID)
 	now := time.Now().UTC()
 
+	var attestationHashArg any
+	if params.DriverAttestationHash != nil {
+		attestationHashArg = *params.DriverAttestationHash
+	}
 	_, err = s.db.ExecContext(ctx, `
 INSERT INTO telemetry_batches (
     id, journey_id, participant_id, client_batch_id, sample_count,
-    received_at, payload_digest
-) VALUES (?, ?, ?, ?, ?, ?, ?)
+    received_at, payload_digest, driver_attestation_hash
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 `,
 		batchID,
 		params.JourneyID,
@@ -108,6 +121,7 @@ INSERT INTO telemetry_batches (
 		params.SampleCount,
 		formatSQLiteTime(now),
 		params.PayloadDigest,
+		attestationHashArg,
 	)
 	if err != nil {
 		// SQLite surfaces UNIQUE violation as "UNIQUE constraint
@@ -124,13 +138,14 @@ INSERT INTO telemetry_batches (
 	}
 
 	return TelemetryBatch{
-		ID:            batchID,
-		JourneyID:     params.JourneyID,
-		ParticipantID: params.ParticipantID,
-		ClientBatchID: params.ClientBatchID,
-		SampleCount:   params.SampleCount,
-		PayloadDigest: params.PayloadDigest,
-		ReceivedAt:    now,
+		ID:                    batchID,
+		JourneyID:             params.JourneyID,
+		ParticipantID:         params.ParticipantID,
+		ClientBatchID:         params.ClientBatchID,
+		SampleCount:           params.SampleCount,
+		PayloadDigest:         params.PayloadDigest,
+		DriverAttestationHash: params.DriverAttestationHash,
+		ReceivedAt:            now,
 	}, nil
 }
 
