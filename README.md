@@ -269,6 +269,17 @@ and `OpenCaravan vA.B.C` are independent vectors. A long divergence
 not a bug — it tells a client author that the wire format has been
 stable for many server releases.
 
+## Vehicles, Garages, and Driver Attestations
+
+[`docs/vehicles.md`](docs/vehicles.md) covers how this server
+realizes the OpenCaravan vehicle protocol: storage schema rationale,
+per-endpoint behavior, the integrity verifier internals, and curl
+walkthroughs for the journey-side vehicle lifecycle and household
+garage sharing flows. Read
+[opencaravan-go/docs/vehicles.md](https://github.com/opencaravan/opencaravan-go/blob/main/docs/vehicles.md)
+first for the canonical wire-format specification; this server's
+doc starts every section by cross-referencing the spec.
+
 ## Certificate Authority
 
 Spivot Server acts as its own certificate authority for the client apps that
