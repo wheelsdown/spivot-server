@@ -201,6 +201,18 @@ func (s *Store) CreateJourneyVehicle(ctx context.Context, params JourneyVehicleC
 	if params.InitialACL.OwnerUserID != params.Vehicle.OwnerUserID {
 		return JourneyVehicleRecord{}, errors.New("storage: initial acl owner_user_id must match vehicle owner_user_id")
 	}
+	// Genesis-revision invariant: CreateJourneyVehicle's contract
+	// is to mint the v=1 metadata revision + v=1 ACL revision.
+	// Subsequent revisions go through AppendJourneyVehicleRevision
+	// / AppendJourneyVehicleACL. Enforcing this at the storage
+	// layer (not just the HTTP handler) keeps the contract true
+	// against any future caller that bypasses the HTTP path.
+	if params.Vehicle.RevisionVersion != 1 {
+		return JourneyVehicleRecord{}, errors.New("storage: vehicle revision_version must be 1 on create")
+	}
+	if params.InitialACL.ACLVersion != 1 {
+		return JourneyVehicleRecord{}, errors.New("storage: initial acl_version must be 1 on create")
+	}
 
 	avatarHash := blobRefHash(params.Vehicle.AvatarBlob)
 	bannerHash := blobRefHash(params.Vehicle.BannerBlob)

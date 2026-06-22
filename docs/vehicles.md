@@ -149,7 +149,7 @@ generic infra failures.
 | `POST /v1/journeys/{id}/vehicles/{vid}/revisions` | session: `journey.write` | 201 / 400 / 403 (owner mismatch, signature invalid, owner-departed freeze) / 404 / 409 (version conflict). Publishes a new signed metadata bundle revision. |
 | `GET /v1/journeys/{id}/vehicles` | session: `journey.read` | 200 |
 | `GET /v1/journeys/{id}/vehicles/{vid}` | session: `journey.read` | 200 / 404 |
-| `POST /v1/journeys/{id}/vehicles/{vid}/acl-revisions` | session: `journey.write` | 201 / 400 / 403 (owner mismatch, signature invalid) / 404 / 409 (version conflict) |
+| `POST /v1/journeys/{id}/vehicles/{vid}/acl-revisions` | session: `journey.write` | 201 / 400 / 403 (owner mismatch, signature invalid, owner-departed freeze) / 404 / 409 (version conflict) |
 | `POST /v1/journeys/{id}/vehicles/{vid}/driver-attestations` | session: `journey.write` | 201 (fresh) / 200 (gossiped replay returns stored record) / 400 (bad ACL-at-time, missing integrity) / 403 (driver mismatch) / 404 (vehicle missing) |
 | `GET /v1/journeys/{id}/vehicles/{vid}/driver-attestations` | session: `journey.read` | 200 / 404 |
 | `GET /v1/journeys/{id}/vehicles/{vid}/current-driver[?at=<rfc3339>]` | session: `journey.read` | 200 / 400 (invalid `?at`) / 404 (no attestation in effect yet) |

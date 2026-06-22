@@ -204,6 +204,57 @@ func TestJourneyVehicleCreateRejectsACLVehicleIDMismatch(t *testing.T) {
 	}
 }
 
+func TestJourneyVehicleCreateRejectsNonGenesisRevisionVersion(t *testing.T) {
+	// The create endpoint is the genesis revision endpoint;
+	// subsequent metadata revisions go through /revisions.
+	// A non-1 revision_version on create must be a 400 so a
+	// client mistakenly posting v=2 here gets a clear error
+	// rather than silently creating a chain with no v=1.
+	env := newJourneyEnv(t)
+	id := env.mintIdentity(t)
+	journey := env.mustCreateJourney(t, id, "Pacific Coast Drive")
+	jid, err := opencaravan.ParseUUID(journey.ID)
+	if err != nil {
+		t.Fatalf("ParseUUID: %v", err)
+	}
+	mac := env.issueSessionMacaroon(t, id, jid, opencaravan.SessionActionJourneyWrite)
+	vehicle, acl := env.newSignedVehicleBundle(t, id)
+	vehicle.RevisionVersion = 2
+	env.signVehicle(t, id, &vehicle)
+
+	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", vehicleCreateRequest(vehicle, acl), id, mac)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "revision_version must be 1") {
+		t.Fatalf("body missing genesis-revision hint: %s", rec.Body.String())
+	}
+}
+
+func TestJourneyVehicleCreateRejectsNonGenesisACLVersion(t *testing.T) {
+	// Same rationale as the metadata-revision sibling above:
+	// subsequent ACL updates go through /acl-revisions.
+	env := newJourneyEnv(t)
+	id := env.mintIdentity(t)
+	journey := env.mustCreateJourney(t, id, "Pacific Coast Drive")
+	jid, err := opencaravan.ParseUUID(journey.ID)
+	if err != nil {
+		t.Fatalf("ParseUUID: %v", err)
+	}
+	mac := env.issueSessionMacaroon(t, id, jid, opencaravan.SessionActionJourneyWrite)
+	vehicle, acl := env.newSignedVehicleBundle(t, id)
+	acl.ACLVersion = 2
+	env.signVehicleACL(t, id, &acl)
+
+	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", vehicleCreateRequest(vehicle, acl), id, mac)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "acl_version must be 1") {
+		t.Fatalf("body missing genesis-acl hint: %s", rec.Body.String())
+	}
+}
+
 func TestJourneyVehicleCreateDuplicateOwnerConflict(t *testing.T) {
 	env := newJourneyEnv(t)
 	id := env.mintIdentity(t)

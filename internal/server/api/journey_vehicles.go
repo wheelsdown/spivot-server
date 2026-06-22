@@ -172,6 +172,23 @@ func (s *Server) handleJourneyVehicleCreate(w http.ResponseWriter, r *http.Reque
 			"initial_acl.owner_user_id must equal vehicle.owner_user_id.")
 		return
 	}
+	// The create endpoint mints the genesis revisions of both
+	// chains. Subsequent metadata revisions go through the
+	// /revisions endpoint; subsequent ACL revisions go through
+	// /acl-revisions. Reject any non-genesis version here so a
+	// client that mistakenly POSTs a later revision to the
+	// create endpoint gets a clear error instead of silently
+	// creating a chain with no v=1.
+	if vehicle.RevisionVersion != 1 {
+		writeProblem(w, s.logger, http.StatusBadRequest, "invalid_vehicle",
+			"vehicle.revision_version must be 1 on create; POST subsequent revisions to /revisions.")
+		return
+	}
+	if acl.ACLVersion != 1 {
+		writeProblem(w, s.logger, http.StatusBadRequest, "invalid_acl",
+			"initial_acl.acl_version must be 1 on create; POST subsequent ACL revisions to /acl-revisions.")
+		return
+	}
 	if string(vehicle.OwnerUserID) != id.UserID {
 		s.logger.Warn("vehicles: owner mismatch",
 			"session_user_id", id.UserID,
