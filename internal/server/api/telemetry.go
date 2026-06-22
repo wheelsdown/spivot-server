@@ -31,6 +31,16 @@ const maxTelemetryBodyBytes = 1 << 20 // 1 MiB
 type TelemetryBatchRequest struct {
 	ClientBatchID string                       `json:"client_batch_id"`
 	Samples       []opencaravan.PositionSample `json:"samples"`
+	// DriverAttestationHash optionally links this batch to the
+	// [opencaravan.DriverAttestation] that was in effect when the
+	// samples were captured. When set, the server persists it on
+	// the telemetry_batches row so a future audit replay can
+	// downgrade the chain of custody if the linked attestation
+	// later fails verification. The protocol expects the
+	// canonical "sha256:<64 lowercase hex>" shape, but the
+	// telemetry endpoint accepts any non-empty string — strict
+	// shape enforcement is the audit replay's job.
+	DriverAttestationHash *string `json:"driver_attestation_hash,omitempty"`
 }
 
 // TelemetryBatchResponse is the ack the handler returns. Carries
@@ -147,6 +157,16 @@ func (s *Server) handleJourneyTelemetry(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	}
+	// Empty-string driver_attestation_hash is rejected when the
+	// caller bothered to include the field — sending "" defeats
+	// the "optional linkage" intent and would persist a
+	// meaningless join key. Omit the field entirely to leave the
+	// column NULL.
+	if req.DriverAttestationHash != nil && *req.DriverAttestationHash == "" {
+		writeProblem(w, s.logger, http.StatusBadRequest, "invalid_request",
+			"driver_attestation_hash must be non-empty when present; omit the field to leave it unset")
+		return
+	}
 
 	// Resolve the caller's participant in this journey. The
 	// macaroon's journey= caveat already passed
@@ -170,11 +190,12 @@ func (s *Server) handleJourneyTelemetry(w http.ResponseWriter, r *http.Request) 
 
 	digest := sha256.Sum256(body)
 	batch, err := s.cfg.JourneyStore.RecordTelemetryBatch(r.Context(), storage.TelemetryBatchParams{
-		JourneyID:     journeyID,
-		ParticipantID: participant.ID,
-		ClientBatchID: req.ClientBatchID,
-		SampleCount:   len(req.Samples),
-		PayloadDigest: "sha256:" + hex.EncodeToString(digest[:]),
+		JourneyID:             journeyID,
+		ParticipantID:         participant.ID,
+		ClientBatchID:         req.ClientBatchID,
+		SampleCount:           len(req.Samples),
+		PayloadDigest:         "sha256:" + hex.EncodeToString(digest[:]),
+		DriverAttestationHash: req.DriverAttestationHash,
 	})
 	switch {
 	case errors.Is(err, storage.ErrTelemetryBatchDuplicate):

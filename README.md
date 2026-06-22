@@ -232,6 +232,14 @@ GET  /v1/journeys/{id}/vehicles/{vid}/driver-attestations
                                 ordered by effective_time ascending,
                                 including low-trust rows so clients
                                 can audit the full chain of custody
+GET  /v1/journeys/{id}/vehicles/{vid}/current-driver
+                                (requires session macaroon scoped to
+                                the journey + journey.read) returns
+                                the DriverAttestation in effect at
+                                the optional ?at=<rfc3339> timestamp
+                                (defaults to now); includes fork
+                                siblings when the attestation chains
+                                to a contested predecessor
 ```
 
 Future OpenCaravan API routes will be documented as they land. Go package

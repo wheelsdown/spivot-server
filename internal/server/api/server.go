@@ -131,6 +131,10 @@ type DriverAttestationStore interface {
 	// handler can surface a fork warning when two drivers
 	// concurrently claim the same predecessor.
 	DriverAttestationForkSiblings(ctx context.Context, journeyVehicleID, priorHash string) ([]storage.DriverAttestationRecord, error)
+	// CurrentDriverForJourneyVehicle returns the attestation in
+	// effect at the supplied time (the highest effective_time
+	// value <= at). Used by the current-driver query endpoint.
+	CurrentDriverForJourneyVehicle(ctx context.Context, journeyVehicleID string, at time.Time) (storage.DriverAttestationRecord, error)
 }
 
 // GarageStore is the narrow subset of storage operations the
@@ -408,6 +412,9 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("GET /v1/journeys/{id}/vehicles/{vid}/driver-attestations", middleware.RequireSession(s.cfg.MacaroonVerifier, s.logger,
 			middleware.SessionActionJourneyFromPath(opencaravan.SessionActionJourneyRead, "id"),
 		)(http.HandlerFunc(s.handleDriverAttestationList)))
+		mux.Handle("GET /v1/journeys/{id}/vehicles/{vid}/current-driver", middleware.RequireSession(s.cfg.MacaroonVerifier, s.logger,
+			middleware.SessionActionJourneyFromPath(opencaravan.SessionActionJourneyRead, "id"),
+		)(http.HandlerFunc(s.handleCurrentDriver)))
 	}
 
 	h := s.withLogging(mux)
