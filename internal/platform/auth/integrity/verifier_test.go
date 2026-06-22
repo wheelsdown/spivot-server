@@ -207,6 +207,56 @@ func TestVerifyPayloadInvalidIntegrityEnvelope(t *testing.T) {
 	}
 }
 
+func TestVerifyPayloadWithKeyHappyPath(t *testing.T) {
+	// VerifyPayloadWithKey skips the resolver entirely — the
+	// caller supplies the key directly. Same crypto path as
+	// VerifyPayload, no DB lookup. Used by handlers that have
+	// already loaded the signing cert and want to avoid the
+	// duplicate resolver round-trip.
+	canonical := []byte(`{"id":"with-key"}`)
+	envelope, pub := signTestPayload(t, "app-1", canonical)
+	v := NewVerifier(resolverReturning(nil, errors.New("resolver MUST NOT be called for WithKey path")))
+	if err := v.VerifyPayloadWithKey(canonical, envelope, pub); err != nil {
+		t.Fatalf("VerifyPayloadWithKey: %v", err)
+	}
+}
+
+func TestVerifyPayloadWithKeyDetectsTamperedBytes(t *testing.T) {
+	envelope, pub := signTestPayload(t, "app-1", []byte(`{"id":"original"}`))
+	v := NewVerifier(resolverReturning(nil, errors.New("resolver MUST NOT be called")))
+	err := v.VerifyPayloadWithKey([]byte(`{"id":"tampered"}`), envelope, pub)
+	if !errors.Is(err, ErrSignatureInvalid) {
+		t.Fatalf("got %v, want ErrSignatureInvalid", err)
+	}
+}
+
+func TestVerifyPayloadWithKeyKeyTypeMismatch(t *testing.T) {
+	canonical := []byte("data")
+	envelope, _ := signTestPayload(t, "app-1", canonical)
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("rsa.GenerateKey: %v", err)
+	}
+	v := NewVerifier(resolverReturning(nil, errors.New("resolver MUST NOT be called")))
+	verr := v.VerifyPayloadWithKey(canonical, envelope, &rsaKey.PublicKey)
+	if !errors.Is(verr, ErrKeyTypeMismatch) {
+		t.Fatalf("got %v, want ErrKeyTypeMismatch", verr)
+	}
+}
+
+func TestVerifyPayloadWithKeyShortCircuitsBeforeKey(t *testing.T) {
+	// preverify checks (empty payload, bad algorithm, malformed
+	// signature) must fire BEFORE the key is touched, so callers
+	// supplying a nil key still get the right input-shape error.
+	envelope, _ := signTestPayload(t, "app-1", []byte("data"))
+	envelope.Algorithm = "wrong"
+	v := NewVerifier(resolverReturning(nil, errors.New("resolver MUST NOT be called")))
+	err := v.VerifyPayloadWithKey([]byte("data"), envelope, nil)
+	if !errors.Is(err, ErrUnsupportedAlgorithm) {
+		t.Fatalf("got %v, want ErrUnsupportedAlgorithm", err)
+	}
+}
+
 func TestNewVerifierPanicsOnNilResolver(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {

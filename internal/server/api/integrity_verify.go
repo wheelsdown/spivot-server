@@ -87,7 +87,19 @@ func verifySignedPayload(
 		return false
 	}
 
-	if err := verifier.VerifyPayload(r.Context(), canonical, envelope); err != nil {
+	// Use VerifyPayloadWithKey so the resolver doesn't re-query
+	// the same enrolled cert we just loaded. Avoids a duplicate
+	// DB round-trip per request AND closes a TOCTOU window where
+	// the cert could be revoked between the lookup above and a
+	// second resolver-driven lookup.
+	if certRec.Certificate == nil {
+		logger.Error(loggerPrefix+": enrolled cert record missing parsed certificate",
+			"key_id", envelope.KeyID)
+		writeProblem(w, logger, http.StatusInternalServerError, "internal_error",
+			"Enrolled certificate record is missing its parsed form.")
+		return false
+	}
+	if err := verifier.VerifyPayloadWithKey(canonical, envelope, certRec.Certificate.PublicKey); err != nil {
 		writeIntegrityVerifyProblem(w, logger, err, loggerPrefix)
 		return false
 	}

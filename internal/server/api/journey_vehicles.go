@@ -69,17 +69,23 @@ type JourneyVehicleACLRevisionResponse struct {
 //
 // Wrapped by [middleware.RequireSession] with a journey.write
 // constraint: the caller's macaroon must carry journey={id} +
-// action=journey.write caveats. The handler additionally enforces
-// "the owner_user_id in the payload must match the session
-// identity" — defense in depth so a holder of a journey.write
-// session cannot attribute a vehicle to another user.
+// action=journey.write caveats. The handler enforces THREE
+// authorization layers:
 //
-// Signature cryptographic verification is deferred to the
-// driver-attestation phase; this handler trusts the structural
-// envelope plus the session-identity match. The canonical bytes
-// the owner signed are recomputed and stored so a future
-// verification pass can re-check the signature without trusting
-// the wire body's whitespace.
+//  1. payload.owner_user_id == session.user_id (defense in depth
+//     so a journey.write holder can't attribute a vehicle to
+//     another user).
+//  2. The signing client app's enrolled cert (resolved via
+//     Integrity.KeyID) belongs to vehicle.OwnerUserID. Catches
+//     "I signed with my own key but claimed someone else's
+//     vehicle."
+//  3. The Integrity envelope's ecdsa-p256-sha256 signature
+//     verifies against the resolved cert's public key over the
+//     canonical bytes. This is the actual cryptographic check.
+//
+// Canonical bytes are stored verbatim so a later signature
+// re-verification (e.g., during audit replay) doesn't depend on
+// reproducing the original encoder behavior.
 //
 // Failures map to:
 //

@@ -101,6 +101,22 @@ func NewVerifier(resolver KeyResolver) *Verifier {
 	return &Verifier{resolver: resolver}
 }
 
+// VerifyPayloadWithKey verifies the signature against a public key
+// the caller has already resolved out-of-band. Callers that need
+// the [storage.CertIdentity] alongside the verification result
+// (typical handler shape: load cert once → cross-check
+// cert.UserID against the payload's claimed owner → verify
+// signature) use this method to avoid a duplicate cert lookup
+// through the [KeyResolver]. The error precedence is identical to
+// [Verifier.VerifyPayload] except steps 5 and 6 (resolver lookup)
+// are replaced by direct use of pubKey.
+func (v *Verifier) VerifyPayloadWithKey(canonicalPayload []byte, integrity opencaravan.Integrity, pubKey any) error {
+	if err := v.preverify(canonicalPayload, integrity); err != nil {
+		return err
+	}
+	return v.verifyParsedKey(canonicalPayload, integrity, pubKey)
+}
+
 // VerifyPayload checks that integrity is a valid ECDSA-P-256
 // signature over canonicalPayload, produced by the key identified
 // by integrity.KeyID.
@@ -129,6 +145,26 @@ func NewVerifier(resolver KeyResolver) *Verifier {
 // AND [errors.Unwrap] to the root cause (base64 decode error,
 // resolver transport error, etc.).
 func (v *Verifier) VerifyPayload(ctx context.Context, canonicalPayload []byte, integrity opencaravan.Integrity) error {
+	if err := v.preverify(canonicalPayload, integrity); err != nil {
+		return err
+	}
+	pubAny, err := v.resolver.ResolvePublicKey(ctx, integrity.KeyID)
+	if err != nil {
+		if errors.Is(err, ErrKeyIDUnresolved) {
+			return err
+		}
+		return fmt.Errorf("%w: %w", ErrResolverTransport, err)
+	}
+	return v.verifyParsedKey(canonicalPayload, integrity, pubAny)
+}
+
+// preverify runs the input-shape checks that don't depend on the
+// public key: payload non-empty, integrity envelope structurally
+// valid, supported algorithm, signature parses as ASN.1 ECDSA.
+// Shared between [Verifier.VerifyPayload] and
+// [Verifier.VerifyPayloadWithKey] so both surface the same errors
+// in the same order.
+func (v *Verifier) preverify(canonicalPayload []byte, integrity opencaravan.Integrity) error {
 	if err := integrity.Validate(); err != nil {
 		return fmt.Errorf("integrity validate: %w", err)
 	}
@@ -145,14 +181,14 @@ func (v *Verifier) VerifyPayload(ctx context.Context, canonicalPayload []byte, i
 	if err := validateECDSASignatureASN1(sig); err != nil {
 		return fmt.Errorf("%w: %w", ErrSignatureMalformed, err)
 	}
+	return nil
+}
 
-	pubAny, err := v.resolver.ResolvePublicKey(ctx, integrity.KeyID)
-	if err != nil {
-		if errors.Is(err, ErrKeyIDUnresolved) {
-			return err
-		}
-		return fmt.Errorf("%w: %w", ErrResolverTransport, err)
-	}
+// verifyParsedKey runs the public-key-dependent checks: type +
+// curve check, then the actual ECDSA verification. Caller has
+// already run [Verifier.preverify] so the signature is known to be
+// valid base64 + ASN.1.
+func (v *Verifier) verifyParsedKey(canonicalPayload []byte, integrity opencaravan.Integrity, pubAny any) error {
 	pub, ok := pubAny.(*ecdsa.PublicKey)
 	if !ok || pub == nil {
 		return fmt.Errorf("%w: got %T", ErrKeyTypeMismatch, pubAny)
@@ -160,7 +196,7 @@ func (v *Verifier) VerifyPayload(ctx context.Context, canonicalPayload []byte, i
 	if pub.Curve != elliptic.P256() {
 		return fmt.Errorf("%w: curve is %s, want P-256", ErrKeyTypeMismatch, pub.Curve.Params().Name)
 	}
-
+	sig, _ := base64.StdEncoding.DecodeString(integrity.Signature) // already validated in preverify
 	digest := sha256.Sum256(canonicalPayload)
 	if !ecdsa.VerifyASN1(pub, digest[:], sig) {
 		return ErrSignatureInvalid
