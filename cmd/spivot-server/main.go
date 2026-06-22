@@ -179,10 +179,28 @@ func runServe(ctx context.Context, stdout io.Writer, stderr io.Writer, args []st
 	if err != nil {
 		return err
 	}
+	accountCount, err := store.AccountCount(ctx)
+	if err != nil {
+		return fmt.Errorf("count accounts on startup: %w", err)
+	}
+	clientAppCount, err := store.ClientAppCount(ctx)
+	if err != nil {
+		return fmt.Errorf("count client_apps on startup: %w", err)
+	}
+	certCount, err := store.IssuedCertificateCount(ctx)
+	if err != nil {
+		return fmt.Errorf("count issued_certificates on startup: %w", err)
+	}
 	logger.Info("storage ready",
 		"database_path", store.Path(),
 		"applied_migrations", len(appliedMigrations),
+		"accounts", accountCount,
+		"client_apps", clientAppCount,
+		"issued_certificates", certCount,
 	)
+	if msg := dataDirEphemeralWarning(cfg.dataDir); msg != "" {
+		logger.Warn(msg, "data_dir", cfg.dataDir)
+	}
 	if err := emitBootstrapInviteIfNeeded(ctx, store, stdout, logger); err != nil {
 		return fmt.Errorf("emit bootstrap invite: %w", err)
 	}
@@ -589,6 +607,55 @@ func emitBootstrapInviteIfNeeded(ctx context.Context, store *storage.Store, stdo
 	return nil
 }
 
+// procSelfMountInfo reads /proc/self/mountinfo. Wrapped in a var
+// so tests can substitute synthetic mountinfo content without
+// requiring a Linux host.
+var procSelfMountInfo = func() ([]byte, error) {
+	return os.ReadFile("/proc/self/mountinfo")
+}
+
+// dataDirEphemeralWarning returns a human-readable warning when
+// the supplied data_dir does not appear to be a mount point on
+// Linux — i.e., when it lives on the container's overlay
+// filesystem and will be wiped on every container recreation.
+// The empty string means "no warning" (either the dir is mounted,
+// or this isn't Linux so the check doesn't apply).
+//
+// Catches the misconfiguration where a docker-compose volume is
+// mapped to the wrong in-container path (e.g.,
+// `/usr/local/.../lib:/usr/lib/spivot` instead of
+// `:/var/lib/spivot`), which silently writes SQLite state into
+// the writable layer and loses everything on `docker compose up
+// --force-recreate`. A loud startup WARN turns days of "why is
+// the bootstrap banner back?" into seconds.
+func dataDirEphemeralWarning(dataDir string) string {
+	absDir, err := filepath.Abs(dataDir)
+	if err != nil {
+		return ""
+	}
+	data, err := procSelfMountInfo()
+	if err != nil {
+		// /proc not present — not Linux, or the check can't run.
+		// Skip silently rather than false-alarm on developer
+		// laptops (macOS/Windows) where this binary may run
+		// against a local data_dir that's never a mount point.
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		// mountinfo format: id parent major:minor root mountPoint
+		// options - filesystemType source superOptions
+		fields := strings.Fields(line)
+		if len(fields) < 5 {
+			continue
+		}
+		if fields[4] == absDir {
+			return ""
+		}
+	}
+	return "data_dir does not appear to be a mount point — SQLite state may not survive container recreation. " +
+		"If running under Docker/Compose, ensure a volume is mapped to " + absDir + " (and not a different in-container path)."
+}
+
 func formatBootstrapBanner(token opencaravan.InviteToken) string {
 	const bar = "████████████████████████████████████████████████████████████████████"
 	const div = "  ────────────────────────────────────────────────────────────────"
@@ -599,8 +666,6 @@ func formatBootstrapBanner(token opencaravan.InviteToken) string {
 		"  invite to enroll the first user. Single-use, 24h expiry.\n" +
 		"\n" +
 		"      " + token.Value + "\n" +
-		"\n" +
-		"  iOS app: Settings → Add Account → Use Invite\n" +
 		bar + "\n"
 }
 

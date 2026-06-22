@@ -63,6 +63,15 @@ ENV SPIVOT_CONFIG_DIR=/etc/spivot
 ENV SPIVOT_DATA_DIR=/var/lib/spivot
 ENV SPIVOT_DATABASE_PATH=/var/lib/spivot/spivot.db
 
+# Declare /var/lib/spivot as a volume so an unmapped deploy still
+# gets an anonymous volume (state survives container restart and
+# image upgrade — just not `docker compose down --volumes`). Pairs
+# with the startup mount-point check in main.go that WARNs when
+# the dir lives on the writable layer; this VOLUME makes the
+# default-behavior fallback safer rather than relying purely on
+# the operator to map the volume correctly.
+VOLUME /var/lib/spivot
+
 USER 65532:65532
 EXPOSE 8080
 

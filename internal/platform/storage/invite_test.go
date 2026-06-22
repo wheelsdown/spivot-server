@@ -320,3 +320,25 @@ func TestAccountCountReturnsZeroOnFreshDatabase(t *testing.T) {
 		t.Fatalf("count = %d, want 0", got)
 	}
 }
+
+func TestClientAppCountReturnsZeroOnFreshDatabase(t *testing.T) {
+	store := openTestStore(t)
+	got, err := store.ClientAppCount(context.Background())
+	if err != nil {
+		t.Fatalf("ClientAppCount: %v", err)
+	}
+	if got != 0 {
+		t.Fatalf("count = %d, want 0", got)
+	}
+}
+
+func TestIssuedCertificateCountReturnsZeroOnFreshDatabase(t *testing.T) {
+	store := openTestStore(t)
+	got, err := store.IssuedCertificateCount(context.Background())
+	if err != nil {
+		t.Fatalf("IssuedCertificateCount: %v", err)
+	}
+	if got != 0 {
+		t.Fatalf("count = %d, want 0", got)
+	}
+}
