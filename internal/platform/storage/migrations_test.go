@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -51,7 +52,6 @@ func TestOpenCaravanFoundationTables(t *testing.T) {
 		"federated_servers",
 		"accounts",
 		"account_devices",
-		"vehicles",
 		"journeys",
 		"journey_invites",
 		"journey_participants",
@@ -109,5 +109,17 @@ func TestOpenCaravanFoundationCapturesSchemaDecisions(t *testing.T) {
 				t.Fatalf("foundation SQL missing %q", tt.want)
 			}
 		})
+	}
+}
+
+func TestLegacyVehiclesTableRetired(t *testing.T) {
+	store := openTestStore(t)
+	var count int
+	if err := store.DB().QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='vehicles'`).Scan(&count); err != nil {
+		t.Fatalf("query sqlite_master: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("legacy `vehicles` table still exists after migration 000013; sqlite_master count=%d", count)
 	}
 }

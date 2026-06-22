@@ -307,6 +307,36 @@ func (s *Server) handleJourneyVehicleACLAppend(w http.ResponseWriter, r *http.Re
 			"Only the vehicle's recorded owner may publish ACL revisions.")
 		return
 	}
+	// Owner-departure freeze: per the protocol's locked-in
+	// decision ([opencaravan-go/docs/vehicles.md], "Edit Rights
+	// After Owner Departs"), a Vehicle becomes immutable when its
+	// recorded owner is no longer a journey participant. The
+	// vehicle remains in the journey — driver attestations
+	// against the existing ACL still validate — but the owner
+	// cannot publish a new ACL revision after leaving. If they
+	// rejoin the journey, the freeze lifts.
+	if s.cfg.JourneyStore == nil {
+		writeProblem(w, s.logger, http.StatusServiceUnavailable, "journey_unavailable",
+			"This server is not configured to verify journey participation.")
+		return
+	}
+	if _, err := s.cfg.JourneyStore.JourneyParticipantByUserAndJourney(r.Context(), stored.OwnerUserID, journeyID); err != nil {
+		if errors.Is(err, storage.ErrJourneyParticipantNotFound) {
+			s.logger.Info("vehicles: acl append blocked — owner not a journey participant",
+				"journey_id", journeyID,
+				"vehicle_id", vehicleID,
+				"owner_user_id", stored.OwnerUserID,
+			)
+			writeProblem(w, s.logger, http.StatusForbidden, "owner_not_a_participant",
+				"The vehicle's owner is no longer a journey participant; the vehicle is frozen.")
+			return
+		}
+		s.logger.Error("vehicles: acl owner-participant lookup failed", "error", err,
+			"journey_id", journeyID, "owner_user_id", stored.OwnerUserID)
+		writeProblem(w, s.logger, http.StatusInternalServerError, "internal_error",
+			"Could not verify journey participation.")
+		return
+	}
 
 	var acl opencaravan.VehicleACL
 	dec := json.NewDecoder(r.Body)

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -279,6 +280,58 @@ func TestJourneyVehicleACLAppendHappyPath(t *testing.T) {
 	}
 	if got.CurrentACLVersion != 2 {
 		t.Fatalf("current_acl_version: got %d want 2", got.CurrentACLVersion)
+	}
+}
+
+func TestJourneyVehicleACLAppendFrozenAfterOwnerDeparts(t *testing.T) {
+	// Locked-in decision: a Vehicle becomes immutable when its
+	// recorded owner is no longer a journey participant. The
+	// vehicle remains in the journey (existing attestations still
+	// validate) but the owner cannot publish a new ACL revision.
+	env := newJourneyEnv(t)
+	owner := env.mintIdentity(t)
+	journey := env.mustCreateJourney(t, owner, "Pacific Coast Drive")
+	jid, err := opencaravan.ParseUUID(journey.ID)
+	if err != nil {
+		t.Fatalf("ParseUUID: %v", err)
+	}
+	writeMac := env.issueSessionMacaroon(t, owner, jid, opencaravan.SessionActionJourneyWrite)
+
+	payload := env.newSignedVehiclePayload(t, owner)
+	if rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", payload, owner, writeMac); rec.Code != http.StatusCreated {
+		t.Fatalf("create: got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Simulate owner-departure by deleting the owner's
+	// journey_participants row. The macaroon caveat path still
+	// admits the request (the macaroon was minted while owner was
+	// a participant), so the handler-side freeze is what should
+	// reject the ACL append.
+	if _, err := env.store.DB().ExecContext(context.Background(),
+		`DELETE FROM journey_participants WHERE journey_id = ? AND account_id = ?`,
+		journey.ID, owner.UserID); err != nil {
+		t.Fatalf("simulate owner departure: %v", err)
+	}
+
+	acl := opencaravan.VehicleACL{
+		VehicleID:         payload.ID,
+		OwnerUserID:       opencaravan.UUID(owner.UserID),
+		ACLVersion:        2,
+		AuthorizedDrivers: []opencaravan.UUID{opencaravan.UUID(owner.UserID)},
+		EmergencyRule: &opencaravan.VehicleEmergencyRule{
+			Kind: opencaravan.VehicleEmergencyRuleNone,
+		},
+		EffectiveTime: time.Now().Add(time.Minute).UTC(),
+	}
+	env.signVehicleACL(t, owner, &acl)
+	rec := env.post(t,
+		"/v1/journeys/"+journey.ID+"/vehicles/"+string(payload.ID)+"/acl-revisions",
+		acl, owner, writeMac)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status: got %d want 403; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "owner_not_a_participant") {
+		t.Fatalf("body missing owner_not_a_participant code: %s", rec.Body.String())
 	}
 }
 
