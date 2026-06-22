@@ -83,9 +83,12 @@ type JourneyVehicleACLRevisionResponse struct {
 //
 // Failures map to:
 //
-//   - 503 when VehicleStore is not wired.
-//   - 400 for malformed JSON or failed structural validation.
-//   - 403 when payload.owner_user_id != session.user_id.
+//   - 503 when VehicleStore or IntegrityVerifier is not wired.
+//   - 400 for malformed JSON, failed structural validation, or
+//     unsupported/malformed signature envelope.
+//   - 403 when payload.owner_user_id != session.user_id, or when
+//     the signing client app's enrolled cert doesn't belong to the
+//     claimed owner, or when the signature doesn't verify.
 //   - 409 when the (journey_id, owner_user_id) pair already has a
 //     vehicle.
 //   - 500 for unexpected storage failures (logged, not exposed).
@@ -138,6 +141,17 @@ func (s *Server) handleJourneyVehicleCreate(w http.ResponseWriter, r *http.Reque
 		s.logger.Error("vehicles: canonical encode failed", "error", err)
 		writeProblem(w, s.logger, http.StatusInternalServerError, "internal_error",
 			"Could not compute canonical vehicle bytes.")
+		return
+	}
+
+	// Cryptographic verification: confirm the signing client app's
+	// enrolled cert belongs to vehicle.OwnerUserID AND that the
+	// signature verifies against the cert's public key over the
+	// canonical bytes. The session-identity check above already
+	// blocks session-vs-payload mismatches; this layer adds the
+	// cryptographic proof that the named owner actually signed.
+	if !verifySignedPayload(w, r, s.logger, s.cfg.IntegrityVerifier, s.cfg.VehicleStore,
+		canonical, *vehicle.Integrity, string(vehicle.OwnerUserID), "vehicles") {
 		return
 	}
 

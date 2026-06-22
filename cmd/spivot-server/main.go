@@ -30,6 +30,7 @@ import (
 
 	"github.com/opencaravan/opencaravan-go"
 	"github.com/wheelsdown/spivot-server/internal/app"
+	"github.com/wheelsdown/spivot-server/internal/platform/auth/integrity"
 	"github.com/wheelsdown/spivot-server/internal/platform/auth/macaroon"
 	"github.com/wheelsdown/spivot-server/internal/platform/buildinfo"
 	"github.com/wheelsdown/spivot-server/internal/platform/identity"
@@ -315,6 +316,7 @@ func runServe(ctx context.Context, stdout io.Writer, stderr io.Writer, args []st
 		CA:                     ca,
 		MacaroonIssuer:         macaroonIssuer,
 		MacaroonVerifier:       macaroonVerifier,
+		IntegrityVerifier:      integrity.NewVerifier(integrity.NewStoreResolver(store)),
 		JourneyStore:           store,
 		VehicleStore:           store,
 		DriverAttestationStore: store,
