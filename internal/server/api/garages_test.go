@@ -3,13 +3,21 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/opencaravan/opencaravan-go"
+
+	"github.com/wheelsdown/spivot-server/internal/server/middleware"
 )
 
-func newSignedGaragePayload(t *testing.T, ownerID string, name string, additionalOwners ...opencaravan.GarageOwner) opencaravan.Garage {
+// newSignedGaragePayload builds a Garage signed by `owner` with
+// that identity also recorded as SignedBy and listed as the
+// initial accepted owner. Uses the env's enrolled signing key so
+// the resulting Integrity envelope verifies against the
+// production handler.
+func (e *journeyEnv) newSignedGaragePayload(t *testing.T, owner middleware.Identity, name string, additionalOwners ...opencaravan.GarageOwner) opencaravan.Garage {
 	t.Helper()
 	garageID, err := opencaravan.NewUUID()
 	if err != nil {
@@ -17,28 +25,25 @@ func newSignedGaragePayload(t *testing.T, ownerID string, name string, additiona
 	}
 	now := time.Now().UTC()
 	owners := []opencaravan.GarageOwner{
-		{UserID: opencaravan.UUID(ownerID), AddedTime: now, AcceptedTime: &now},
+		{UserID: opencaravan.UUID(owner.UserID), AddedTime: now, AcceptedTime: &now},
 	}
 	owners = append(owners, additionalOwners...)
-	return opencaravan.Garage{
+	g := opencaravan.Garage{
 		ID:              garageID,
 		Name:            name,
 		RevisionVersion: 1,
 		RevisionTime:    now,
 		Owners:          owners,
-		SignedBy:        opencaravan.UUID(ownerID),
-		Integrity: &opencaravan.Integrity{
-			Algorithm: "ecdsa-p256-sha256",
-			KeyID:     ownerID,
-			Signature: "test-garage-signature",
-		},
+		SignedBy:        opencaravan.UUID(owner.UserID),
 	}
+	e.signGarage(t, owner, &g)
+	return g
 }
 
 func TestGarageCreateHappyPath(t *testing.T) {
 	env := newJourneyEnv(t)
 	owner := env.mintIdentity(t)
-	payload := newSignedGaragePayload(t, owner.UserID, "Riley's Garage")
+	payload := env.newSignedGaragePayload(t, owner, "Riley's Garage")
 
 	rec := env.post(t, "/v1/garages", payload, owner, "")
 	if rec.Code != http.StatusCreated {
@@ -67,7 +72,7 @@ func TestGarageCreateSignerMismatchRejected(t *testing.T) {
 	caller := env.mintIdentity(t)
 	other := env.mintIdentity(t)
 	// Payload claims `other` signed it, but caller is the session.
-	payload := newSignedGaragePayload(t, other.UserID, "G")
+	payload := env.newSignedGaragePayload(t, other, "G")
 	rec := env.post(t, "/v1/garages", payload, caller, "")
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status: got %d want 403; body=%s", rec.Code, rec.Body.String())
@@ -77,7 +82,7 @@ func TestGarageCreateSignerMismatchRejected(t *testing.T) {
 func TestGarageCreateRequiresRevisionVersionOne(t *testing.T) {
 	env := newJourneyEnv(t)
 	owner := env.mintIdentity(t)
-	payload := newSignedGaragePayload(t, owner.UserID, "G")
+	payload := env.newSignedGaragePayload(t, owner, "G")
 	payload.RevisionVersion = 2 // wrong for create
 	rec := env.post(t, "/v1/garages", payload, owner, "")
 	if rec.Code != http.StatusBadRequest {
@@ -90,7 +95,7 @@ func TestGarageListReturnsOwnedAndPending(t *testing.T) {
 	owner := env.mintIdentity(t)
 	invitee := env.mintIdentity(t)
 
-	payload := newSignedGaragePayload(t, owner.UserID, "Shared")
+	payload := env.newSignedGaragePayload(t, owner, "Shared")
 	if rec := env.post(t, "/v1/garages", payload, owner, ""); rec.Code != http.StatusCreated {
 		t.Fatalf("create: got %d", rec.Code)
 	}
@@ -108,12 +113,8 @@ func TestGarageListReturnsOwnedAndPending(t *testing.T) {
 			{UserID: opencaravan.UUID(invitee.UserID), AddedTime: now},
 		},
 		SignedBy: opencaravan.UUID(owner.UserID),
-		Integrity: &opencaravan.Integrity{
-			Algorithm: "ecdsa-p256-sha256",
-			KeyID:     owner.UserID,
-			Signature: "x",
-		},
 	}
+	env.signGarage(t, owner, &v2)
 	if rec := env.post(t, "/v1/garages/"+string(payload.ID)+"/revisions", v2, owner, ""); rec.Code != http.StatusCreated {
 		t.Fatalf("revision: got %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -149,7 +150,7 @@ func TestGarageGetForbidsNonOwner(t *testing.T) {
 	env := newJourneyEnv(t)
 	owner := env.mintIdentity(t)
 	stranger := env.mintIdentity(t)
-	payload := newSignedGaragePayload(t, owner.UserID, "Private")
+	payload := env.newSignedGaragePayload(t, owner, "Private")
 	if rec := env.post(t, "/v1/garages", payload, owner, ""); rec.Code != http.StatusCreated {
 		t.Fatalf("create: got %d", rec.Code)
 	}
@@ -165,7 +166,7 @@ func TestGarageOwnershipAcceptanceFullLifecycle(t *testing.T) {
 	owner := env.mintIdentity(t)
 	invitee := env.mintIdentity(t)
 
-	payload := newSignedGaragePayload(t, owner.UserID, "Household")
+	payload := env.newSignedGaragePayload(t, owner, "Household")
 	if rec := env.post(t, "/v1/garages", payload, owner, ""); rec.Code != http.StatusCreated {
 		t.Fatalf("create: got %d", rec.Code)
 	}
@@ -182,12 +183,8 @@ func TestGarageOwnershipAcceptanceFullLifecycle(t *testing.T) {
 			{UserID: opencaravan.UUID(invitee.UserID), AddedTime: inviteTime},
 		},
 		SignedBy: opencaravan.UUID(owner.UserID),
-		Integrity: &opencaravan.Integrity{
-			Algorithm: "ecdsa-p256-sha256",
-			KeyID:     owner.UserID,
-			Signature: "x",
-		},
 	}
+	env.signGarage(t, owner, &v2)
 	if rec := env.post(t, "/v1/garages/"+string(payload.ID)+"/revisions", v2, owner, ""); rec.Code != http.StatusCreated {
 		t.Fatalf("revision: got %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -198,12 +195,8 @@ func TestGarageOwnershipAcceptanceFullLifecycle(t *testing.T) {
 		RevisionVersionAccepted: 2,
 		AccepterUserID:          opencaravan.UUID(invitee.UserID),
 		AcceptedTime:            time.Now().Add(2 * time.Minute).UTC(),
-		Integrity: &opencaravan.Integrity{
-			Algorithm: "ecdsa-p256-sha256",
-			KeyID:     invitee.UserID,
-			Signature: "accept",
-		},
 	}
+	env.signGarageOwnershipAcceptance(t, invitee, &acceptance)
 	rec := env.post(t, "/v1/garages/"+string(payload.ID)+"/ownership-acceptances", acceptance, invitee, "")
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("accept: got %d body=%s", rec.Code, rec.Body.String())
@@ -231,7 +224,7 @@ func TestGarageOwnershipAcceptanceReplayReturns200WithStoredValues(t *testing.T)
 	owner := env.mintIdentity(t)
 	invitee := env.mintIdentity(t)
 
-	payload := newSignedGaragePayload(t, owner.UserID, "Household")
+	payload := env.newSignedGaragePayload(t, owner, "Household")
 	if rec := env.post(t, "/v1/garages", payload, owner, ""); rec.Code != http.StatusCreated {
 		t.Fatalf("create: got %d", rec.Code)
 	}
@@ -247,12 +240,8 @@ func TestGarageOwnershipAcceptanceReplayReturns200WithStoredValues(t *testing.T)
 			{UserID: opencaravan.UUID(invitee.UserID), AddedTime: inviteTime},
 		},
 		SignedBy: opencaravan.UUID(owner.UserID),
-		Integrity: &opencaravan.Integrity{
-			Algorithm: "ecdsa-p256-sha256",
-			KeyID:     owner.UserID,
-			Signature: "x",
-		},
 	}
+	env.signGarage(t, owner, &v2)
 	if rec := env.post(t, "/v1/garages/"+string(payload.ID)+"/revisions", v2, owner, ""); rec.Code != http.StatusCreated {
 		t.Fatalf("revision: got %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -262,12 +251,8 @@ func TestGarageOwnershipAcceptanceReplayReturns200WithStoredValues(t *testing.T)
 		RevisionVersionAccepted: 2,
 		AccepterUserID:          opencaravan.UUID(invitee.UserID),
 		AcceptedTime:            time.Now().Add(2 * time.Minute).UTC(),
-		Integrity: &opencaravan.Integrity{
-			Algorithm: "ecdsa-p256-sha256",
-			KeyID:     invitee.UserID,
-			Signature: "accept",
-		},
 	}
+	env.signGarageOwnershipAcceptance(t, invitee, &acceptance)
 	first := env.post(t, "/v1/garages/"+string(payload.ID)+"/ownership-acceptances", acceptance, invitee, "")
 	if first.Code != http.StatusCreated {
 		t.Fatalf("first accept: got %d body=%s", first.Code, first.Body.String())
@@ -311,7 +296,7 @@ func TestGarageCreateRejectsPreSeededAdditionalOwners(t *testing.T) {
 	env := newJourneyEnv(t)
 	owner := env.mintIdentity(t)
 	other := env.mintIdentity(t)
-	payload := newSignedGaragePayload(t, owner.UserID, "G")
+	payload := env.newSignedGaragePayload(t, owner, "G")
 	// Pre-seed another accepted owner — must be rejected.
 	otherAccepted := payload.Owners[0].AddedTime
 	payload.Owners = append(payload.Owners, opencaravan.GarageOwner{
@@ -331,7 +316,7 @@ func TestGarageOwnershipAcceptanceAccepterMismatchRejected(t *testing.T) {
 	invitee := env.mintIdentity(t)
 	stranger := env.mintIdentity(t)
 
-	payload := newSignedGaragePayload(t, owner.UserID, "G")
+	payload := env.newSignedGaragePayload(t, owner, "G")
 	if rec := env.post(t, "/v1/garages", payload, owner, ""); rec.Code != http.StatusCreated {
 		t.Fatalf("create: got %d", rec.Code)
 	}
@@ -347,12 +332,8 @@ func TestGarageOwnershipAcceptanceAccepterMismatchRejected(t *testing.T) {
 			{UserID: opencaravan.UUID(invitee.UserID), AddedTime: now},
 		},
 		SignedBy: opencaravan.UUID(owner.UserID),
-		Integrity: &opencaravan.Integrity{
-			Algorithm: "ecdsa-p256-sha256",
-			KeyID:     owner.UserID,
-			Signature: "x",
-		},
 	}
+	env.signGarage(t, owner, &v2)
 	if rec := env.post(t, "/v1/garages/"+string(payload.ID)+"/revisions", v2, owner, ""); rec.Code != http.StatusCreated {
 		t.Fatalf("revision: got %d", rec.Code)
 	}
@@ -363,12 +344,8 @@ func TestGarageOwnershipAcceptanceAccepterMismatchRejected(t *testing.T) {
 		RevisionVersionAccepted: 2,
 		AccepterUserID:          opencaravan.UUID(invitee.UserID),
 		AcceptedTime:            time.Now().Add(2 * time.Minute).UTC(),
-		Integrity: &opencaravan.Integrity{
-			Algorithm: "ecdsa-p256-sha256",
-			KeyID:     stranger.UserID,
-			Signature: "spoof",
-		},
 	}
+	env.signGarageOwnershipAcceptance(t, invitee, &spoofed)
 	rec := env.post(t, "/v1/garages/"+string(payload.ID)+"/ownership-acceptances", spoofed, stranger, "")
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status: got %d want 403; body=%s", rec.Code, rec.Body.String())
@@ -380,7 +357,7 @@ func TestGarageRevisionPendingOwnerCannotPublish(t *testing.T) {
 	owner := env.mintIdentity(t)
 	invitee := env.mintIdentity(t)
 
-	payload := newSignedGaragePayload(t, owner.UserID, "G")
+	payload := env.newSignedGaragePayload(t, owner, "G")
 	if rec := env.post(t, "/v1/garages", payload, owner, ""); rec.Code != http.StatusCreated {
 		t.Fatalf("create: got %d", rec.Code)
 	}
@@ -396,12 +373,8 @@ func TestGarageRevisionPendingOwnerCannotPublish(t *testing.T) {
 			{UserID: opencaravan.UUID(invitee.UserID), AddedTime: now},
 		},
 		SignedBy: opencaravan.UUID(owner.UserID),
-		Integrity: &opencaravan.Integrity{
-			Algorithm: "ecdsa-p256-sha256",
-			KeyID:     owner.UserID,
-			Signature: "x",
-		},
 	}
+	env.signGarage(t, owner, &v2)
 	if rec := env.post(t, "/v1/garages/"+string(payload.ID)+"/revisions", v2, owner, ""); rec.Code != http.StatusCreated {
 		t.Fatalf("revision: got %d", rec.Code)
 	}
@@ -415,14 +388,68 @@ func TestGarageRevisionPendingOwnerCannotPublish(t *testing.T) {
 		RevisionTime:    v3Time,
 		Owners:          v2.Owners,
 		SignedBy:        opencaravan.UUID(invitee.UserID),
-		Integrity: &opencaravan.Integrity{
-			Algorithm: "ecdsa-p256-sha256",
-			KeyID:     invitee.UserID,
-			Signature: "x",
-		},
 	}
+	env.signGarage(t, invitee, &v3)
 	rec := env.post(t, "/v1/garages/"+string(payload.ID)+"/revisions", v3, invitee, "")
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status: got %d want 403 (pending invitee cannot publish); body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestGarageCreateRejectsTamperedSignature(t *testing.T) {
+	env := newJourneyEnv(t)
+	owner := env.mintIdentity(t)
+	payload := env.newSignedGaragePayload(t, owner, "Original Name")
+	// Sign then tamper.
+	payload.Name = "Tampered Name"
+
+	rec := env.post(t, "/v1/garages", payload, owner, "")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status: got %d want 403; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "signature_invalid") {
+		t.Fatalf("expected signature_invalid; body=%s", rec.Body.String())
+	}
+}
+
+func TestGarageOwnershipAcceptanceRejectsTamperedSignature(t *testing.T) {
+	env := newJourneyEnv(t)
+	owner := env.mintIdentity(t)
+	invitee := env.mintIdentity(t)
+	payload := env.newSignedGaragePayload(t, owner, "G")
+	if rec := env.post(t, "/v1/garages", payload, owner, ""); rec.Code != http.StatusCreated {
+		t.Fatalf("create: got %d", rec.Code)
+	}
+	inviteTime := time.Now().Add(time.Minute).UTC()
+	acceptedNow := payload.Owners[0].AddedTime
+	v2 := opencaravan.Garage{
+		ID:              payload.ID,
+		Name:            payload.Name,
+		RevisionVersion: 2,
+		RevisionTime:    inviteTime,
+		Owners: []opencaravan.GarageOwner{
+			{UserID: opencaravan.UUID(owner.UserID), AddedTime: payload.Owners[0].AddedTime, AcceptedTime: &acceptedNow},
+			{UserID: opencaravan.UUID(invitee.UserID), AddedTime: inviteTime},
+		},
+		SignedBy: opencaravan.UUID(owner.UserID),
+	}
+	env.signGarage(t, owner, &v2)
+	if rec := env.post(t, "/v1/garages/"+string(payload.ID)+"/revisions", v2, owner, ""); rec.Code != http.StatusCreated {
+		t.Fatalf("revision: got %d", rec.Code)
+	}
+
+	acceptance := opencaravan.GarageOwnershipAcceptance{
+		GarageID:                payload.ID,
+		RevisionVersionAccepted: 2,
+		AccepterUserID:          opencaravan.UUID(invitee.UserID),
+		AcceptedTime:            time.Now().Add(2 * time.Minute).UTC(),
+	}
+	env.signGarageOwnershipAcceptance(t, invitee, &acceptance)
+	// Tamper: bump RevisionVersionAccepted.
+	acceptance.RevisionVersionAccepted = 99
+
+	rec := env.post(t, "/v1/garages/"+string(payload.ID)+"/ownership-acceptances", acceptance, invitee, "")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status: got %d want 403; body=%s", rec.Code, rec.Body.String())
 	}
 }

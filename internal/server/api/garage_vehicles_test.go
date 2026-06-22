@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,21 +16,21 @@ import (
 // by `owner` and return its id.
 func createGarageFor(t *testing.T, env *journeyEnv, owner middleware.Identity, name string) opencaravan.UUID {
 	t.Helper()
-	payload := newSignedGaragePayload(t, owner.UserID, name)
+	payload := env.newSignedGaragePayload(t, owner, name)
 	if rec := env.post(t, "/v1/garages", payload, owner, ""); rec.Code != http.StatusCreated {
 		t.Fatalf("create garage: got %d, body=%s", rec.Code, rec.Body.String())
 	}
 	return payload.ID
 }
 
-func newSignedGarageVehiclePayload(t *testing.T, garageID opencaravan.UUID, signer middleware.Identity, displayName string) opencaravan.GarageVehicle {
+func (e *journeyEnv) newSignedGarageVehiclePayload(t *testing.T, garageID opencaravan.UUID, signer middleware.Identity, displayName string) opencaravan.GarageVehicle {
 	t.Helper()
 	vehicleID, err := opencaravan.NewUUID()
 	if err != nil {
 		t.Fatalf("NewUUID: %v", err)
 	}
 	now := time.Now().UTC()
-	return opencaravan.GarageVehicle{
+	gv := opencaravan.GarageVehicle{
 		ID:              vehicleID,
 		GarageID:        garageID,
 		RevisionVersion: 1,
@@ -41,19 +42,16 @@ func newSignedGarageVehiclePayload(t *testing.T, garageID opencaravan.UUID, sign
 		Color:           "Blueprint Blue",
 		Capacity:        7,
 		SignedBy:        opencaravan.UUID(signer.UserID),
-		Integrity: &opencaravan.Integrity{
-			Algorithm: "ecdsa-p256-sha256",
-			KeyID:     signer.UserID,
-			Signature: "test-garage-vehicle-signature",
-		},
 	}
+	e.signGarageVehicle(t, signer, &gv)
+	return gv
 }
 
 func TestGarageVehicleCreateHappyPath(t *testing.T) {
 	env := newJourneyEnv(t)
 	owner := env.mintIdentity(t)
 	garageID := createGarageFor(t, env, owner, "Household")
-	payload := newSignedGarageVehiclePayload(t, garageID, owner, "Family Van")
+	payload := env.newSignedGarageVehiclePayload(t, garageID, owner, "Family Van")
 
 	rec := env.post(t, "/v1/garages/"+string(garageID)+"/vehicles", payload, owner, "")
 	if rec.Code != http.StatusCreated {
@@ -76,7 +74,7 @@ func TestGarageVehicleCreateNonOwnerRejected(t *testing.T) {
 	owner := env.mintIdentity(t)
 	stranger := env.mintIdentity(t)
 	garageID := createGarageFor(t, env, owner, "Private")
-	payload := newSignedGarageVehiclePayload(t, garageID, stranger, "Stranger's Car")
+	payload := env.newSignedGarageVehiclePayload(t, garageID, stranger, "Stranger's Car")
 
 	rec := env.post(t, "/v1/garages/"+string(garageID)+"/vehicles", payload, stranger, "")
 	if rec.Code != http.StatusNotFound {
@@ -103,18 +101,14 @@ func TestGarageVehicleCreatePendingInviteeRejected(t *testing.T) {
 			{UserID: opencaravan.UUID(invitee.UserID), AddedTime: inviteTime},
 		},
 		SignedBy: opencaravan.UUID(owner.UserID),
-		Integrity: &opencaravan.Integrity{
-			Algorithm: "ecdsa-p256-sha256",
-			KeyID:     owner.UserID,
-			Signature: "x",
-		},
 	}
+	env.signGarage(t, owner, &v2)
 	if rec := env.post(t, "/v1/garages/"+string(garageID)+"/revisions", v2, owner, ""); rec.Code != http.StatusCreated {
 		t.Fatalf("revision: got %d body=%s", rec.Code, rec.Body.String())
 	}
 
 	// Pending invitee tries to add a vehicle — must 403.
-	payload := newSignedGarageVehiclePayload(t, garageID, invitee, "Invitee's Car")
+	payload := env.newSignedGarageVehiclePayload(t, garageID, invitee, "Invitee's Car")
 	rec := env.post(t, "/v1/garages/"+string(garageID)+"/vehicles", payload, invitee, "")
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status: got %d want 403 (pending); body=%s", rec.Code, rec.Body.String())
@@ -129,7 +123,7 @@ func TestGarageVehicleCreateSignerMismatchRejected(t *testing.T) {
 	// Payload claims `other` signed it; caller is owner. Even
 	// though owner has authority, the payload's signed_by must
 	// match the session.
-	payload := newSignedGarageVehiclePayload(t, garageID, other, "Spoofed")
+	payload := env.newSignedGarageVehiclePayload(t, garageID, other, "Spoofed")
 	rec := env.post(t, "/v1/garages/"+string(garageID)+"/vehicles", payload, owner, "")
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status: got %d want 403; body=%s", rec.Code, rec.Body.String())
@@ -140,7 +134,7 @@ func TestGarageVehicleListAndGetRoundTrip(t *testing.T) {
 	env := newJourneyEnv(t)
 	owner := env.mintIdentity(t)
 	garageID := createGarageFor(t, env, owner, "G")
-	payload := newSignedGarageVehiclePayload(t, garageID, owner, "Van")
+	payload := env.newSignedGarageVehiclePayload(t, garageID, owner, "Van")
 	if rec := env.post(t, "/v1/garages/"+string(garageID)+"/vehicles", payload, owner, ""); rec.Code != http.StatusCreated {
 		t.Fatalf("create: got %d", rec.Code)
 	}
@@ -176,7 +170,7 @@ func TestGarageVehicleListPendingInviteeCanRead(t *testing.T) {
 	invitee := env.mintIdentity(t)
 	garageID := createGarageFor(t, env, owner, "Shared")
 	if rec := env.post(t, "/v1/garages/"+string(garageID)+"/vehicles",
-		newSignedGarageVehiclePayload(t, garageID, owner, "Existing"), owner, ""); rec.Code != http.StatusCreated {
+		env.newSignedGarageVehiclePayload(t, garageID, owner, "Existing"), owner, ""); rec.Code != http.StatusCreated {
 		t.Fatalf("create: got %d", rec.Code)
 	}
 
@@ -193,12 +187,8 @@ func TestGarageVehicleListPendingInviteeCanRead(t *testing.T) {
 			{UserID: opencaravan.UUID(invitee.UserID), AddedTime: inviteTime},
 		},
 		SignedBy: opencaravan.UUID(owner.UserID),
-		Integrity: &opencaravan.Integrity{
-			Algorithm: "ecdsa-p256-sha256",
-			KeyID:     owner.UserID,
-			Signature: "x",
-		},
 	}
+	env.signGarage(t, owner, &v2)
 	if rec := env.post(t, "/v1/garages/"+string(garageID)+"/revisions", v2, owner, ""); rec.Code != http.StatusCreated {
 		t.Fatalf("revision: got %d", rec.Code)
 	}
@@ -222,7 +212,7 @@ func TestGarageVehicleRevisionAppendUpdatesHead(t *testing.T) {
 	env := newJourneyEnv(t)
 	owner := env.mintIdentity(t)
 	garageID := createGarageFor(t, env, owner, "G")
-	payload := newSignedGarageVehiclePayload(t, garageID, owner, "Original")
+	payload := env.newSignedGarageVehiclePayload(t, garageID, owner, "Original")
 	if rec := env.post(t, "/v1/garages/"+string(garageID)+"/vehicles", payload, owner, ""); rec.Code != http.StatusCreated {
 		t.Fatalf("create: got %d", rec.Code)
 	}
@@ -240,12 +230,8 @@ func TestGarageVehicleRevisionAppendUpdatesHead(t *testing.T) {
 		Color:           payload.Color,
 		Capacity:        9,
 		SignedBy:        opencaravan.UUID(owner.UserID),
-		Integrity: &opencaravan.Integrity{
-			Algorithm: "ecdsa-p256-sha256",
-			KeyID:     owner.UserID,
-			Signature: "v2",
-		},
 	}
+	env.signGarageVehicle(t, owner, &v2)
 	rec := env.post(t, "/v1/garages/"+string(garageID)+"/vehicles/"+string(payload.ID)+"/revisions", v2, owner, "")
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("revision: got %d body=%s", rec.Code, rec.Body.String())
@@ -269,7 +255,7 @@ func TestGarageVehicleRevisionStaleVersionConflict(t *testing.T) {
 	env := newJourneyEnv(t)
 	owner := env.mintIdentity(t)
 	garageID := createGarageFor(t, env, owner, "G")
-	payload := newSignedGarageVehiclePayload(t, garageID, owner, "V")
+	payload := env.newSignedGarageVehiclePayload(t, garageID, owner, "V")
 	if rec := env.post(t, "/v1/garages/"+string(garageID)+"/vehicles", payload, owner, ""); rec.Code != http.StatusCreated {
 		t.Fatalf("create: got %d", rec.Code)
 	}
@@ -277,5 +263,22 @@ func TestGarageVehicleRevisionStaleVersionConflict(t *testing.T) {
 	rec := env.post(t, "/v1/garages/"+string(garageID)+"/vehicles/"+string(payload.ID)+"/revisions", payload, owner, "")
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status: got %d want 409; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestGarageVehicleCreateRejectsTamperedSignature(t *testing.T) {
+	env := newJourneyEnv(t)
+	owner := env.mintIdentity(t)
+	garageID := createGarageFor(t, env, owner, "Household")
+	payload := env.newSignedGarageVehiclePayload(t, garageID, owner, "Original Name")
+	// Sign then tamper.
+	payload.DisplayName = "Tampered Name"
+
+	rec := env.post(t, "/v1/garages/"+string(garageID)+"/vehicles", payload, owner, "")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status: got %d want 403; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "signature_invalid") {
+		t.Fatalf("expected signature_invalid; body=%s", rec.Body.String())
 	}
 }
