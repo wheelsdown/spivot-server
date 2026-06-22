@@ -114,12 +114,12 @@ func TestOpenCaravanFoundationCapturesSchemaDecisions(t *testing.T) {
 
 func TestLegacyVehiclesTableRetired(t *testing.T) {
 	store := openTestStore(t)
-	var name string
-	err := store.DB().QueryRowContext(context.Background(),
-		`SELECT name FROM sqlite_master WHERE type='table' AND name='vehicles'`).Scan(&name)
-	if err == nil {
-		t.Fatalf("legacy `vehicles` table still exists after migration 000013 retired it; got name=%q", name)
+	var count int
+	if err := store.DB().QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='vehicles'`).Scan(&count); err != nil {
+		t.Fatalf("query sqlite_master: %v", err)
 	}
-	// Any error here is the expected "no rows" — sql.ErrNoRows or
-	// the driver's equivalent. Either way, the table is gone.
+	if count != 0 {
+		t.Fatalf("legacy `vehicles` table still exists after migration 000013; sqlite_master count=%d", count)
+	}
 }
