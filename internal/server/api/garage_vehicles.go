@@ -15,24 +15,16 @@ import (
 )
 
 // GarageVehicleResponse is the wire shape the garage vehicle
-// handlers return. A subset of [opencaravan.GarageVehicle] — the
-// current head state plus the head pointer the client uses to
-// know what to send back on its next revision append.
+// handlers return. Includes the head-pointer projection plus the
+// latest GarageVehicle bundle decoded from canonical_payload_json
+// so clients see whatever fields the protocol version supports
+// without per-attribute projection on the server side.
 type GarageVehicleResponse struct {
-	ID                     string                        `json:"id"`
-	GarageID               string                        `json:"garage_id"`
-	CurrentRevisionVersion int                           `json:"current_revision_version"`
-	CurrentRevisionTime    time.Time                     `json:"current_revision_time"`
-	DisplayName            string                        `json:"display_name"`
-	Make                   string                        `json:"make,omitempty"`
-	Model                  string                        `json:"model,omitempty"`
-	ModelYear              int                           `json:"model_year,omitempty"`
-	Color                  string                        `json:"color,omitempty"`
-	Capacity               int                           `json:"capacity"`
-	AvatarImage            *opencaravan.ImageResourceRef `json:"avatar_image,omitempty"`
-	BannerImage            *opencaravan.ImageResourceRef `json:"banner_image,omitempty"`
-	Notes                  string                        `json:"notes,omitempty"`
-	CreatedAt              time.Time                     `json:"created_at"`
+	ID                     string                    `json:"id"`
+	GarageID               string                    `json:"garage_id"`
+	CurrentRevisionVersion int                       `json:"current_revision_version"`
+	GarageVehicle          opencaravan.GarageVehicle `json:"garage_vehicle"`
+	ReceivedAt             time.Time                 `json:"received_at"`
 }
 
 // GarageVehicleListResponse is the envelope for GET
@@ -128,7 +120,14 @@ func (s *Server) handleGarageVehicleCreate(w http.ResponseWriter, r *http.Reques
 		"vehicle_id", rec.ID,
 		"signed_by", gv.SignedBy,
 	)
-	writeJSONStatus(w, http.StatusCreated, garageVehicleResponseFrom(rec, gv.AvatarImage, gv.BannerImage), s.logger)
+	resp, err := garageVehicleResponseFromRecord(rec)
+	if err != nil {
+		s.logger.Error("garage-vehicles: response build failed", "error", err)
+		writeProblem(w, s.logger, http.StatusInternalServerError, "internal_error",
+			"Could not assemble garage vehicle response.")
+		return
+	}
+	writeJSONStatus(w, http.StatusCreated, resp, s.logger)
 }
 
 // handleGarageVehicleList implements
@@ -169,9 +168,14 @@ func (s *Server) handleGarageVehicleList(w http.ResponseWriter, r *http.Request)
 	}
 	out := make([]GarageVehicleResponse, 0, len(records))
 	for _, rec := range records {
-		avatar := decodeImageRef(rec.AvatarImageRefJSON)
-		banner := decodeImageRef(rec.BannerImageRefJSON)
-		out = append(out, garageVehicleResponseFrom(rec, avatar, banner))
+		resp, err := garageVehicleResponseFromRecord(rec)
+		if err != nil {
+			s.logger.Error("garage-vehicles: list decode failed", "error", err, "vehicle_id", rec.ID)
+			writeProblem(w, s.logger, http.StatusInternalServerError, "internal_error",
+				"Could not decode stored garage vehicle bundle.")
+			return
+		}
+		out = append(out, resp)
 	}
 	writeJSON(w, GarageVehicleListResponse{Vehicles: out}, s.logger)
 }
@@ -215,9 +219,14 @@ func (s *Server) handleGarageVehicleGet(w http.ResponseWriter, r *http.Request) 
 			"Could not load garage vehicle.")
 		return
 	}
-	avatar := decodeImageRef(rec.AvatarImageRefJSON)
-	banner := decodeImageRef(rec.BannerImageRefJSON)
-	writeJSON(w, garageVehicleResponseFrom(rec, avatar, banner), s.logger)
+	resp, err := garageVehicleResponseFromRecord(rec)
+	if err != nil {
+		s.logger.Error("garage-vehicles: get decode failed", "error", err, "vehicle_id", rec.ID)
+		writeProblem(w, s.logger, http.StatusInternalServerError, "internal_error",
+			"Could not decode stored garage vehicle bundle.")
+		return
+	}
+	writeJSON(w, resp, s.logger)
 }
 
 // handleGarageVehicleRevisionAppend implements
@@ -331,14 +340,19 @@ func (s *Server) handleGarageVehicleRevisionAppend(w http.ResponseWriter, r *htt
 			"Revision recorded but garage vehicle could not be reloaded.")
 		return
 	}
-	avatar := decodeImageRef(updated.AvatarImageRefJSON)
-	banner := decodeImageRef(updated.BannerImageRefJSON)
+	resp, err := garageVehicleResponseFromRecord(updated)
+	if err != nil {
+		s.logger.Error("garage-vehicles: revision decode failed", "error", err, "vehicle_id", updated.ID)
+		writeProblem(w, s.logger, http.StatusInternalServerError, "internal_error",
+			"Could not decode stored garage vehicle bundle.")
+		return
+	}
 	s.logger.Info("garage vehicle revision recorded",
 		"garage_id", garageID,
 		"vehicle_id", vehicleID,
 		"revision_version", gv.RevisionVersion,
 	)
-	writeJSONStatus(w, http.StatusCreated, garageVehicleResponseFrom(updated, avatar, banner), s.logger)
+	writeJSONStatus(w, http.StatusCreated, resp, s.logger)
 }
 
 // requireAcceptedGarageOwner looks up the caller's owner row and
@@ -382,21 +396,27 @@ func (s *Server) writeGarageOwnerError(w http.ResponseWriter, err error, garageI
 // extra storage trip.
 var errGaragePendingInvitee = errors.New("api: caller is a pending garage invitee, not an accepted owner")
 
-func garageVehicleResponseFrom(rec storage.GarageVehicleRecord, avatar, banner *opencaravan.ImageResourceRef) GarageVehicleResponse {
+// garageVehicleResponseFromRecord decodes the persisted canonical
+// bundle bytes into an [opencaravan.GarageVehicle] for the
+// response and assembles the wrapper response shape. The bundle
+// bytes are signed and stored verbatim, so decoding here is pure
+// deserialization — no re-canonicalization or signature
+// re-verification.
+func garageVehicleResponseFromRecord(rec storage.GarageVehicleRecord) (GarageVehicleResponse, error) {
+	var gv opencaravan.GarageVehicle
+	if err := json.Unmarshal(rec.CanonicalPayloadJSON, &gv); err != nil {
+		return GarageVehicleResponse{}, fmt.Errorf("decode garage vehicle canonical payload: %w", err)
+	}
+	gv.Integrity = &opencaravan.Integrity{
+		Algorithm: rec.Integrity.Algorithm,
+		KeyID:     rec.Integrity.KeyID,
+		Signature: rec.Integrity.Signature,
+	}
 	return GarageVehicleResponse{
 		ID:                     rec.ID,
 		GarageID:               rec.GarageID,
 		CurrentRevisionVersion: rec.CurrentRevisionVersion,
-		CurrentRevisionTime:    rec.CurrentRevisionTime.UTC(),
-		DisplayName:            rec.DisplayName,
-		Make:                   rec.Make,
-		Model:                  rec.Model,
-		ModelYear:              rec.ModelYear,
-		Color:                  rec.Color,
-		Capacity:               rec.Capacity,
-		AvatarImage:            avatar,
-		BannerImage:            banner,
-		Notes:                  rec.Notes,
-		CreatedAt:              rec.CreatedAt.UTC(),
-	}
+		GarageVehicle:          gv,
+		ReceivedAt:             rec.ReceivedAt.UTC(),
+	}, nil
 }

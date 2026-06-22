@@ -145,7 +145,8 @@ generic infra failures.
 
 | Endpoint | Auth | Handler-specific status codes |
 | --- | --- | --- |
-| `POST /v1/journeys/{id}/vehicles` | session: `journey.write` | 201 / 400 (invalid payload, bad signature shape) / 403 (session-vs-payload mismatch, signer-vs-cert mismatch, signature invalid) / 409 (duplicate owner, duplicate id) |
+| `POST /v1/journeys/{id}/vehicles` | session: `journey.write` | 201 / 400 (invalid payload, bad signature shape) / 403 (session-vs-payload mismatch, signer-vs-cert mismatch, signature invalid) / 409 (duplicate owner, duplicate id). Body is `{"vehicle": <Vehicle>, "initial_acl": <VehicleACL>}` — both signatures verified independently. |
+| `POST /v1/journeys/{id}/vehicles/{vid}/revisions` | session: `journey.write` | 201 / 400 / 403 (owner mismatch, signature invalid, owner-departed freeze) / 404 / 409 (version conflict). Publishes a new signed metadata bundle revision. |
 | `GET /v1/journeys/{id}/vehicles` | session: `journey.read` | 200 |
 | `GET /v1/journeys/{id}/vehicles/{vid}` | session: `journey.read` | 200 / 404 |
 | `POST /v1/journeys/{id}/vehicles/{vid}/acl-revisions` | session: `journey.write` | 201 / 400 / 403 (owner mismatch, signature invalid) / 404 / 409 (version conflict) |
@@ -323,31 +324,54 @@ README's session macaroon section for the request shape.
 
 ### 1. Upload a Vehicle when joining the journey
 
+Per OpenCaravan 0.2-draft the Vehicle bundle and its initial
+VehicleACL are signed separately and POSTed together atomically.
+Both signatures are verified; both signers must belong to the
+same owner user.
+
 ```bash
 curl -sX POST "https://spivot.example/v1/journeys/$JOURNEY/vehicles" \
   --cert "$CERT" --key "$KEY" \
   -H "Authorization: Macaroon $MAC_WRITE" \
   -H "Content-Type: application/json" \
   -d '{
-    "id": "...uuid...",
-    "owner_user_id": "...your-user-id...",
-    "display_name": "Riley'\''s Subaru",
-    "make": "Subaru", "model": "Outback", "model_year": 2022,
-    "color": "Autumn Green", "capacity": 5,
-    "authorized_drivers": ["...your-user-id...", "...partner-user-id..."],
-    "acl_version": 1,
-    "emergency_rule": {"kind": "any_journey_participant"},
-    "integrity": {
-      "algorithm": "ecdsa-p256-sha256",
-      "key_id": "...your-client-app-id...",
-      "signature": "...base64-encoded-asn1-ecdsa-signature-over-canonical-bytes..."
+    "vehicle": {
+      "id": "...uuid...",
+      "owner_user_id": "...your-user-id...",
+      "revision_version": 1,
+      "revision_time": "2026-06-22T15:00:00Z",
+      "display_name": "Riley'\''s Subaru",
+      "make": "Subaru", "model": "Outback", "model_year": 2022,
+      "color": "Autumn Green", "capacity": 5,
+      "avatar_blob": {"hash":"sha256:...","size":102400,"content_type":"image/jpeg"},
+      "integrity": {
+        "algorithm": "ecdsa-p256-sha256",
+        "key_id": "...your-client-app-id...",
+        "signature": "...base64-asn1-sig-over-Vehicle-canonical..."
+      }
+    },
+    "initial_acl": {
+      "vehicle_id": "...same-uuid-as-vehicle...",
+      "owner_user_id": "...your-user-id...",
+      "acl_version": 1,
+      "authorized_drivers": ["...your-user-id...", "...partner-user-id..."],
+      "emergency_rule": {"kind": "any_journey_participant"},
+      "effective_time": "2026-06-22T15:00:00Z",
+      "integrity": {
+        "algorithm": "ecdsa-p256-sha256",
+        "key_id": "...your-client-app-id...",
+        "signature": "...base64-asn1-sig-over-VehicleACL-canonical..."
+      }
     }
   }'
 ```
 
-201 on success. The signature covers the canonical encoding of
-the Vehicle struct **excluding the `integrity` field itself**
+201 on success. Each signature covers the canonical encoding of
+its containing struct **excluding the `integrity` field itself**
 (see opencaravan-go's `CanonicalEncoding` for the rules).
+`avatar_blob` and `banner_blob` are optional; the server stores
+the hash as a denormalized reference but does not yet host the
+bytes (blob upload/download endpoints land in a follow-up PR).
 
 ### 2. Publish an ACL revision (add a new authorized driver)
 

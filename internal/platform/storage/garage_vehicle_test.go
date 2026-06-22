@@ -70,22 +70,25 @@ func TestCreateGarageVehicleRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateGarageVehicle: %v", err)
 	}
-	if rec.DisplayName != "Family Van" {
-		t.Fatalf("display_name: got %q", rec.DisplayName)
-	}
-	if rec.Capacity != 7 {
-		t.Fatalf("capacity: got %d", rec.Capacity)
-	}
 	if rec.CurrentRevisionVersion != 1 {
 		t.Fatalf("revision: got %d", rec.CurrentRevisionVersion)
+	}
+	if rec.SignedByUserID != string(ownerID) {
+		t.Fatalf("signed_by_user_id: got %q want %q", rec.SignedByUserID, ownerID)
+	}
+	if string(rec.CanonicalPayloadJSON) != string(canonical) {
+		t.Fatalf("canonical payload not persisted verbatim")
 	}
 
 	got, err := store.GarageVehicleByID(ctx, garageID, rec.ID)
 	if err != nil {
 		t.Fatalf("GarageVehicleByID: %v", err)
 	}
-	if got.ModelYear != 2024 {
-		t.Fatalf("model_year: got %d", got.ModelYear)
+	if got.CurrentRevisionVersion != 1 {
+		t.Fatalf("read-back revision: got %d", got.CurrentRevisionVersion)
+	}
+	if string(got.CanonicalPayloadJSON) != string(canonical) {
+		t.Fatalf("read-back canonical payload mismatch")
 	}
 }
 
@@ -140,11 +143,8 @@ func TestAppendGarageVehicleRevisionAdvancesHead(t *testing.T) {
 	if got.CurrentRevisionVersion != 2 {
 		t.Fatalf("revision: got %d want 2", got.CurrentRevisionVersion)
 	}
-	if got.DisplayName != "Renamed Van" {
-		t.Fatalf("display_name: got %q", got.DisplayName)
-	}
-	if got.Capacity != 8 {
-		t.Fatalf("capacity: got %d", got.Capacity)
+	if string(got.CanonicalPayloadJSON) != string(v2Canonical) {
+		t.Fatalf("head canonical payload not updated to v2")
 	}
 }
 
@@ -161,6 +161,7 @@ func TestAppendGarageVehicleRevisionRejectsStaleVersion(t *testing.T) {
 		t.Fatalf("CreateGarageVehicle: %v", err)
 	}
 	stale := gv
+	stale.Integrity = nil
 	staleCanonical, err := stale.CanonicalEncoding()
 	if err != nil {
 		t.Fatalf("re-canonical: %v", err)
@@ -191,11 +192,12 @@ func TestGarageVehicleByIDMissingReturnsSentinel(t *testing.T) {
 	}
 }
 
-func TestListGarageVehiclesOrdersByCreatedAt(t *testing.T) {
+func TestListGarageVehiclesOrdersByReceivedAt(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()
 
 	garageID, ownerID := seedGarageForVehicleTest(t, store)
+	ids := make([]string, 0, 3)
 	for _, name := range []string{"First", "Second", "Third"} {
 		gv, canonical := newSignedGarageVehicle(t, opencaravan.UUID(garageID), ownerID, name)
 		if _, err := store.CreateGarageVehicle(ctx, GarageVehicleCreateParams{
@@ -204,7 +206,8 @@ func TestListGarageVehiclesOrdersByCreatedAt(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("CreateGarageVehicle %q: %v", name, err)
 		}
-		// Sleep so created_at progresses (sqliteTimeFormat is fixed-precision nanos).
+		ids = append(ids, string(gv.ID))
+		// Sleep so received_at progresses (sqliteTimeFormat is fixed-precision nanos).
 		time.Sleep(2 * time.Millisecond)
 	}
 
@@ -215,8 +218,8 @@ func TestListGarageVehiclesOrdersByCreatedAt(t *testing.T) {
 	if len(got) != 3 {
 		t.Fatalf("expected 3 vehicles, got %d", len(got))
 	}
-	if got[0].DisplayName != "First" || got[2].DisplayName != "Third" {
-		t.Fatalf("ordering wrong: got %q ... %q", got[0].DisplayName, got[2].DisplayName)
+	if got[0].ID != ids[0] || got[2].ID != ids[2] {
+		t.Fatalf("ordering wrong: got %q ... %q", got[0].ID, got[2].ID)
 	}
 }
 
@@ -276,8 +279,8 @@ func TestAppendGarageVehicleRevisionRejectsWrongGarageID(t *testing.T) {
 	if got.CurrentRevisionVersion != 1 {
 		t.Fatalf("vehicle in garage A mutated: revision = %d", got.CurrentRevisionVersion)
 	}
-	if got.DisplayName != "In A" {
-		t.Fatalf("vehicle display_name changed: %q", got.DisplayName)
+	if string(got.CanonicalPayloadJSON) != string(canonical) {
+		t.Fatalf("vehicle in garage A canonical payload changed")
 	}
 }
 

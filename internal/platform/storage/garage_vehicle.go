@@ -11,44 +11,51 @@ import (
 )
 
 // GarageVehicleRecord is the head-pointer projection of a
-// persisted [opencaravan.GarageVehicle]. Carries the denormalized
-// current state for fast queries; the full signed revision history
-// is in [GarageVehicleRevisionRecord].
+// persisted [opencaravan.GarageVehicle]. With the OpenCaravan
+// 0.2-draft transition the per-attribute columns have collapsed
+// into an opaque canonical bundle; the server no longer
+// interprets the descriptive fields. CanonicalPayloadJSON is the
+// owner-signed bundle bytes verbatim so verifiers reproduce
+// signature input deterministically and clients can decode the
+// latest GarageVehicle without a separate revision lookup.
+//
+// AvatarBlobHash / BannerBlobHash are denormalized from the
+// canonical bundle so a future blob-GC sweep can find references
+// without parsing every bundle.
 type GarageVehicleRecord struct {
 	ID                     string
 	GarageID               string
 	CurrentRevisionVersion int
-	CurrentRevisionTime    time.Time
-	DisplayName            string
-	Make                   string
-	Model                  string
-	ModelYear              int
-	Color                  string
-	Capacity               int
-	AvatarImageRefJSON     string
-	BannerImageRefJSON     string
-	Notes                  string
-	CreatedAt              time.Time
+	SignedByUserID         string
+	Integrity              opencaravan.Integrity
+	CanonicalPayloadJSON   []byte
+	AvatarBlobHash         *string
+	BannerBlobHash         *string
+	ReceivedAt             time.Time
 }
 
 // GarageVehicleRevisionRecord is the persisted shape of one signed
 // GarageVehicle payload. Canonical signed bytes retained verbatim
-// so a future signature-verification pass can reproduce input
-// without re-canonicalizing.
+// so a verifier can reproduce signature input bytes
+// deterministically.
 type GarageVehicleRevisionRecord struct {
-	ID               string
-	GarageVehicleID  string
-	RevisionVersion  int
-	RevisionTime     time.Time
-	SignedBy         string
-	Integrity        opencaravan.Integrity
-	CanonicalPayload []byte
-	ReceivedAt       time.Time
+	ID                   string
+	GarageVehicleID      string
+	RevisionVersion      int
+	RevisionTime         time.Time
+	SignedByUserID       string
+	Integrity            opencaravan.Integrity
+	CanonicalPayloadJSON []byte
+	AvatarBlobHash       *string
+	BannerBlobHash       *string
+	ReceivedAt           time.Time
 }
 
 // GarageVehicleCreateParams names the input to
 // [Store.CreateGarageVehicle]. The supplied GarageVehicle MUST
-// carry an Integrity envelope and have RevisionVersion = 1.
+// carry an Integrity envelope and have RevisionVersion = 1. The
+// canonical bytes are supplied verbatim so the storage layer
+// never re-canonicalizes.
 type GarageVehicleCreateParams struct {
 	GarageVehicle    opencaravan.GarageVehicle
 	CanonicalPayload []byte
@@ -90,14 +97,8 @@ func (s *Store) CreateGarageVehicle(ctx context.Context, params GarageVehicleCre
 		return GarageVehicleRecord{}, errors.New("storage: canonical payload must be supplied")
 	}
 
-	avatarJSON, err := marshalImageRef(params.GarageVehicle.AvatarImage)
-	if err != nil {
-		return GarageVehicleRecord{}, fmt.Errorf("storage: marshal avatar: %w", err)
-	}
-	bannerJSON, err := marshalImageRef(params.GarageVehicle.BannerImage)
-	if err != nil {
-		return GarageVehicleRecord{}, fmt.Errorf("storage: marshal banner: %w", err)
-	}
+	avatarHash := blobRefHash(params.GarageVehicle.AvatarBlob)
+	bannerHash := blobRefHash(params.GarageVehicle.BannerBlob)
 	now := time.Now().UTC()
 	revisionID, err := opencaravan.NewUUID()
 	if err != nil {
@@ -112,24 +113,21 @@ func (s *Store) CreateGarageVehicle(ctx context.Context, params GarageVehicleCre
 
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO garage_vehicles (
-    id, garage_id, current_revision_version, current_revision_time,
-    display_name, make, model, model_year, color, capacity,
-    avatar_image_ref_json, banner_image_ref_json, notes, created_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    id, garage_id, current_revision_version, integrity_algorithm,
+    integrity_key_id, integrity_signature, canonical_payload_json,
+    signed_by_user_id, avatar_blob_hash, banner_blob_hash, received_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `,
 		string(params.GarageVehicle.ID),
 		string(params.GarageVehicle.GarageID),
 		params.GarageVehicle.RevisionVersion,
-		formatSQLiteTime(params.GarageVehicle.RevisionTime),
-		params.GarageVehicle.DisplayName,
-		params.GarageVehicle.Make,
-		params.GarageVehicle.Model,
-		modelYearOrNil(params.GarageVehicle.ModelYear),
-		params.GarageVehicle.Color,
-		params.GarageVehicle.Capacity,
-		avatarJSON,
-		bannerJSON,
-		params.GarageVehicle.Notes,
+		params.GarageVehicle.Integrity.Algorithm,
+		params.GarageVehicle.Integrity.KeyID,
+		params.GarageVehicle.Integrity.Signature,
+		string(params.CanonicalPayload),
+		string(params.GarageVehicle.SignedBy),
+		nullableString(avatarHash),
+		nullableString(bannerHash),
 		formatSQLiteTime(now),
 	); err != nil {
 		if isUniqueViolation(err) {
@@ -138,7 +136,7 @@ INSERT INTO garage_vehicles (
 		return GarageVehicleRecord{}, fmt.Errorf("storage: insert garage vehicle: %w", err)
 	}
 
-	if err := insertGarageVehicleRevisionTx(ctx, tx, string(revisionID), params.GarageVehicle, params.CanonicalPayload, now); err != nil {
+	if err := insertGarageVehicleRevisionTx(ctx, tx, string(revisionID), params.GarageVehicle, params.CanonicalPayload, avatarHash, bannerHash, now); err != nil {
 		return GarageVehicleRecord{}, err
 	}
 
@@ -150,17 +148,12 @@ INSERT INTO garage_vehicles (
 		ID:                     string(params.GarageVehicle.ID),
 		GarageID:               string(params.GarageVehicle.GarageID),
 		CurrentRevisionVersion: params.GarageVehicle.RevisionVersion,
-		CurrentRevisionTime:    params.GarageVehicle.RevisionTime,
-		DisplayName:            params.GarageVehicle.DisplayName,
-		Make:                   params.GarageVehicle.Make,
-		Model:                  params.GarageVehicle.Model,
-		ModelYear:              params.GarageVehicle.ModelYear,
-		Color:                  params.GarageVehicle.Color,
-		Capacity:               params.GarageVehicle.Capacity,
-		AvatarImageRefJSON:     avatarJSON,
-		BannerImageRefJSON:     bannerJSON,
-		Notes:                  params.GarageVehicle.Notes,
-		CreatedAt:              now,
+		SignedByUserID:         string(params.GarageVehicle.SignedBy),
+		Integrity:              *params.GarageVehicle.Integrity,
+		CanonicalPayloadJSON:   params.CanonicalPayload,
+		AvatarBlobHash:         avatarHash,
+		BannerBlobHash:         bannerHash,
+		ReceivedAt:             now,
 	}, nil
 }
 
@@ -183,14 +176,8 @@ func (s *Store) AppendGarageVehicleRevision(ctx context.Context, params GarageVe
 		return GarageVehicleRevisionRecord{}, errors.New("storage: canonical payload must be supplied")
 	}
 
-	avatarJSON, err := marshalImageRef(params.GarageVehicle.AvatarImage)
-	if err != nil {
-		return GarageVehicleRevisionRecord{}, fmt.Errorf("storage: marshal avatar: %w", err)
-	}
-	bannerJSON, err := marshalImageRef(params.GarageVehicle.BannerImage)
-	if err != nil {
-		return GarageVehicleRevisionRecord{}, fmt.Errorf("storage: marshal banner: %w", err)
-	}
+	avatarHash := blobRefHash(params.GarageVehicle.AvatarBlob)
+	bannerHash := blobRefHash(params.GarageVehicle.BannerBlob)
 	now := time.Now().UTC()
 	revisionID, err := opencaravan.NewUUID()
 	if err != nil {
@@ -222,7 +209,7 @@ func (s *Store) AppendGarageVehicleRevision(ctx context.Context, params GarageVe
 		return GarageVehicleRevisionRecord{}, ErrGarageVehicleRevisionVersionConflict
 	}
 
-	if err := insertGarageVehicleRevisionTx(ctx, tx, string(revisionID), params.GarageVehicle, params.CanonicalPayload, now); err != nil {
+	if err := insertGarageVehicleRevisionTx(ctx, tx, string(revisionID), params.GarageVehicle, params.CanonicalPayload, avatarHash, bannerHash, now); err != nil {
 		return GarageVehicleRevisionRecord{}, err
 	}
 
@@ -238,23 +225,20 @@ func (s *Store) AppendGarageVehicleRevision(ctx context.Context, params GarageVe
 	// history. Clients see 409 and retry with a fresh version.
 	res, err := tx.ExecContext(ctx, `
 UPDATE garage_vehicles
-SET current_revision_version = ?, current_revision_time = ?,
-    display_name = ?, make = ?, model = ?, model_year = ?,
-    color = ?, capacity = ?, avatar_image_ref_json = ?,
-    banner_image_ref_json = ?, notes = ?
+SET current_revision_version = ?, integrity_algorithm = ?,
+    integrity_key_id = ?, integrity_signature = ?,
+    canonical_payload_json = ?, signed_by_user_id = ?,
+    avatar_blob_hash = ?, banner_blob_hash = ?
 WHERE id = ? AND garage_id = ? AND current_revision_version < ?
 `,
 		params.GarageVehicle.RevisionVersion,
-		formatSQLiteTime(params.GarageVehicle.RevisionTime),
-		params.GarageVehicle.DisplayName,
-		params.GarageVehicle.Make,
-		params.GarageVehicle.Model,
-		modelYearOrNil(params.GarageVehicle.ModelYear),
-		params.GarageVehicle.Color,
-		params.GarageVehicle.Capacity,
-		avatarJSON,
-		bannerJSON,
-		params.GarageVehicle.Notes,
+		params.GarageVehicle.Integrity.Algorithm,
+		params.GarageVehicle.Integrity.KeyID,
+		params.GarageVehicle.Integrity.Signature,
+		string(params.CanonicalPayload),
+		string(params.GarageVehicle.SignedBy),
+		nullableString(avatarHash),
+		nullableString(bannerHash),
 		string(params.GarageVehicle.ID),
 		string(params.GarageVehicle.GarageID),
 		params.GarageVehicle.RevisionVersion,
@@ -273,14 +257,16 @@ WHERE id = ? AND garage_id = ? AND current_revision_version < ?
 	}
 
 	return GarageVehicleRevisionRecord{
-		ID:               string(revisionID),
-		GarageVehicleID:  string(params.GarageVehicle.ID),
-		RevisionVersion:  params.GarageVehicle.RevisionVersion,
-		RevisionTime:     params.GarageVehicle.RevisionTime,
-		SignedBy:         string(params.GarageVehicle.SignedBy),
-		Integrity:        *params.GarageVehicle.Integrity,
-		CanonicalPayload: params.CanonicalPayload,
-		ReceivedAt:       now,
+		ID:                   string(revisionID),
+		GarageVehicleID:      string(params.GarageVehicle.ID),
+		RevisionVersion:      params.GarageVehicle.RevisionVersion,
+		RevisionTime:         params.GarageVehicle.RevisionTime,
+		SignedByUserID:       string(params.GarageVehicle.SignedBy),
+		Integrity:            *params.GarageVehicle.Integrity,
+		CanonicalPayloadJSON: params.CanonicalPayload,
+		AvatarBlobHash:       avatarHash,
+		BannerBlobHash:       bannerHash,
+		ReceivedAt:           now,
 	}, nil
 }
 
@@ -294,9 +280,9 @@ func (s *Store) GarageVehicleByID(ctx context.Context, garageID, vehicleID strin
 		return GarageVehicleRecord{}, errors.New("storage: database is not open")
 	}
 	row := s.db.QueryRowContext(ctx, `
-SELECT id, garage_id, current_revision_version, current_revision_time,
-       display_name, make, model, model_year, color, capacity,
-       avatar_image_ref_json, banner_image_ref_json, notes, created_at
+SELECT id, garage_id, current_revision_version, integrity_algorithm,
+       integrity_key_id, integrity_signature, canonical_payload_json,
+       signed_by_user_id, avatar_blob_hash, banner_blob_hash, received_at
 FROM garage_vehicles
 WHERE garage_id = ? AND id = ?
 `, garageID, vehicleID)
@@ -304,19 +290,19 @@ WHERE garage_id = ? AND id = ?
 }
 
 // ListGarageVehicles returns every vehicle in the supplied garage,
-// ordered by created_at ascending so the iOS app can render the
+// ordered by received_at ascending so the iOS app can render the
 // list in the order vehicles were added.
 func (s *Store) ListGarageVehicles(ctx context.Context, garageID string) ([]GarageVehicleRecord, error) {
 	if s == nil || s.db == nil {
 		return nil, errors.New("storage: database is not open")
 	}
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, garage_id, current_revision_version, current_revision_time,
-       display_name, make, model, model_year, color, capacity,
-       avatar_image_ref_json, banner_image_ref_json, notes, created_at
+SELECT id, garage_id, current_revision_version, integrity_algorithm,
+       integrity_key_id, integrity_signature, canonical_payload_json,
+       signed_by_user_id, avatar_blob_hash, banner_blob_hash, received_at
 FROM garage_vehicles
 WHERE garage_id = ?
-ORDER BY created_at ASC
+ORDER BY received_at ASC
 `, garageID)
 	if err != nil {
 		return nil, fmt.Errorf("storage: query garage vehicles: %w", err)
@@ -333,23 +319,26 @@ ORDER BY created_at ASC
 	return out, rows.Err()
 }
 
-func insertGarageVehicleRevisionTx(ctx context.Context, tx *sql.Tx, revisionID string, gv opencaravan.GarageVehicle, canonical []byte, now time.Time) error {
+func insertGarageVehicleRevisionTx(ctx context.Context, tx *sql.Tx, revisionID string, gv opencaravan.GarageVehicle, canonical []byte, avatarHash, bannerHash *string, now time.Time) error {
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO garage_vehicle_revisions (
-    id, garage_vehicle_id, revision_version, revision_time, signed_by,
+    id, garage_vehicle_id, revision_version, revision_time,
     integrity_algorithm, integrity_key_id, integrity_signature,
-    canonical_payload_json, received_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    canonical_payload_json, signed_by_user_id,
+    avatar_blob_hash, banner_blob_hash, received_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `,
 		revisionID,
 		string(gv.ID),
 		gv.RevisionVersion,
 		formatSQLiteTime(gv.RevisionTime),
-		string(gv.SignedBy),
 		gv.Integrity.Algorithm,
 		gv.Integrity.KeyID,
 		gv.Integrity.Signature,
 		string(canonical),
+		string(gv.SignedBy),
+		nullableString(avatarHash),
+		nullableString(bannerHash),
 		formatSQLiteTime(now),
 	); err != nil {
 		return fmt.Errorf("storage: insert garage vehicle revision: %w", err)
@@ -359,31 +348,32 @@ INSERT INTO garage_vehicle_revisions (
 
 func scanGarageVehicle(row rowScanner) (GarageVehicleRecord, error) {
 	var (
-		rec                  GarageVehicleRecord
-		modelYear            sql.NullInt64
-		currentTime, created string
+		rec        GarageVehicleRecord
+		avatarHash sql.NullString
+		bannerHash sql.NullString
+		receivedAt string
 	)
 	if err := row.Scan(&rec.ID, &rec.GarageID, &rec.CurrentRevisionVersion,
-		&currentTime, &rec.DisplayName, &rec.Make, &rec.Model, &modelYear,
-		&rec.Color, &rec.Capacity, &rec.AvatarImageRefJSON,
-		&rec.BannerImageRefJSON, &rec.Notes, &created); err != nil {
+		&rec.Integrity.Algorithm, &rec.Integrity.KeyID,
+		&rec.Integrity.Signature, &rec.CanonicalPayloadJSON,
+		&rec.SignedByUserID, &avatarHash, &bannerHash, &receivedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return GarageVehicleRecord{}, ErrGarageVehicleNotFound
 		}
 		return GarageVehicleRecord{}, fmt.Errorf("storage: scan garage vehicle: %w", err)
 	}
-	if modelYear.Valid {
-		rec.ModelYear = int(modelYear.Int64)
+	if avatarHash.Valid {
+		v := avatarHash.String
+		rec.AvatarBlobHash = &v
 	}
-	parsedCurrent, err := time.Parse(sqliteTimeFormat, currentTime)
+	if bannerHash.Valid {
+		v := bannerHash.String
+		rec.BannerBlobHash = &v
+	}
+	parsed, err := time.Parse(sqliteTimeFormat, receivedAt)
 	if err != nil {
-		return GarageVehicleRecord{}, fmt.Errorf("storage: parse current_revision_time: %w", err)
+		return GarageVehicleRecord{}, fmt.Errorf("storage: parse received_at: %w", err)
 	}
-	parsedCreated, err := time.Parse(sqliteTimeFormat, created)
-	if err != nil {
-		return GarageVehicleRecord{}, fmt.Errorf("storage: parse created_at: %w", err)
-	}
-	rec.CurrentRevisionTime = parsedCurrent
-	rec.CreatedAt = parsedCreated
+	rec.ReceivedAt = parsed
 	return rec, nil
 }

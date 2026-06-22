@@ -96,6 +96,12 @@ type VehicleStore interface {
 	// the existing version. See
 	// [storage.Store.AppendJourneyVehicleACL].
 	AppendJourneyVehicleACL(ctx context.Context, params storage.JourneyVehicleACLAppendParams) (storage.JourneyVehicleACLRevision, error)
+	// AppendJourneyVehicleRevision records a new signed Vehicle
+	// metadata bundle and advances the journey vehicle's
+	// current_revision_version pointer when the supplied
+	// revision is strictly greater than the existing version.
+	// See [storage.Store.AppendJourneyVehicleRevision].
+	AppendJourneyVehicleRevision(ctx context.Context, params storage.JourneyVehicleRevisionAppendParams) (storage.JourneyVehicleRevisionRecord, error)
 	// JourneyVehicleACLAt returns the ACL revision that was
 	// current at the supplied time. Used by the Phase 3 driver
 	// attestation trust evaluator to resolve "what could the
@@ -406,6 +412,9 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("POST /v1/journeys/{id}/vehicles/{vid}/acl-revisions", middleware.RequireSession(s.cfg.MacaroonVerifier, s.logger,
 			middleware.SessionActionJourneyFromPath(opencaravan.SessionActionJourneyWrite, "id"),
 		)(http.HandlerFunc(s.handleJourneyVehicleACLAppend)))
+		mux.Handle("POST /v1/journeys/{id}/vehicles/{vid}/revisions", middleware.RequireSession(s.cfg.MacaroonVerifier, s.logger,
+			middleware.SessionActionJourneyFromPath(opencaravan.SessionActionJourneyWrite, "id"),
+		)(http.HandlerFunc(s.handleJourneyVehicleRevisionAppend)))
 		mux.Handle("POST /v1/journeys/{id}/vehicles/{vid}/driver-attestations", middleware.RequireSession(s.cfg.MacaroonVerifier, s.logger,
 			middleware.SessionActionJourneyFromPath(opencaravan.SessionActionJourneyWrite, "id"),
 		)(http.HandlerFunc(s.handleDriverAttestationRecord)))

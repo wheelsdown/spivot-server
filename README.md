@@ -196,22 +196,42 @@ POST /v1/journeys/{id}/telemetry
                                 a telemetry batch
 POST /v1/journeys/{id}/vehicles  (requires session macaroon scoped to
                                 the journey + journey.write) upload a
-                                journey-scoped Vehicle and its initial
-                                signed ACL revision
+                                journey-scoped Vehicle metadata bundle
+                                AND its initial signed VehicleACL in
+                                one atomic request; body shape is
+                                {"vehicle": <Vehicle>, "initial_acl":
+                                <VehicleACL>}. Both signatures are
+                                verified independently; both signers
+                                must belong to the same owner user.
 GET  /v1/journeys/{id}/vehicles  (requires session macaroon scoped to
                                 the journey + journey.read) list every
-                                Vehicle uploaded against the journey
+                                Vehicle uploaded against the journey,
+                                each with its current decoded metadata
+                                bundle
 GET  /v1/journeys/{id}/vehicles/{vid}
                                 (requires session macaroon scoped to
                                 the journey + journey.read) load a
-                                single journey vehicle
+                                single journey vehicle with its
+                                current metadata bundle
+POST /v1/journeys/{id}/vehicles/{vid}/revisions
+                                (requires session macaroon scoped to
+                                the journey + journey.write) publish
+                                a new signed Vehicle metadata bundle
+                                revision; the vehicle's
+                                current_revision_version pointer
+                                advances when the supplied version is
+                                strictly greater. Frozen when the
+                                owner is no longer a journey
+                                participant.
 POST /v1/journeys/{id}/vehicles/{vid}/acl-revisions
                                 (requires session macaroon scoped to
                                 the journey + journey.write) append a
                                 new signed VehicleACL revision; the
                                 vehicle's current_acl_version pointer
                                 advances when the supplied version is
-                                strictly greater
+                                strictly greater. Frozen when the
+                                owner is no longer a journey
+                                participant.
 POST /v1/journeys/{id}/vehicles/{vid}/driver-attestations
                                 (requires session macaroon scoped to
                                 the journey + journey.write) record a

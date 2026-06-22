@@ -14,10 +14,11 @@ import (
 )
 
 // uploadVehicleFor uploads a journey vehicle owned by `owner`
-// with the supplied emergency rule (nil keeps the default rule
-// from newSignedVehiclePayload) and returns the vehicle's id.
-// Helper for the attestation handler tests so the per-test
-// boilerplate stays focused on the attestation flow itself.
+// together with its paired initial VehicleACL. The supplied
+// emergency rule overrides the default
+// any_journey_participant rule baked into newSignedVehicleBundle
+// — nil keeps the default. The ACL re-signs after the override.
+// Returns the vehicle's id so attestation tests can target it.
 func uploadVehicleFor(t *testing.T, env *journeyEnv, owner middleware.Identity, journey JourneyResponse, emergency *opencaravan.VehicleEmergencyRule) opencaravan.UUID {
 	t.Helper()
 	jid, err := opencaravan.ParseUUID(journey.ID)
@@ -25,16 +26,19 @@ func uploadVehicleFor(t *testing.T, env *journeyEnv, owner middleware.Identity, 
 		t.Fatalf("ParseUUID: %v", err)
 	}
 	mac := env.issueSessionMacaroon(t, owner, jid, opencaravan.SessionActionJourneyWrite)
-	payload := env.newSignedVehiclePayload(t, owner)
-	payload.EmergencyRule = emergency
-	// Re-sign after the EmergencyRule mutation since the signature
-	// produced by newSignedVehiclePayload covers the default rule.
-	env.signVehicle(t, owner, &payload)
-	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", payload, owner, mac)
+	vehicle, acl := env.newSignedVehicleBundle(t, owner)
+	if emergency != nil {
+		acl.EmergencyRule = emergency
+		// Re-sign after the EmergencyRule override since the
+		// signature produced by newSignedVehicleBundle covers
+		// the default rule.
+		env.signVehicleACL(t, owner, &acl)
+	}
+	rec := env.post(t, "/v1/journeys/"+journey.ID+"/vehicles", vehicleCreateRequest(vehicle, acl), owner, mac)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("upload vehicle: got %d, body=%s", rec.Code, rec.Body.String())
 	}
-	return payload.ID
+	return vehicle.ID
 }
 
 // newSignedAttestationPayload builds a DriverAttestation owned

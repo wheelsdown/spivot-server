@@ -61,11 +61,11 @@ func TestGarageVehicleCreateHappyPath(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if resp.DisplayName != "Family Van" {
-		t.Fatalf("display_name: got %q", resp.DisplayName)
+	if resp.GarageVehicle.DisplayName != "Family Van" {
+		t.Fatalf("display_name: got %q", resp.GarageVehicle.DisplayName)
 	}
-	if resp.Capacity != 7 {
-		t.Fatalf("capacity: got %d", resp.Capacity)
+	if resp.GarageVehicle.Capacity != 7 {
+		t.Fatalf("capacity: got %d", resp.GarageVehicle.Capacity)
 	}
 }
 
@@ -159,8 +159,8 @@ func TestGarageVehicleListAndGetRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(getRec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode get: %v", err)
 	}
-	if got.DisplayName != "Van" {
-		t.Fatalf("display_name: got %q", got.DisplayName)
+	if got.GarageVehicle.DisplayName != "Van" {
+		t.Fatalf("display_name: got %q", got.GarageVehicle.DisplayName)
 	}
 }
 
@@ -243,11 +243,11 @@ func TestGarageVehicleRevisionAppendUpdatesHead(t *testing.T) {
 	if resp.CurrentRevisionVersion != 2 {
 		t.Fatalf("revision: got %d want 2", resp.CurrentRevisionVersion)
 	}
-	if resp.DisplayName != "Renamed" {
-		t.Fatalf("display_name: got %q", resp.DisplayName)
+	if resp.GarageVehicle.DisplayName != "Renamed" {
+		t.Fatalf("display_name: got %q", resp.GarageVehicle.DisplayName)
 	}
-	if resp.Capacity != 9 {
-		t.Fatalf("capacity: got %d", resp.Capacity)
+	if resp.GarageVehicle.Capacity != 9 {
+		t.Fatalf("capacity: got %d", resp.GarageVehicle.Capacity)
 	}
 }
 

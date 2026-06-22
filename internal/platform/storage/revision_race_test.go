@@ -190,14 +190,16 @@ func TestAppendGarageVehicleRevisionConditionalUpdateBlocksLoserRevision(t *test
 	loserVersion := 2
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO garage_vehicle_revisions (
-    id, garage_vehicle_id, revision_version, revision_time, signed_by,
+    id, garage_vehicle_id, revision_version, revision_time,
     integrity_algorithm, integrity_key_id, integrity_signature,
-    canonical_payload_json, received_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    canonical_payload_json, signed_by_user_id,
+    avatar_blob_hash, banner_blob_hash, received_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `,
 		string(loserRevID), string(v1.ID), loserVersion,
-		formatSQLiteTime(time.Now().UTC()), string(owner),
-		"x", string(owner), "x", "loser-payload",
+		formatSQLiteTime(time.Now().UTC()),
+		"x", string(owner), "x", "loser-payload", string(owner),
+		nil, nil,
 		formatSQLiteTime(time.Now().UTC()),
 	); err != nil {
 		t.Fatalf("loser INSERT: %v", err)
@@ -205,10 +207,10 @@ INSERT INTO garage_vehicle_revisions (
 
 	res, err := tx.ExecContext(ctx, `
 UPDATE garage_vehicles
-SET current_revision_version = ?, display_name = ?
+SET current_revision_version = ?, canonical_payload_json = ?
 WHERE id = ? AND garage_id = ? AND current_revision_version < ?
 `,
-		loserVersion, "LoserName", string(v1.ID), garageID, loserVersion)
+		loserVersion, "loser-payload", string(v1.ID), garageID, loserVersion)
 	if err != nil {
 		t.Fatalf("conditional UPDATE: %v", err)
 	}
@@ -229,8 +231,8 @@ WHERE id = ? AND garage_id = ? AND current_revision_version < ?
 	if head.CurrentRevisionVersion != 3 {
 		t.Fatalf("head regressed: got %d want 3", head.CurrentRevisionVersion)
 	}
-	if head.DisplayName != "WinnerName" {
-		t.Fatalf("display_name: got %q want WinnerName", head.DisplayName)
+	if string(head.CanonicalPayloadJSON) != string(v3Canonical) {
+		t.Fatalf("head canonical payload changed: loser leaked through")
 	}
 
 	var revisionCount int
@@ -248,11 +250,13 @@ func TestAppendJourneyVehicleACLConditionalUpdateBlocksLoserRevision(t *testing.
 	ctx := context.Background()
 
 	journeyID, ownerID := seedJourneyForVehicleTest(t, store)
-	vehicle, canonical := newSignedVehicle(t, ownerID)
+	vehicle, vehicleCanonical, acl, aclCanonical := newSignedVehicleBundle(t, ownerID)
 	rec, err := store.CreateJourneyVehicle(ctx, JourneyVehicleCreateParams{
-		JourneyID:        journeyID,
-		Vehicle:          vehicle,
-		CanonicalPayload: canonical,
+		JourneyID:               journeyID,
+		Vehicle:                 vehicle,
+		InitialACL:              acl,
+		CanonicalVehiclePayload: vehicleCanonical,
+		CanonicalACLPayload:     aclCanonical,
 	})
 	if err != nil {
 		t.Fatalf("CreateJourneyVehicle: %v", err)
@@ -263,7 +267,7 @@ func TestAppendJourneyVehicleACLConditionalUpdateBlocksLoserRevision(t *testing.
 		VehicleID:         vehicle.ID,
 		OwnerUserID:       ownerID,
 		ACLVersion:        3,
-		AuthorizedDrivers: vehicle.AuthorizedDrivers,
+		AuthorizedDrivers: acl.AuthorizedDrivers,
 		EffectiveTime:     time.Now().Add(time.Minute).UTC(),
 	}
 	v3Canonical, err := v3.CanonicalEncoding()
@@ -306,9 +310,9 @@ INSERT INTO journey_vehicle_acl_revisions (
 	}
 
 	res, err := tx.ExecContext(ctx, `
-UPDATE journey_vehicles SET current_acl_version = ?, emergency_rule_kind = ?
+UPDATE journey_vehicles SET current_acl_version = ?
 WHERE id = ? AND current_acl_version < ?
-`, loserVersion, "", rec.ID, loserVersion)
+`, loserVersion, rec.ID, loserVersion)
 	if err != nil {
 		t.Fatalf("conditional UPDATE: %v", err)
 	}
