@@ -215,6 +215,29 @@ func TestClientAppInviteCreateAnyUserAllowsNonAdmin(t *testing.T) {
 	}
 }
 
+func TestClientAppInviteCreateUnknownPolicyFailsClosed(t *testing.T) {
+	// Defense in depth: an unrecognized policy value (only reachable
+	// if some non-parseServeConfig path sets it) must fail closed with
+	// 500, never fall through to allow minting.
+	env := newJourneyEnv(t)
+	caller := env.mintIdentity(t)
+	env.server.cfg.InviteMintPolicy = InviteMintPolicy("everyone-go-wild")
+
+	rec := env.post(t, "/v1/client-apps/invites", ClientAppInviteCreateRequest{}, caller, "")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status: got %d want 500; body=%s", rec.Code, rec.Body.String())
+	}
+	// And nothing was minted.
+	listRec := env.get(t, "/v1/client-apps/invites", caller, "")
+	var resp ClientAppInviteListResponse
+	if err := json.Unmarshal(listRec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(resp.Invites) != 0 {
+		t.Fatalf("unknown policy minted %d invites; must fail closed", len(resp.Invites))
+	}
+}
+
 func TestClientAppInviteListNotGatedByPolicy(t *testing.T) {
 	// The list endpoint is read-only audit of the caller's own invites;
 	// admin-only gates minting, not listing.

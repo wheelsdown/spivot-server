@@ -129,6 +129,15 @@ func (s *Server) handleClientAppInviteCreate(w http.ResponseWriter, r *http.Requ
 		}
 	case InviteMintAnyUser, "":
 		// Any enrolled user may mint; the per-user cap still applies.
+	default:
+		// Unrecognized policy value. parseServeConfig validates at
+		// startup so this is unreachable in production, but a
+		// constructor or test that sets an invalid value must NOT
+		// fall through to allow minting — fail closed.
+		s.logger.Error("client-app-invites: unrecognized invite mint policy", "policy", string(s.cfg.InviteMintPolicy))
+		writeProblem(w, s.logger, http.StatusInternalServerError, "internal_error",
+			"The server's invite mint policy is misconfigured.")
+		return
 	}
 
 	// Decode whenever ContentLength != 0 — covers explicit-length AND
