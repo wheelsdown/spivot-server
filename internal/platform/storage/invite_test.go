@@ -72,6 +72,142 @@ func TestIssueInviteRejectsBadInputs(t *testing.T) {
 	}
 }
 
+func TestIssueInviteByPersistsCreator(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	creator := string(mustUUID(t))
+	seedHostUser(t, store, creator)
+
+	token, invite, err := store.IssueInviteBy(ctx, opencaravan.InviteScopeServerRegistration, time.Hour, creator, maxOutstandingForTest)
+	if err != nil {
+		t.Fatalf("IssueInviteBy: %v", err)
+	}
+	if invite.CreatedByUserID != creator {
+		t.Fatalf("created_by_user_id = %q, want %q", invite.CreatedByUserID, creator)
+	}
+	if invite.TokenHash != hashInviteToken(token.Value) {
+		t.Fatal("returned hash does not match the plaintext token")
+	}
+	// LookupInvite (the read path) round-trips the creator too.
+	got, err := store.LookupInvite(ctx, token.Value)
+	if err != nil {
+		t.Fatalf("LookupInvite: %v", err)
+	}
+	if got.CreatedByUserID != creator {
+		t.Fatalf("LookupInvite created_by_user_id = %q, want %q", got.CreatedByUserID, creator)
+	}
+}
+
+func TestIssueInviteByRejectsBadInputs(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	if _, _, err := store.IssueInviteBy(ctx, opencaravan.InviteScopeServerRegistration, time.Hour, "", 10); err == nil {
+		t.Fatal("expected error for empty created_by_user_id")
+	}
+	if _, _, err := store.IssueInviteBy(ctx, opencaravan.InviteScopeServerRegistration, time.Hour, "u", 0); err == nil {
+		t.Fatal("expected error for non-positive maxOutstanding")
+	}
+	if _, _, err := store.IssueInviteBy(ctx, opencaravan.InviteScope("unknown"), time.Hour, "u", 10); err == nil {
+		t.Fatal("expected error for unknown scope")
+	}
+}
+
+func TestIssueInviteByEnforcesOutstandingCap(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	creator := string(mustUUID(t))
+	seedHostUser(t, store, creator)
+
+	const cap = 3
+	var firstToken opencaravan.InviteToken
+	for i := 0; i < cap; i++ {
+		tok, _, err := store.IssueInviteBy(ctx, opencaravan.InviteScopeServerRegistration, time.Hour, creator, cap)
+		if err != nil {
+			t.Fatalf("issue #%d: %v", i, err)
+		}
+		if i == 0 {
+			firstToken = tok
+		}
+	}
+
+	// At the cap: the next mint is rejected.
+	if _, _, err := store.IssueInviteBy(ctx, opencaravan.InviteScopeServerRegistration, time.Hour, creator, cap); !errors.Is(err, ErrInviteOutstandingLimit) {
+		t.Fatalf("at cap: got %v, want ErrInviteOutstandingLimit", err)
+	}
+
+	// Consuming one frees a slot — the next mint now succeeds.
+	if _, err := store.ConsumeInvite(ctx, firstToken.Value, string(mustUUID(t))); err != nil {
+		t.Fatalf("ConsumeInvite: %v", err)
+	}
+	if _, _, err := store.IssueInviteBy(ctx, opencaravan.InviteScopeServerRegistration, time.Hour, creator, cap); err != nil {
+		t.Fatalf("after consuming one, mint should succeed: %v", err)
+	}
+}
+
+func TestIssueInviteByCapIsPerUser(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	userA := string(mustUUID(t))
+	userB := string(mustUUID(t))
+	seedHostUser(t, store, userA)
+	seedHostUser(t, store, userB)
+
+	// User A fills their cap.
+	for i := 0; i < 2; i++ {
+		if _, _, err := store.IssueInviteBy(ctx, opencaravan.InviteScopeServerRegistration, time.Hour, userA, 2); err != nil {
+			t.Fatalf("userA issue #%d: %v", i, err)
+		}
+	}
+	if _, _, err := store.IssueInviteBy(ctx, opencaravan.InviteScopeServerRegistration, time.Hour, userA, 2); !errors.Is(err, ErrInviteOutstandingLimit) {
+		t.Fatalf("userA over cap: got %v, want ErrInviteOutstandingLimit", err)
+	}
+	// User B is unaffected by user A being at their cap.
+	if _, _, err := store.IssueInviteBy(ctx, opencaravan.InviteScopeServerRegistration, time.Hour, userB, 2); err != nil {
+		t.Fatalf("userB should mint freely: %v", err)
+	}
+}
+
+func TestInvitesCreatedByListsCallersOwnNewestFirst(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	creator := string(mustUUID(t))
+	other := string(mustUUID(t))
+	seedHostUser(t, store, creator)
+	seedHostUser(t, store, other)
+
+	for i := 0; i < 3; i++ {
+		if _, _, err := store.IssueInviteBy(ctx, opencaravan.InviteScopeServerRegistration, time.Hour, creator, 10); err != nil {
+			t.Fatalf("creator issue #%d: %v", i, err)
+		}
+	}
+	if _, _, err := store.IssueInviteBy(ctx, opencaravan.InviteScopeServerRegistration, time.Hour, other, 10); err != nil {
+		t.Fatalf("other issue: %v", err)
+	}
+
+	got, err := store.InvitesCreatedBy(ctx, creator)
+	if err != nil {
+		t.Fatalf("InvitesCreatedBy: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("expected 3 invites for creator, got %d (other user's invite must not leak)", len(got))
+	}
+	for i := 1; i < len(got); i++ {
+		if got[i].CreatedTime.After(got[i-1].CreatedTime) {
+			t.Fatalf("not ordered newest-first at index %d", i)
+		}
+	}
+	for _, inv := range got {
+		if inv.CreatedByUserID != creator {
+			t.Fatalf("leaked an invite created by %q", inv.CreatedByUserID)
+		}
+	}
+}
+
+// maxOutstandingForTest is a generous per-user cap for tests that aren't
+// exercising the cap itself.
+const maxOutstandingForTest = 100
+
 func TestLookupInviteReturnsActiveRecord(t *testing.T) {
 	store := openTestStore(t)
 	ctx := context.Background()

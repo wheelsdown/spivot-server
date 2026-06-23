@@ -1,0 +1,195 @@
+package api
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"time"
+
+	"github.com/opencaravan/opencaravan-go"
+
+	"github.com/wheelsdown/spivot-server/internal/platform/storage"
+	"github.com/wheelsdown/spivot-server/internal/server/middleware"
+)
+
+// defaultClientAppInviteLifetime is the validity window when the caller
+// omits expires_in_seconds. 24h matches the first-run bootstrap and the
+// CLI invite default, so API-minted invites behave identically.
+const defaultClientAppInviteLifetime = 24 * time.Hour
+
+// maxClientAppInviteLifetime caps a single invite's lifetime. Tighter
+// than the 30-day garage-invite cap because a server_registration invite
+// mints a brand-new identity (a higher-value capability than adding a
+// garage co-owner), so an unredeemed one should not linger as long.
+const maxClientAppInviteLifetime = 7 * 24 * time.Hour
+
+// maxOutstandingClientAppInvites bounds how many unconsumed, unexpired
+// server_registration invites one user may hold at once. This is the
+// only enforced abuse control on the endpoint: it caps the blast radius
+// of a single compromised enrolled credential being used as an
+// account-minting faucet. A slot frees as soon as one of the user's
+// outstanding invites is consumed or expires.
+const maxOutstandingClientAppInvites = 10
+
+// ClientAppInviteCreateRequest is the optional POST body. An empty body
+// (or no Content-Length) is valid and selects the defaults.
+type ClientAppInviteCreateRequest struct {
+	ExpiresInSeconds int `json:"expires_in_seconds,omitempty"`
+}
+
+// ClientAppInviteResponse is the wire shape for an issued invite.
+//
+// Token is populated ONLY on the create response — never on the list
+// path, since the plaintext is stored only as a SHA-256 hash and is
+// unrecoverable afterward. There is deliberately NO id or token_hash
+// field: token_hash is the secret redemption key and must never leave
+// the server, and exposing no public row handle is also what lets
+// revocation be cleanly deferred (there is nothing to revoke by).
+type ClientAppInviteResponse struct {
+	Scope           string     `json:"scope"`
+	CreatedByUserID string     `json:"created_by_user_id"`
+	Token           string     `json:"token,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	ExpiresAt       time.Time  `json:"expires_at"`
+	UsedAt          *time.Time `json:"used_at,omitempty"`
+}
+
+// ClientAppInviteListResponse is the envelope for the list endpoint.
+type ClientAppInviteListResponse struct {
+	Invites []ClientAppInviteResponse `json:"invites"`
+}
+
+// handleClientAppInviteCreate implements POST /v1/client-apps/invites.
+//
+// Wrapped by [middleware.RequireIdentity] at the mux: any enrolled
+// client app may mint a server_registration invite. The scope is
+// hard-coded — the caller cannot request a different scope, because
+// only server_registration invites are redeemable by the enrollment
+// endpoint and exposing scope selection would mint dead tokens.
+//
+// Failures map to:
+//
+//   - 503 when InviteIssuerStore is not wired.
+//   - 401 when no identity is on context (defense in depth;
+//     RequireIdentity handles the normal case).
+//   - 400 for malformed JSON, an unknown field, a negative
+//     expires_in_seconds, or one exceeding the 7-day cap.
+//   - 429 when the caller already holds the maximum number of
+//     outstanding (unconsumed, unexpired) invites.
+//   - 500 for unexpected storage failures.
+func (s *Server) handleClientAppInviteCreate(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.InviteIssuerStore == nil {
+		writeProblem(w, s.logger, http.StatusServiceUnavailable, "invites_unavailable",
+			"This server is not configured to issue registration invites.")
+		return
+	}
+	id, ok := middleware.IdentityFrom(r.Context())
+	if !ok {
+		writeProblem(w, s.logger, http.StatusUnauthorized, "unauthenticated",
+			"This endpoint requires an enrolled client app identity.")
+		return
+	}
+
+	// Decode whenever ContentLength != 0 — covers explicit-length AND
+	// chunked transfers (ContentLength == -1). An empty body / EOF is
+	// treated as "no params" so callers can POST with no body and get
+	// the defaults; only a malformed body is a 400. Mirrors
+	// handleGarageInviteCreate.
+	var req ClientAppInviteCreateRequest
+	if r.ContentLength != 0 {
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			writeProblem(w, s.logger, http.StatusBadRequest, "invalid_request",
+				fmt.Sprintf("Could not decode request body: %s", err))
+			return
+		}
+	}
+
+	lifetime := defaultClientAppInviteLifetime
+	if req.ExpiresInSeconds < 0 {
+		writeProblem(w, s.logger, http.StatusBadRequest, "invalid_request",
+			"expires_in_seconds must not be negative.")
+		return
+	}
+	if req.ExpiresInSeconds > 0 {
+		lifetime = time.Duration(req.ExpiresInSeconds) * time.Second
+		if lifetime > maxClientAppInviteLifetime {
+			writeProblem(w, s.logger, http.StatusBadRequest, "invalid_request",
+				fmt.Sprintf("expires_in_seconds must be at most %d.", int(maxClientAppInviteLifetime.Seconds())))
+			return
+		}
+	}
+
+	token, invite, err := s.cfg.InviteIssuerStore.IssueInviteBy(r.Context(),
+		opencaravan.InviteScopeServerRegistration, lifetime, id.UserID, maxOutstandingClientAppInvites)
+	switch {
+	case errors.Is(err, storage.ErrInviteOutstandingLimit):
+		writeProblem(w, s.logger, http.StatusTooManyRequests, "invite_limit_reached",
+			fmt.Sprintf("You already hold the maximum of %d outstanding registration invites; wait for one to be used or to expire.", maxOutstandingClientAppInvites))
+		return
+	case err != nil:
+		s.logger.Error("client-app-invites: issue failed", "error", err, "created_by_user_id", id.UserID)
+		writeProblem(w, s.logger, http.StatusInternalServerError, "internal_error",
+			"Could not issue registration invite.")
+		return
+	}
+
+	// One log line, never the token.
+	s.logger.Info("server_registration invite created",
+		"created_by_user_id", id.UserID,
+		"expires_at", invite.ExpirationTime.UTC().Format(time.RFC3339),
+	)
+	writeJSONStatus(w, http.StatusCreated, ClientAppInviteResponse{
+		Scope:           string(invite.Scope),
+		CreatedByUserID: id.UserID,
+		Token:           token.Value,
+		CreatedAt:       invite.CreatedTime.UTC(),
+		ExpiresAt:       invite.ExpirationTime.UTC(),
+	}, s.logger)
+}
+
+// handleClientAppInviteList implements GET /v1/client-apps/invites.
+//
+// Returns every invite the calling user has minted (including used and
+// expired rows for audit), newest first. The plaintext token is never
+// populated on this path. Wrapped by [middleware.RequireIdentity].
+func (s *Server) handleClientAppInviteList(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.InviteIssuerStore == nil {
+		writeProblem(w, s.logger, http.StatusServiceUnavailable, "invites_unavailable",
+			"This server is not configured to issue registration invites.")
+		return
+	}
+	id, ok := middleware.IdentityFrom(r.Context())
+	if !ok {
+		writeProblem(w, s.logger, http.StatusUnauthorized, "unauthenticated",
+			"This endpoint requires an enrolled client app identity.")
+		return
+	}
+
+	records, err := s.cfg.InviteIssuerStore.InvitesCreatedBy(r.Context(), id.UserID)
+	if err != nil {
+		s.logger.Error("client-app-invites: list failed", "error", err, "created_by_user_id", id.UserID)
+		writeProblem(w, s.logger, http.StatusInternalServerError, "internal_error",
+			"Could not list registration invites.")
+		return
+	}
+
+	out := make([]ClientAppInviteResponse, 0, len(records))
+	for _, rec := range records {
+		resp := ClientAppInviteResponse{
+			Scope:           string(rec.Scope),
+			CreatedByUserID: rec.CreatedByUserID,
+			CreatedAt:       rec.CreatedTime.UTC(),
+			ExpiresAt:       rec.ExpirationTime.UTC(),
+		}
+		if rec.UsedTime != nil {
+			used := rec.UsedTime.UTC()
+			resp.UsedAt = &used
+		}
+		out = append(out, resp)
+	}
+	writeJSON(w, ClientAppInviteListResponse{Invites: out}, s.logger)
+}

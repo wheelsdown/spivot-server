@@ -44,6 +44,11 @@ type Invite struct {
 	// UsedByClientAppID is the ClientApp that consumed the invite,
 	// populated atomically alongside UsedTime.
 	UsedByClientAppID string
+	// CreatedByUserID names the enrolled user who minted this invite via
+	// the authenticated POST /v1/client-apps/invites endpoint. Empty for
+	// invites issued by the first-run bootstrap or the CLI, whose
+	// underlying column is NULL.
+	CreatedByUserID string
 }
 
 // Active reports whether the invite is currently redeemable: not yet used
@@ -92,6 +97,14 @@ var ErrInviteAlreadyUsed = errors.New("storage: invite already used")
 // [Store.ConsumeInvite] when the row exists, is unused, but its
 // ExpirationTime has passed. Expired invites are not auto-deleted.
 var ErrInviteExpired = errors.New("storage: invite expired")
+
+// ErrInviteOutstandingLimit is returned by [Store.IssueInviteBy] when
+// the creating user already holds the maximum number of unconsumed,
+// unexpired invites of the requested scope. Bounds the blast radius of
+// a single compromised enrolled credential minting account-creation
+// tokens; the cap frees a slot as soon as one of the user's
+// outstanding invites is consumed or expires.
+var ErrInviteOutstandingLimit = errors.New("storage: per-user outstanding invite limit reached")
 
 // IssueInvite generates a fresh invite token of the requested scope and
 // persists it.
@@ -145,6 +158,117 @@ VALUES (?, ?, ?, ?)
 		CreatedTime:    now,
 		ExpirationTime: expiration,
 	}, nil
+}
+
+// IssueInviteBy mints an invite of the requested scope attributed to
+// createdByUserID, enforcing a per-user cap on the number of
+// outstanding (unconsumed, unexpired) invites of that scope. This is
+// the issuer behind the authenticated POST /v1/client-apps/invites
+// endpoint; the unauthenticated bootstrap + CLI paths use the
+// creator-less, cap-less [Store.IssueInvite] instead.
+//
+// The cap is enforced by a COUNT-then-INSERT inside a single
+// transaction. The count and the insert are race-tight because the
+// store opens SQLite with SetMaxOpenConns(1) (see [Open]): there is
+// exactly one underlying connection, so two IssueInviteBy calls cannot
+// interleave their count and insert — the second blocks on the first's
+// transaction. (Were the pool ever widened, this would need an explicit
+// write-lock-acquiring leading statement to stay correct.)
+//
+// Returns [ErrInviteOutstandingLimit] when the cap is already met.
+// createdByUserID must be non-empty and maxOutstanding must be positive
+// — both are programmer-supplied (not request input) so a violation is
+// a wiring bug, surfaced as a plain error.
+func (s *Store) IssueInviteBy(ctx context.Context, scope opencaravan.InviteScope, lifetime time.Duration, createdByUserID string, maxOutstanding int) (opencaravan.InviteToken, Invite, error) {
+	if s == nil || s.db == nil {
+		return opencaravan.InviteToken{}, Invite{}, errors.New("storage: database is not open")
+	}
+	if !scope.Valid() {
+		return opencaravan.InviteToken{}, Invite{}, fmt.Errorf("storage: invite scope %q is not a known OpenCaravan value", scope)
+	}
+	if lifetime <= 0 {
+		return opencaravan.InviteToken{}, Invite{}, errors.New("storage: invite lifetime must be positive")
+	}
+	if createdByUserID == "" {
+		return opencaravan.InviteToken{}, Invite{}, errors.New("storage: created_by_user_id must be set")
+	}
+	if maxOutstanding < 1 {
+		return opencaravan.InviteToken{}, Invite{}, errors.New("storage: maxOutstanding must be at least 1")
+	}
+
+	now := time.Now().UTC()
+	expiration := now.Add(lifetime)
+	token, err := opencaravan.NewInviteToken(expiration)
+	if err != nil {
+		return opencaravan.InviteToken{}, Invite{}, fmt.Errorf("storage: generate invite token: %w", err)
+	}
+	hash := hashInviteToken(token.Value)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return opencaravan.InviteToken{}, Invite{}, fmt.Errorf("storage: begin invite tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var outstanding int
+	if err := tx.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM client_app_invites
+WHERE created_by_user_id = ? AND scope = ? AND used_time IS NULL AND expiration_time > ?
+`, createdByUserID, string(scope), formatSQLiteTime(now)).Scan(&outstanding); err != nil {
+		return opencaravan.InviteToken{}, Invite{}, fmt.Errorf("storage: count outstanding invites: %w", err)
+	}
+	if outstanding >= maxOutstanding {
+		return opencaravan.InviteToken{}, Invite{}, ErrInviteOutstandingLimit
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO client_app_invites (token_hash, scope, created_time, expiration_time, created_by_user_id)
+VALUES (?, ?, ?, ?, ?)
+`, hash, string(scope), formatSQLiteTime(now), formatSQLiteTime(expiration), createdByUserID); err != nil {
+		return opencaravan.InviteToken{}, Invite{}, fmt.Errorf("storage: record invite: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return opencaravan.InviteToken{}, Invite{}, fmt.Errorf("storage: commit invite: %w", err)
+	}
+
+	return token, Invite{
+		TokenHash:       hash,
+		Scope:           scope,
+		CreatedTime:     now,
+		ExpirationTime:  expiration,
+		CreatedByUserID: createdByUserID,
+	}, nil
+}
+
+// InvitesCreatedBy returns every invite minted by createdByUserID,
+// newest first, including consumed and expired rows so the caller can
+// render a full audit list. The plaintext token is unrecoverable; only
+// metadata is returned.
+func (s *Store) InvitesCreatedBy(ctx context.Context, createdByUserID string) ([]Invite, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("storage: database is not open")
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT token_hash, scope, created_time, expiration_time, used_time, used_by_client_app_id, created_by_user_id
+FROM client_app_invites
+WHERE created_by_user_id = ?
+ORDER BY created_time DESC
+`, createdByUserID)
+	if err != nil {
+		return nil, fmt.Errorf("storage: query invites by creator: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []Invite
+	for rows.Next() {
+		invite, err := scanInviteRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, invite)
+	}
+	return out, rows.Err()
 }
 
 // LookupInvite returns the Invite whose stored hash matches tokenValue,
@@ -327,11 +451,26 @@ func (s *Store) IssuedCertificateCount(ctx context.Context) (int, error) {
 // row's state to distinguish ErrInviteAlreadyUsed from ErrInviteExpired).
 func (s *Store) lookupInviteByHash(ctx context.Context, hash string) (Invite, error) {
 	row := s.db.QueryRowContext(ctx, `
-SELECT token_hash, scope, created_time, expiration_time, used_time, used_by_client_app_id
+SELECT token_hash, scope, created_time, expiration_time, used_time, used_by_client_app_id, created_by_user_id
 FROM client_app_invites
 WHERE token_hash = ?
 `, hash)
+	return scanInviteRow(row)
+}
 
+// scanInviteRow decodes one client_app_invites row in the canonical
+// column order
+//
+//	token_hash, scope, created_time, expiration_time,
+//	used_time, used_by_client_app_id, created_by_user_id
+//
+// Shared by [Store.lookupInviteByHash] (single-row) and
+// [Store.InvitesCreatedBy] (multi-row) so the timestamp parsing and
+// NULL handling stay in one place. Maps a no-rows result to
+// [ErrInviteNotFound]; that mapping is meaningful for the single-row
+// caller and inert for the iterating caller (which never passes a row
+// that yields sql.ErrNoRows from Scan).
+func scanInviteRow(row rowScanner) (Invite, error) {
 	var (
 		tokenHash      string
 		scope          string
@@ -339,8 +478,9 @@ WHERE token_hash = ?
 		expirationTime string
 		usedTime       sql.NullString
 		usedBy         sql.NullString
+		createdBy      sql.NullString
 	)
-	if err := row.Scan(&tokenHash, &scope, &createdTime, &expirationTime, &usedTime, &usedBy); err != nil {
+	if err := row.Scan(&tokenHash, &scope, &createdTime, &expirationTime, &usedTime, &usedBy, &createdBy); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Invite{}, ErrInviteNotFound
 		}
@@ -370,6 +510,9 @@ WHERE token_hash = ?
 	}
 	if usedBy.Valid {
 		invite.UsedByClientAppID = usedBy.String
+	}
+	if createdBy.Valid {
+		invite.CreatedByUserID = createdBy.String
 	}
 	return invite, nil
 }
