@@ -2,3 +2,10 @@ dist/
 *.out
 coverage.out
 .DS_Store
+
+# Bare `go build ./cmd/spivot-server` from the repo root drops the
+# compiled binary here named after the package dir. Releases build into
+# dist/ (already ignored); this guards the ad-hoc root-level artifact so
+# a 17 MB binary never gets committed by accident. Leading slash anchors
+# to the repo root, so it does not match the cmd/spivot-server/ source dir.
+/spivot-server
