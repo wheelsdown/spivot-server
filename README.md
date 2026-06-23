@@ -123,6 +123,16 @@ GET  /v1/server                 server discovery, capabilities, and policy snaps
 GET  /v1/version                build and runtime version metadata
 POST /v1/client-apps/enroll     redeem a server_registration invite + CSR
                                 for a signed leaf certificate
+POST /v1/client-apps/invites    (requires client cert) mint a single-use
+                                server_registration invite to onboard a
+                                new user. Optional {expires_in_seconds}
+                                (default 24h, max 7d). Returns the
+                                plaintext token once. Capped at 10
+                                outstanding unconsumed invites per user
+                                (429 when reached)
+GET  /v1/client-apps/invites    (requires client cert) list the caller's
+                                own minted invites (no plaintext tokens),
+                                newest first, including used/expired rows
 POST /v1/sessions               (requires client cert) issue a session
                                 macaroon for a single SessionAction,
                                 optionally scoped to a journey
@@ -362,16 +372,39 @@ never runs again.
 
 ### Day-two invites
 
-After bootstrap, additional invites are issued by an administrator via
-the CLI (later phases will add an authenticated HTTP endpoint):
+After bootstrap, any enrolled user can mint a `server_registration`
+invite to onboard a new user over the API:
+
+```bash
+curl -sX POST https://spivot.example/v1/client-apps/invites \
+  --cert client.pem --key client.key \
+  -H 'Content-Type: application/json' -d '{"expires_in_seconds": 86400}'
+```
+
+The 201 response carries the plaintext `token` once (never retrievable
+again); the new user redeems it through `POST /v1/client-apps/enroll`.
+The scope is fixed to `server_registration` — the body cannot request a
+different scope. Each invite is single-use, defaults to a 24-hour
+lifetime (max 7 days), and is attributed to the minting user so
+`GET /v1/client-apps/invites` can list a caller's own outstanding and
+historical invites. A user may hold at most **10** outstanding
+(unconsumed, unexpired) invites at once; the 11th returns `429` until
+one is consumed or expires — a bound on a single compromised credential
+being used as an account-minting faucet.
+
+Operators without an enrolled session (or scripting unattended setup)
+can still mint invites — including `journey`-scoped ones — directly via
+the CLI:
 
 ```bash
 spivot-server invite create                         # 24h server_registration invite
 spivot-server invite create -scope journey -lifetime 168h    # 7 days
 ```
 
-The output includes the plaintext token, the scope, the expiration time,
-and the stored token hash for audit correlation.
+The CLI output includes the plaintext token, the scope, the expiration
+time, and the stored token hash for audit correlation. CLI- and
+bootstrap-issued invites have no minting user, so they do not appear in
+any user's `GET /v1/client-apps/invites` list.
 
 ## Storage Schema
 

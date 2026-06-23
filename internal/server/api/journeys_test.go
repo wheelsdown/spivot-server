@@ -84,6 +84,7 @@ func newJourneyEnv(t *testing.T) *journeyEnv {
 		VehicleStore:           store,
 		DriverAttestationStore: store,
 		GarageStore:            store,
+		InviteIssuerStore:      store,
 		MacaroonIssuer:         issuer,
 		MacaroonVerifier:       verifier,
 		IntegrityVerifier:      integrity.NewVerifier(integrity.NewStoreResolver(store)),

@@ -209,6 +209,22 @@ type GarageStore interface {
 	RedeemGarageInvite(ctx context.Context, tokenValue, redeemerUserID string) (storage.GarageInviteRedemptionResult, error)
 }
 
+// InviteIssuerStore is the narrow subset of storage operations the
+// authenticated server-registration invite-mint + list handlers depend
+// on. Satisfied by [*storage.Store] via duck-typing. Kept distinct from
+// [EnrollmentStore] (which backs the unauthenticated invite-consume
+// path) so producer and consumer capabilities don't bleed into one
+// contract.
+type InviteIssuerStore interface {
+	// IssueInviteBy mints an invite attributed to the supplied user,
+	// enforcing a per-user cap on outstanding invites of the scope.
+	// Returns [storage.ErrInviteOutstandingLimit] when the cap is met.
+	IssueInviteBy(ctx context.Context, scope opencaravan.InviteScope, lifetime time.Duration, createdByUserID string, maxOutstanding int) (opencaravan.InviteToken, storage.Invite, error)
+	// InvitesCreatedBy returns every invite minted by the supplied
+	// user, newest first, for the audit list endpoint.
+	InvitesCreatedBy(ctx context.Context, createdByUserID string) ([]storage.Invite, error)
+}
+
 // Config describes the HTTP API server's listen and deployment metadata.
 type Config struct {
 	// Address is the local TCP address to bind.
@@ -282,6 +298,10 @@ type Config struct {
 	// endpoints). May be nil; the handlers respond 503 when not
 	// wired.
 	GarageStore GarageStore
+	// InviteIssuerStore backs the authenticated server-registration
+	// invite-mint + list handlers (POST/GET /v1/client-apps/invites).
+	// May be nil; the handlers respond 503 when not wired.
+	InviteIssuerStore InviteIssuerStore
 	// AccessLogger receives the per-request "request handled" log
 	// line emitted by [Server.Handler]'s access-logging
 	// middleware. When nil, the server-level application logger
@@ -361,6 +381,12 @@ func (s *Server) Handler() http.Handler {
 	// see at a glance which routes are public and which require
 	// an enrolled client app.
 	mux.Handle("POST /v1/sessions", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleSessionCreate)))
+	// Authenticated server-registration invite minting: an enrolled
+	// user mints a single-use token to onboard a brand-new user. The
+	// unauthenticated consumer of these tokens is
+	// POST /v1/client-apps/enroll above.
+	mux.Handle("POST /v1/client-apps/invites", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleClientAppInviteCreate)))
+	mux.Handle("GET /v1/client-apps/invites", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleClientAppInviteList)))
 	// POST /v1/journeys is identity-only (the caller creates a new
 	// journey before any macaroon could reference it), so it is
 	// registered unconditionally — deployments that intentionally
