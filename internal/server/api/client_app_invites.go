@@ -25,6 +25,15 @@ const defaultClientAppInviteLifetime = 24 * time.Hour
 // garage co-owner), so an unredeemed one should not linger as long.
 const maxClientAppInviteLifetime = 7 * 24 * time.Hour
 
+// maxClientAppInviteLifetimeSeconds is the cap expressed in seconds so
+// the request value can be bounds-checked BEFORE it is multiplied by
+// time.Second. time.Duration is int64 nanoseconds; an unchecked
+// multiply of a large expires_in_seconds would overflow and wrap to a
+// negative/short duration, sliding past a post-multiply cap check.
+// Comparing in seconds-space first makes the subsequent multiply
+// provably overflow-free (604800 * 1e9 is well within int64).
+const maxClientAppInviteLifetimeSeconds = int(maxClientAppInviteLifetime / time.Second)
+
 // maxOutstandingClientAppInvites bounds how many unconsumed, unexpired
 // server_registration invites one user may hold at once. This is the
 // only enforced abuse control on the endpoint: it caps the blast radius
@@ -108,19 +117,21 @@ func (s *Server) handleClientAppInviteCreate(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
+	// Bounds-check in seconds-space before converting to a
+	// time.Duration — see maxClientAppInviteLifetimeSeconds for why the
+	// cap check must precede the multiply.
 	lifetime := defaultClientAppInviteLifetime
-	if req.ExpiresInSeconds < 0 {
+	switch {
+	case req.ExpiresInSeconds < 0:
 		writeProblem(w, s.logger, http.StatusBadRequest, "invalid_request",
 			"expires_in_seconds must not be negative.")
 		return
-	}
-	if req.ExpiresInSeconds > 0 {
+	case req.ExpiresInSeconds > maxClientAppInviteLifetimeSeconds:
+		writeProblem(w, s.logger, http.StatusBadRequest, "invalid_request",
+			fmt.Sprintf("expires_in_seconds must be at most %d.", maxClientAppInviteLifetimeSeconds))
+		return
+	case req.ExpiresInSeconds > 0:
 		lifetime = time.Duration(req.ExpiresInSeconds) * time.Second
-		if lifetime > maxClientAppInviteLifetime {
-			writeProblem(w, s.logger, http.StatusBadRequest, "invalid_request",
-				fmt.Sprintf("expires_in_seconds must be at most %d.", int(maxClientAppInviteLifetime.Seconds())))
-			return
-		}
 	}
 
 	token, invite, err := s.cfg.InviteIssuerStore.IssueInviteBy(r.Context(),

@@ -90,6 +90,20 @@ func TestClientAppInviteCreateRejectsOverlongLifetime(t *testing.T) {
 	}
 }
 
+func TestClientAppInviteCreateRejectsOverflowingLifetime(t *testing.T) {
+	// A seconds value so large that seconds * time.Second would overflow
+	// int64 and wrap to a negative/short duration. The handler must
+	// reject it deterministically with 400 (caught in seconds-space
+	// before the multiply), never produce a 500 or a wrapped expiry.
+	env := newJourneyEnv(t)
+	caller := env.mintIdentity(t)
+	rec := env.post(t, "/v1/client-apps/invites",
+		ClientAppInviteCreateRequest{ExpiresInSeconds: 1 << 62}, caller, "")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestClientAppInviteCreateEnforcesOutstandingCap(t *testing.T) {
 	env := newJourneyEnv(t)
 	caller := env.mintIdentity(t)
