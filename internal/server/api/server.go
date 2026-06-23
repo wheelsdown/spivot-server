@@ -223,6 +223,38 @@ type InviteIssuerStore interface {
 	// InvitesCreatedBy returns every invite minted by the supplied
 	// user, newest first, for the audit list endpoint.
 	InvitesCreatedBy(ctx context.Context, createdByUserID string) ([]storage.Invite, error)
+	// IsFoundingAdmin reports whether the supplied user is the founding
+	// administrator (the earliest-enrolled, non-disabled account). Used
+	// by the admin-only invite-mint policy gate.
+	IsFoundingAdmin(ctx context.Context, userID string) (bool, error)
+}
+
+// InviteMintPolicy gates who may mint server_registration invites via
+// POST /v1/client-apps/invites. It governs the HTTP endpoint only — the
+// CLI and the first-run bootstrap mint directly through storage and are
+// never subject to it (shell access is the ultimate authority).
+type InviteMintPolicy string
+
+const (
+	// InviteMintDenied disables API minting for everyone.
+	InviteMintDenied InviteMintPolicy = "denied"
+	// InviteMintAdminOnly permits only the founding administrator.
+	InviteMintAdminOnly InviteMintPolicy = "admin-only"
+	// InviteMintAnyUser permits any enrolled user (the per-user
+	// outstanding cap still applies).
+	InviteMintAnyUser InviteMintPolicy = "any-user"
+)
+
+// ParseInviteMintPolicy validates s against the known modes. The empty
+// string is NOT accepted — callers resolve the default before parsing
+// so an unset value is an explicit choice, not a silent fallback.
+func ParseInviteMintPolicy(s string) (InviteMintPolicy, error) {
+	switch InviteMintPolicy(s) {
+	case InviteMintDenied, InviteMintAdminOnly, InviteMintAnyUser:
+		return InviteMintPolicy(s), nil
+	default:
+		return "", fmt.Errorf("invalid invite mint policy %q (want denied, admin-only, or any-user)", s)
+	}
 }
 
 // Config describes the HTTP API server's listen and deployment metadata.
@@ -302,6 +334,11 @@ type Config struct {
 	// invite-mint + list handlers (POST/GET /v1/client-apps/invites).
 	// May be nil; the handlers respond 503 when not wired.
 	InviteIssuerStore InviteIssuerStore
+	// InviteMintPolicy gates POST /v1/client-apps/invites. The zero
+	// value ("") is treated as InviteMintAnyUser by the handler so a
+	// Config that never set it preserves the open default; production
+	// resolves + validates the value in parseServeConfig.
+	InviteMintPolicy InviteMintPolicy
 	// AccessLogger receives the per-request "request handled" log
 	// line emitted by [Server.Handler]'s access-logging
 	// middleware. When nil, the server-level application logger

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/opencaravan/opencaravan-go"
@@ -155,6 +156,99 @@ func TestClientAppInviteListReturnsOwnInvitesWithoutToken(t *testing.T) {
 		if inv.CreatedByUserID != caller.UserID {
 			t.Fatalf("list leaked an invite created by %q", inv.CreatedByUserID)
 		}
+	}
+}
+
+func TestClientAppInviteCreateDeniedPolicyForbidsEveryone(t *testing.T) {
+	env := newJourneyEnv(t)
+	caller := env.mintIdentity(t)
+	env.server.cfg.InviteMintPolicy = InviteMintDenied
+
+	rec := env.post(t, "/v1/client-apps/invites", ClientAppInviteCreateRequest{}, caller, "")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status: got %d want 403; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "invite_minting_disabled") {
+		t.Fatalf("body missing invite_minting_disabled code: %s", rec.Body.String())
+	}
+}
+
+func TestClientAppInviteCreateAdminOnlyAllowsFoundingAdmin(t *testing.T) {
+	env := newJourneyEnv(t)
+	// First-minted identity is the earliest account; confirm via the
+	// store rather than assuming, so a same-nanosecond created_at tie
+	// can't flip the test.
+	a := env.mintIdentity(t)
+	b := env.mintIdentity(t)
+	env.server.cfg.InviteMintPolicy = InviteMintAdminOnly
+
+	adminID, err := env.store.FoundingAdminUserID(context.Background())
+	if err != nil {
+		t.Fatalf("FoundingAdminUserID: %v", err)
+	}
+	admin, nonAdmin := a, b
+	if adminID == b.UserID {
+		admin, nonAdmin = b, a
+	}
+
+	if rec := env.post(t, "/v1/client-apps/invites", ClientAppInviteCreateRequest{}, admin, ""); rec.Code != http.StatusCreated {
+		t.Fatalf("admin mint: got %d want 201; body=%s", rec.Code, rec.Body.String())
+	}
+	rec := env.post(t, "/v1/client-apps/invites", ClientAppInviteCreateRequest{}, nonAdmin, "")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("non-admin mint: got %d want 403; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "admin_only") {
+		t.Fatalf("body missing admin_only code: %s", rec.Body.String())
+	}
+}
+
+func TestClientAppInviteCreateAnyUserAllowsNonAdmin(t *testing.T) {
+	env := newJourneyEnv(t)
+	_ = env.mintIdentity(t) // founding admin (someone else)
+	caller := env.mintIdentity(t)
+	env.server.cfg.InviteMintPolicy = InviteMintAnyUser
+
+	rec := env.post(t, "/v1/client-apps/invites", ClientAppInviteCreateRequest{}, caller, "")
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("any-user mint by non-admin: got %d want 201; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestClientAppInviteCreateUnknownPolicyFailsClosed(t *testing.T) {
+	// Defense in depth: an unrecognized policy value (only reachable
+	// if some non-parseServeConfig path sets it) must fail closed with
+	// 500, never fall through to allow minting.
+	env := newJourneyEnv(t)
+	caller := env.mintIdentity(t)
+	env.server.cfg.InviteMintPolicy = InviteMintPolicy("everyone-go-wild")
+
+	rec := env.post(t, "/v1/client-apps/invites", ClientAppInviteCreateRequest{}, caller, "")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status: got %d want 500; body=%s", rec.Code, rec.Body.String())
+	}
+	// And nothing was minted.
+	listRec := env.get(t, "/v1/client-apps/invites", caller, "")
+	var resp ClientAppInviteListResponse
+	if err := json.Unmarshal(listRec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(resp.Invites) != 0 {
+		t.Fatalf("unknown policy minted %d invites; must fail closed", len(resp.Invites))
+	}
+}
+
+func TestClientAppInviteListNotGatedByPolicy(t *testing.T) {
+	// The list endpoint is read-only audit of the caller's own invites;
+	// admin-only gates minting, not listing.
+	env := newJourneyEnv(t)
+	_ = env.mintIdentity(t) // founding admin
+	caller := env.mintIdentity(t)
+	env.server.cfg.InviteMintPolicy = InviteMintAdminOnly
+
+	rec := env.get(t, "/v1/client-apps/invites", caller, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("non-admin list under admin-only: got %d want 200; body=%s", rec.Code, rec.Body.String())
 	}
 }
 

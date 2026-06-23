@@ -406,6 +406,32 @@ time, and the stored token hash for audit correlation. CLI- and
 bootstrap-issued invites have no minting user, so they do not appear in
 any user's `GET /v1/client-apps/invites` list.
 
+### Invite minting policy
+
+`SPIVOT_INVITE_MINT_POLICY` (also `--invite-mint-policy`) controls who
+may mint `server_registration` invites via `POST /v1/client-apps/invites`:
+
+- `any-user` *(default)* — any enrolled user may mint. Preserves the
+  out-of-the-box behavior so a build upgrade never silently locks out a
+  running client.
+- `admin-only` — only the **founding administrator** may mint. The
+  founding admin is the earliest-enrolled, non-disabled account (the one
+  that consumed the first-run bootstrap invite). Promoting additional
+  admins is future work.
+- `denied` — the API mints for no one; the operator uses the CLI/shell.
+
+The CLI `invite create` and the first-run bootstrap mint directly through
+storage and are **never** gated by this policy — shell access is the
+ultimate authority. The active mode is advertised at
+`GET /v1/server` under `capabilities.registration.mint_policy` so clients
+can show or hide an "invite a user" affordance; it is intentionally kept
+out of the content-addressed policy document (whose hash pins journey
+provenance), so flipping the mode does not churn `policy_hash`.
+
+> Security note: the default is `any-user` for upgrade continuity.
+> Operators wanting least-privilege onboarding should set `admin-only`
+> (or `denied` for CLI-only minting).
+
 ## Storage Schema
 
 The first schema foundation lives in

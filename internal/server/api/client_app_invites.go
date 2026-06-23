@@ -83,6 +83,9 @@ type ClientAppInviteListResponse struct {
 //   - 503 when InviteIssuerStore is not wired.
 //   - 401 when no identity is on context (defense in depth;
 //     RequireIdentity handles the normal case).
+//   - 403 invite_minting_disabled when InviteMintPolicy is "denied".
+//   - 403 admin_only when InviteMintPolicy is "admin-only" and the
+//     caller is not the founding administrator.
 //   - 400 for malformed JSON, an unknown field, a negative
 //     expires_in_seconds, or one exceeding the 7-day cap.
 //   - 429 when the caller already holds the maximum number of
@@ -98,6 +101,42 @@ func (s *Server) handleClientAppInviteCreate(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		writeProblem(w, s.logger, http.StatusUnauthorized, "unauthenticated",
 			"This endpoint requires an enrolled client app identity.")
+		return
+	}
+
+	// Server-level mint policy gate. Runs upstream of (and independent
+	// from) the per-user outstanding cap, which still applies in
+	// admin-only / any-user. The empty policy is treated as any-user so
+	// a Config that never set it keeps the open default; production
+	// resolves + validates the value at startup.
+	switch s.cfg.InviteMintPolicy {
+	case InviteMintDenied:
+		writeProblem(w, s.logger, http.StatusForbidden, "invite_minting_disabled",
+			"This server does not permit minting registration invites via the API.")
+		return
+	case InviteMintAdminOnly:
+		isAdmin, err := s.cfg.InviteIssuerStore.IsFoundingAdmin(r.Context(), id.UserID)
+		if err != nil {
+			s.logger.Error("client-app-invites: admin check failed", "error", err, "user_id", id.UserID)
+			writeProblem(w, s.logger, http.StatusInternalServerError, "internal_error",
+				"Could not verify administrator status.")
+			return
+		}
+		if !isAdmin {
+			writeProblem(w, s.logger, http.StatusForbidden, "admin_only",
+				"Only the founding administrator may mint registration invites on this server.")
+			return
+		}
+	case InviteMintAnyUser, "":
+		// Any enrolled user may mint; the per-user cap still applies.
+	default:
+		// Unrecognized policy value. parseServeConfig validates at
+		// startup so this is unreachable in production, but a
+		// constructor or test that sets an invalid value must NOT
+		// fall through to allow minting — fail closed.
+		s.logger.Error("client-app-invites: unrecognized invite mint policy", "policy", string(s.cfg.InviteMintPolicy))
+		writeProblem(w, s.logger, http.StatusInternalServerError, "internal_error",
+			"The server's invite mint policy is misconfigured.")
 		return
 	}
 

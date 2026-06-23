@@ -517,6 +517,53 @@ func scanInviteRow(row rowScanner) (Invite, error) {
 	return invite, nil
 }
 
+// FoundingAdminUserID returns the id of the earliest-created account
+// that is not disabled, or "" when no such account exists. The founding
+// admin is the account that consumed the first-run bootstrap invite;
+// it is computed on the fly (not recorded in a column) so the account
+// that enrolled before this concept existed is correctly designated
+// with no migration or backfill.
+//
+// created_at is persisted fixed-width UTC via [formatSQLiteTime], so a
+// TEXT `ORDER BY created_at` is chronological. The secondary `id ASC`
+// makes the result deterministic if two accounts ever share an
+// identical created_at (clock reset, DB restore) — "who is the admin"
+// must not depend on arbitrary row order. disabled_at IS NULL means a
+// soft-disabled founder cannot retain admin authority.
+func (s *Store) FoundingAdminUserID(ctx context.Context) (string, error) {
+	if s == nil || s.db == nil {
+		return "", errors.New("storage: database is not open")
+	}
+	var userID string
+	err := s.db.QueryRowContext(ctx, `
+SELECT id FROM accounts
+WHERE disabled_at IS NULL
+ORDER BY created_at ASC, id ASC
+LIMIT 1
+`).Scan(&userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("storage: query founding admin: %w", err)
+	}
+	return userID, nil
+}
+
+// IsFoundingAdmin reports whether userID is the founding admin (see
+// [Store.FoundingAdminUserID]). Returns false — fail-closed — for an
+// empty, unknown, or disabled user id.
+func (s *Store) IsFoundingAdmin(ctx context.Context, userID string) (bool, error) {
+	if userID == "" {
+		return false, nil
+	}
+	adminID, err := s.FoundingAdminUserID(ctx)
+	if err != nil {
+		return false, err
+	}
+	return adminID != "" && adminID == userID, nil
+}
+
 // hashInviteToken returns the lowercase hex SHA-256 of tokenValue.
 //
 // Plain SHA-256 (not HMAC) is sufficient here because the input is a
