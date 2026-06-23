@@ -119,6 +119,15 @@ type serverCapabilities struct {
 
 type registrationCapabilities struct {
 	Mode string `json:"mode"`
+	// MintPolicy advertises who may mint server_registration invites via
+	// POST /v1/client-apps/invites (denied | admin-only | any-user). It
+	// is a runtime, server-wide capability deliberately kept OUT of the
+	// content-addressed policy document: the document's hash pins
+	// journey provenance, and a mutable authz toggle must not churn it.
+	// Clients use this to show/hide an "invite a user" affordance; under
+	// admin-only a non-admin still sees "admin-only" and learns "not me"
+	// only on the 403 (a per-caller can_mint signal is future work).
+	MintPolicy string `json:"mint_policy"`
 }
 
 type journeyCapabilities struct {
@@ -173,9 +182,23 @@ func (s *Server) serverInfo() serverInfoResponse {
 			Name:    "OpenCaravan",
 			Version: openCaravanProtocolVersion,
 		},
-		Capabilities: serverCapabilitiesFromPolicy(policy),
+		Capabilities: s.capabilities(policy),
 		Policy:       s.cfg.PolicySnapshot,
 	}
+}
+
+// capabilities builds the advertised capabilities projection from the
+// (immutable, hashed) policy document plus mutable runtime config — the
+// invite mint policy. Keeping the mint policy here rather than in the
+// policy document is deliberate: see registrationCapabilities.MintPolicy.
+func (s *Server) capabilities(policy ServerPolicyDocument) serverCapabilities {
+	caps := serverCapabilitiesFromPolicy(policy)
+	mintPolicy := s.cfg.InviteMintPolicy
+	if mintPolicy == "" {
+		mintPolicy = InviteMintAnyUser
+	}
+	caps.Registration.MintPolicy = string(mintPolicy)
+	return caps
 }
 
 func serverPolicyDocumentFromSnapshot(snapshot ServerPolicySnapshot) ServerPolicyDocument {

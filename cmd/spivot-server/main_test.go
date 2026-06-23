@@ -147,6 +147,34 @@ func TestParseServeConfigDatabasePathOverride(t *testing.T) {
 	}
 }
 
+func TestParseServeConfigInviteMintPolicy(t *testing.T) {
+	t.Run("defaults to any-user", func(t *testing.T) {
+		cfg, err := parseServeConfig(nil)
+		if err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		if cfg.inviteMintPolicy != "any-user" {
+			t.Fatalf("default invite mint policy = %q, want any-user", cfg.inviteMintPolicy)
+		}
+	})
+	t.Run("accepts each valid mode", func(t *testing.T) {
+		for _, mode := range []string{"denied", "admin-only", "any-user"} {
+			cfg, err := parseServeConfig([]string{"-invite-mint-policy", mode})
+			if err != nil {
+				t.Fatalf("mode %q: %v", mode, err)
+			}
+			if cfg.inviteMintPolicy != mode {
+				t.Fatalf("mode %q: got %q", mode, cfg.inviteMintPolicy)
+			}
+		}
+	})
+	t.Run("rejects garbage", func(t *testing.T) {
+		if _, err := parseServeConfig([]string{"-invite-mint-policy", "everyone"}); err == nil {
+			t.Fatal("expected error for invalid invite mint policy")
+		}
+	})
+}
+
 func TestEnsureRuntimePathsCreatesWritableDataDirectory(t *testing.T) {
 	root := t.TempDir()
 	cfg := serveConfig{

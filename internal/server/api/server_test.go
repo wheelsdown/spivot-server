@@ -230,6 +230,93 @@ func TestServerInfoEndpoint(t *testing.T) {
 	}
 }
 
+func TestServerInfoAdvertisesMintPolicyWithoutChurningPolicyHash(t *testing.T) {
+	// mint_policy is a derived runtime capability, NOT part of the
+	// content-addressed policy document. Flipping it must change the
+	// advertised capability but leave policy_hash + document
+	// byte-identical (journeys pin policy_hash; a runtime authz toggle
+	// must not mutate federation/provenance identity).
+	policyJSON, err := json.Marshal(DefaultServerPolicyDocument())
+	if err != nil {
+		t.Fatalf("marshal policy: %v", err)
+	}
+	snapshot := ServerPolicySnapshot{
+		ID:          "sha256:fixed",
+		Hash:        "sha256:fixed",
+		CreatedTime: "2026-05-24T00:00:00Z",
+		Document:    policyJSON,
+	}
+
+	probe := func(t *testing.T, mode InviteMintPolicy) (mintPolicy, policyHash, doc string) {
+		t.Helper()
+		server := NewServer(Config{
+			Address:          "127.0.0.1",
+			Port:             8080,
+			PolicySnapshot:   snapshot,
+			InviteMintPolicy: mode,
+		}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		req := httptest.NewRequest(http.MethodGet, "/v1/server", nil)
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d", rec.Code)
+		}
+		var got struct {
+			Capabilities struct {
+				Registration struct {
+					MintPolicy string `json:"mint_policy"`
+				} `json:"registration"`
+			} `json:"capabilities"`
+			Policy struct {
+				Hash     string          `json:"policy_hash"`
+				Document json.RawMessage `json:"document"`
+			} `json:"policy"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return got.Capabilities.Registration.MintPolicy, got.Policy.Hash, string(got.Policy.Document)
+	}
+
+	denied, hash1, doc1 := probe(t, InviteMintDenied)
+	anyUser, hash2, doc2 := probe(t, InviteMintAnyUser)
+
+	if denied != "denied" {
+		t.Fatalf("denied mode advertised mint_policy = %q, want denied", denied)
+	}
+	if anyUser != "any-user" {
+		t.Fatalf("any-user mode advertised mint_policy = %q, want any-user", anyUser)
+	}
+	if hash1 != hash2 {
+		t.Fatalf("policy_hash churned across mint policies: %q vs %q", hash1, hash2)
+	}
+	if doc1 != doc2 {
+		t.Fatalf("policy document churned across mint policies")
+	}
+}
+
+func TestServerInfoMintPolicyDefaultsToAnyUserWhenUnset(t *testing.T) {
+	// A Config that never set InviteMintPolicy (zero value) advertises
+	// any-user, matching the handler's open default.
+	server := NewServer(Config{Address: "127.0.0.1", Port: 8080}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	req := httptest.NewRequest(http.MethodGet, "/v1/server", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	var got struct {
+		Capabilities struct {
+			Registration struct {
+				MintPolicy string `json:"mint_policy"`
+			} `json:"registration"`
+		} `json:"capabilities"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Capabilities.Registration.MintPolicy != "any-user" {
+		t.Fatalf("unset mint_policy advertised %q, want any-user", got.Capabilities.Registration.MintPolicy)
+	}
+}
+
 func TestReadyEndpointChecksStore(t *testing.T) {
 	server := NewServer(Config{
 		Address: "127.0.0.1",

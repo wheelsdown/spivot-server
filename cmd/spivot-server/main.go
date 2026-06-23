@@ -340,6 +340,7 @@ func runServe(ctx context.Context, stdout io.Writer, stderr io.Writer, args []st
 		DriverAttestationStore: store,
 		GarageStore:            store,
 		InviteIssuerStore:      store,
+		InviteMintPolicy:       api.InviteMintPolicy(cfg.inviteMintPolicy),
 		AccessLogger:           accessLogger,
 		PolicySnapshot:         policySnapshot,
 	}, logger)
@@ -359,6 +360,7 @@ type serveConfig struct {
 	trustClientCertHeaders bool
 	trustedProxyCIDRs      []string
 	trustedProxyRanges     []*net.IPNet
+	inviteMintPolicy       string
 }
 
 func parseServeConfig(args []string) (serveConfig, error) {
@@ -382,6 +384,7 @@ func parseServeConfig(args []string) (serveConfig, error) {
 		trustProxy:             trustProxy,
 		trustClientCertHeaders: trustClientCertHeaders,
 		trustedProxyCIDRs:      splitCSV(trustedProxyCIDRs),
+		inviteMintPolicy:       envString("SPIVOT_INVITE_MINT_POLICY", string(api.InviteMintAnyUser)),
 	}
 
 	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
@@ -395,6 +398,7 @@ func parseServeConfig(args []string) (serveConfig, error) {
 	flags.StringVar(&cfg.accessLogPath, "access-log-path", cfg.accessLogPath, "per-request access log file path (empty: route access logs to stdout alongside application logs)")
 	flags.BoolVar(&cfg.trustProxy, "trust-proxy", cfg.trustProxy, "trust X-Forwarded-* headers from trusted proxy CIDRs")
 	flags.BoolVar(&cfg.trustClientCertHeaders, "trust-client-cert-headers", cfg.trustClientCertHeaders, "trust X-Forwarded-Tls-Client-Cert* headers from trusted proxy CIDRs")
+	flags.StringVar(&cfg.inviteMintPolicy, "invite-mint-policy", cfg.inviteMintPolicy, "who may mint server_registration invites via the API: denied, admin-only, or any-user")
 	flags.Func("public-url", "public base URL advertised by the edge proxy", func(value string) error {
 		publicURL, err := parsePublicURL(value)
 		if err != nil {
@@ -418,6 +422,9 @@ func parseServeConfig(args []string) (serveConfig, error) {
 	}
 	if cfg.logFormat != "text" && cfg.logFormat != "json" {
 		return cfg, fmt.Errorf("unknown log format: %q (expected text or json)", cfg.logFormat)
+	}
+	if _, err := api.ParseInviteMintPolicy(cfg.inviteMintPolicy); err != nil {
+		return cfg, fmt.Errorf("SPIVOT_INVITE_MINT_POLICY: %w", err)
 	}
 	cfg.configDir = filepath.Clean(cfg.configDir)
 	cfg.dataDir = filepath.Clean(cfg.dataDir)
@@ -851,6 +858,10 @@ Serve flags:
                      proxy CIDRs (default: SPIVOT_TRUST_CLIENT_CERT_HEADERS)
   -trusted-proxy-cidrs value
                     Comma-separated trusted proxy CIDRs (default: SPIVOT_TRUSTED_PROXY_CIDRS)
+  -invite-mint-policy value
+                    Who may mint server_registration invites via the API:
+                    denied, admin-only, or any-user (default:
+                    SPIVOT_INVITE_MINT_POLICY or any-user)
 
 CA subcommands:
   ca init       Generate the server-local CA keypair and self-signed root
