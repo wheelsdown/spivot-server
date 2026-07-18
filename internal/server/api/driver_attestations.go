@@ -26,8 +26,9 @@ type DriverAttestationResponse struct {
 	// attested to taking.
 	JourneyVehicleID string `json:"journey_vehicle_id" openapi:"format=uuid,readOnly"`
 	// SegmentID is the journey segment the attestation applies to,
-	// per the signed payload.
-	SegmentID string `json:"segment_id" openapi:"readOnly"`
+	// per the signed payload. Opaque at this layer: the server does
+	// not yet verify the segment exists.
+	SegmentID string `json:"segment_id" openapi:"format=uuid,readOnly"`
 	// DriverUserID is the user who signed the attestation —
 	// drivers attest to their own handoffs, so this always matches
 	// the submitting session's user.

@@ -2751,8 +2751,9 @@
             "readOnly": true
           },
           "segment_id": {
-            "description": "SegmentID is the journey segment the attestation applies to,\nper the signed payload.",
+            "description": "SegmentID is the journey segment the attestation applies to,\nper the signed payload. Opaque at this layer: the server does\nnot yet verify the segment exists.",
             "type": "string",
+            "format": "uuid",
             "readOnly": true
           },
           "driver_user_id": {
