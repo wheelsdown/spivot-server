@@ -7,6 +7,17 @@ info:
     Native HTTP API of Spivot Server, the Go backend for the Spivot iOS app, speaking the OpenCaravan protocol.
 
     This document is generated from the Go source (route table + contract structs) by internal/tools/openapigen; it cannot drift from the implementation. The `x-spivot-auth` extension on each operation records the enforced authentication posture, derived from the same table that wires the middleware.
+
+    Every operation's `default` response is the shared RFC 7807-style problem envelope (`application/problem+json`); branch on its `code` field, not its prose.
+  contact:
+    name: Spivot Server
+    url: https://github.com/wheelsdown/spivot-server
+  license:
+    name: Apache 2.0
+    identifier: Apache-2.0
+externalDocs:
+  description: 'Source, issues, and the issue #43 contract plan'
+  url: https://github.com/wheelsdown/spivot-server
 tags:
   - name: System
     description: Service identity, health, readiness, and build metadata.
@@ -18,6 +29,20 @@ tags:
     description: Journey-scoped vehicle bundles, ACL revisions, and driver attestations.
   - name: Garages
     description: 'Account-scoped garage containers: revisions, ownership, vehicles, and invites.'
+x-tagGroups:
+  - name: System
+    tags:
+      - System
+  - name: Identity
+    tags:
+      - Identity
+  - name: Journeys
+    tags:
+      - Journeys
+      - Journey Vehicles
+  - name: Garages
+    tags:
+      - Garages
 paths:
   /:
     get:
@@ -32,6 +57,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RootResponse'
+        default:
+          description: Failure; the problem envelope's `code` identifies the cause.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
       x-spivot-auth:
         posture: public
   /health:
@@ -47,6 +78,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HealthResponse'
+        default:
+          description: Failure; the problem envelope's `code` identifies the cause.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
       x-spivot-auth:
         posture: public
   /readyz:
@@ -62,6 +99,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ReadinessResponse'
+        "503":
+          description: Service Unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessResponse'
+        default:
+          description: Failure; the problem envelope's `code` identifies the cause.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
       x-spivot-auth:
         posture: public
   /v1/server:
@@ -77,6 +126,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ServerInfoResponse'
+        default:
+          description: Failure; the problem envelope's `code` identifies the cause.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
       x-spivot-auth:
         posture: public
   /v1/version:
@@ -92,6 +147,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/VersionResponse'
+        default:
+          description: Failure; the problem envelope's `code` identifies the cause.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
       x-spivot-auth:
         posture: public
   /v1/client-apps/enroll:
@@ -113,6 +174,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ClientAppEnrollmentResponse'
+        default:
+          description: Failure; the problem envelope's `code` identifies the cause.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
       x-spivot-auth:
         posture: public
   /v1/sessions:
@@ -134,6 +201,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SessionResponse'
+        default:
+          description: Failure; the problem envelope's `code` identifies the cause.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
       security:
         - mutualTLS: []
       x-spivot-auth:
@@ -157,6 +230,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ClientAppInviteResponse'
+        default:
+          description: Failure; the problem envelope's `code` identifies the cause.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
       security:
         - mutualTLS: []
       x-spivot-auth:
@@ -173,6 +252,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ClientAppInviteListResponse'
+        default:
+          description: Failure; the problem envelope's `code` identifies the cause.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
       security:
         - mutualTLS: []
       x-spivot-auth:
@@ -196,6 +281,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/JourneyResponse'
+        default:
+          description: Failure; the problem envelope's `code` identifies the cause.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
       security:
         - mutualTLS: []
       x-spivot-auth:
@@ -220,6 +311,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/JourneyResponse'
+        default:
+          description: Failure; the problem envelope's `code` identifies the cause.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
       security:
         - macaroonSession: []
       x-spivot-auth:
@@ -252,6 +349,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TelemetryBatchResponse'
+        default:
+          description: Failure; the problem envelope's `code` identifies the cause.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
       security:
         - macaroonSession: []
       x-spivot-auth:
@@ -284,6 +387,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/JourneyVehicleResponse'
+        default:
+          description: Failure; the problem envelope's `code` identifies the cause.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
       security:
         - macaroonSession: []
       x-spivot-auth:
@@ -309,6 +418,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/JourneyVehicleListResponse'
+        default:
+          description: Failure; the problem envelope's `code` identifies the cause.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
       security:
         - macaroonSession: []
       x-spivot-auth:
@@ -340,6 +455,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/JourneyVehicleResponse'
+        default:
+          description: Failure; the problem envelope's `code` identifies the cause.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
       security:
         - macaroonSession: []
       x-spivot-auth:
@@ -377,6 +498,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/JourneyVehicleACLRevisionResponse'
+        default:
+          description: Failure; the problem envelope's `code` identifies the cause.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
       security:
         - macaroonSession: []
       x-spivot-auth:
@@ -414,6 +541,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/JourneyVehicleRevisionResponse'
+        default:
+          description: Failure; the problem envelope's `code` identifies the cause.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
       security:
         - macaroonSession: []
       x-spivot-auth:
@@ -457,6 +590,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/DriverAttestationResponse'
+        default:
+          description: Failure; the problem envelope's `code` identifies the cause.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
       security:
         - macaroonSession: []
       x-spivot-auth:
@@ -487,6 +626,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/DriverAttestationListResponse'
+        default:
+          description: Failure; the problem envelope's `code` identifies the cause.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
       security:
         - macaroonSession: []
       x-spivot-auth:
@@ -518,6 +663,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CurrentDriverResponse'
+        default:
+          description: Failure; the problem envelope's `code` identifies the cause.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
       security:
         - macaroonSession: []
       x-spivot-auth:
@@ -543,6 +694,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GarageResponse'
+        default:
+          description: Failure; the problem envelope's `code` identifies the cause.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
       security:
         - mutualTLS: []
       x-spivot-auth:
@@ -559,6 +716,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GarageListResponse'
+        default:
+          description: Failure; the problem envelope's `code` identifies the cause.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
       security:
         - mutualTLS: []
       x-spivot-auth:
@@ -582,6 +745,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GarageResponse'
+        default:
+          description: Failure; the problem envelope's `code` identifies the cause.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
       security:
         - mutualTLS: []
       x-spivot-auth:
@@ -611,6 +780,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GarageRevisionAppendResponse'
+        default:
+          description: Failure; the problem envelope's `code` identifies the cause.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
       security:
         - mutualTLS: []
       x-spivot-auth:
@@ -646,6 +821,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GarageOwnershipAcceptanceResponse'
+        default:
+          description: Failure; the problem envelope's `code` identifies the cause.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
       security:
         - mutualTLS: []
       x-spivot-auth:
@@ -675,6 +856,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GarageVehicleResponse'
+        default:
+          description: Failure; the problem envelope's `code` identifies the cause.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
       security:
         - mutualTLS: []
       x-spivot-auth:
@@ -697,6 +884,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GarageVehicleListResponse'
+        default:
+          description: Failure; the problem envelope's `code` identifies the cause.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
       security:
         - mutualTLS: []
       x-spivot-auth:
@@ -725,6 +918,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GarageVehicleResponse'
+        default:
+          description: Failure; the problem envelope's `code` identifies the cause.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
       security:
         - mutualTLS: []
       x-spivot-auth:
@@ -759,6 +958,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GarageVehicleResponse'
+        default:
+          description: Failure; the problem envelope's `code` identifies the cause.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
       security:
         - mutualTLS: []
       x-spivot-auth:
@@ -788,6 +993,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GarageInviteResponse'
+        default:
+          description: Failure; the problem envelope's `code` identifies the cause.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
       security:
         - mutualTLS: []
       x-spivot-auth:
@@ -810,6 +1021,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GarageInviteListResponse'
+        default:
+          description: Failure; the problem envelope's `code` identifies the cause.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
       security:
         - mutualTLS: []
       x-spivot-auth:
@@ -834,6 +1051,12 @@ paths:
       responses:
         "204":
           description: No Content
+        default:
+          description: Failure; the problem envelope's `code` identifies the cause.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
       security:
         - mutualTLS: []
       x-spivot-auth:
@@ -857,6 +1080,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GarageInviteRedeemResponse'
+        default:
+          description: Failure; the problem envelope's `code` identifies the cause.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemResponse'
       security:
         - mutualTLS: []
       x-spivot-auth:
@@ -893,6 +1122,39 @@ components:
         - name
         - version
         - status
+    ProblemResponse:
+      description: |-
+        ProblemResponse is the error envelope every failure response
+        carries, following the spirit of RFC 7807 (application/problem+json)
+        so clients see a structured, parseable failure rather than a
+        free-form string. The generated OpenAPI document references it as
+        every operation's default (non-2xx) response.
+      type: object
+      properties:
+        status:
+          description: Status echoes the HTTP status code of the response.
+          type: integer
+          format: int64
+          readOnly: true
+          example: 400
+        code:
+          description: |-
+            Code is the stable machine-readable failure identifier
+            (snake_case, for example "invalid_request" or
+            "journey_not_found"). Branch on this, not on Detail.
+          type: string
+          readOnly: true
+          example: invalid_request
+        detail:
+          description: |-
+            Detail is the human-readable explanation of this occurrence
+            of the failure. Wording may change between releases.
+          type: string
+          readOnly: true
+      required:
+        - status
+        - code
+        - detail
     HealthResponse:
       description: HealthResponse is the liveness payload served at GET /health.
       type: object

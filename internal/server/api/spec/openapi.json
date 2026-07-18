@@ -3,7 +3,19 @@
   "info": {
     "title": "Spivot Server API",
     "version": "0.1.0",
-    "description": "Native HTTP API of Spivot Server, the Go backend for the Spivot iOS app, speaking the OpenCaravan protocol.\n\nThis document is generated from the Go source (route table + contract structs) by internal/tools/openapigen; it cannot drift from the implementation. The `x-spivot-auth` extension on each operation records the enforced authentication posture, derived from the same table that wires the middleware."
+    "description": "Native HTTP API of Spivot Server, the Go backend for the Spivot iOS app, speaking the OpenCaravan protocol.\n\nThis document is generated from the Go source (route table + contract structs) by internal/tools/openapigen; it cannot drift from the implementation. The `x-spivot-auth` extension on each operation records the enforced authentication posture, derived from the same table that wires the middleware.\n\nEvery operation's `default` response is the shared RFC 7807-style problem envelope (`application/problem+json`); branch on its `code` field, not its prose.",
+    "contact": {
+      "name": "Spivot Server",
+      "url": "https://github.com/wheelsdown/spivot-server"
+    },
+    "license": {
+      "name": "Apache 2.0",
+      "identifier": "Apache-2.0"
+    }
+  },
+  "externalDocs": {
+    "description": "Source, issues, and the issue #43 contract plan",
+    "url": "https://github.com/wheelsdown/spivot-server"
   },
   "tags": [
     {
@@ -27,6 +39,33 @@
       "description": "Account-scoped garage containers: revisions, ownership, vehicles, and invites."
     }
   ],
+  "x-tagGroups": [
+    {
+      "name": "System",
+      "tags": [
+        "System"
+      ]
+    },
+    {
+      "name": "Identity",
+      "tags": [
+        "Identity"
+      ]
+    },
+    {
+      "name": "Journeys",
+      "tags": [
+        "Journeys",
+        "Journey Vehicles"
+      ]
+    },
+    {
+      "name": "Garages",
+      "tags": [
+        "Garages"
+      ]
+    }
+  ],
   "paths": {
     "/": {
       "get": {
@@ -42,6 +81,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/RootResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Failure; the problem envelope's `code` identifies the cause.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemResponse"
                 }
               }
             }
@@ -69,6 +118,16 @@
                 }
               }
             }
+          },
+          "default": {
+            "description": "Failure; the problem envelope's `code` identifies the cause.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemResponse"
+                }
+              }
+            }
           }
         },
         "x-spivot-auth": {
@@ -90,6 +149,26 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ReadinessResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadinessResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Failure; the problem envelope's `code` identifies the cause.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemResponse"
                 }
               }
             }
@@ -117,6 +196,16 @@
                 }
               }
             }
+          },
+          "default": {
+            "description": "Failure; the problem envelope's `code` identifies the cause.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemResponse"
+                }
+              }
+            }
           }
         },
         "x-spivot-auth": {
@@ -138,6 +227,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/VersionResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Failure; the problem envelope's `code` identifies the cause.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemResponse"
                 }
               }
             }
@@ -175,6 +274,16 @@
                 }
               }
             }
+          },
+          "default": {
+            "description": "Failure; the problem envelope's `code` identifies the cause.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemResponse"
+                }
+              }
+            }
           }
         },
         "x-spivot-auth": {
@@ -206,6 +315,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SessionResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Failure; the problem envelope's `code` identifies the cause.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemResponse"
                 }
               }
             }
@@ -248,6 +367,16 @@
                 }
               }
             }
+          },
+          "default": {
+            "description": "Failure; the problem envelope's `code` identifies the cause.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemResponse"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -272,6 +401,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ClientAppInviteListResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Failure; the problem envelope's `code` identifies the cause.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemResponse"
                 }
               }
             }
@@ -314,6 +453,16 @@
                 }
               }
             }
+          },
+          "default": {
+            "description": "Failure; the problem envelope's `code` identifies the cause.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemResponse"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -351,6 +500,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/JourneyResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Failure; the problem envelope's `code` identifies the cause.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemResponse"
                 }
               }
             }
@@ -406,6 +565,16 @@
                 }
               }
             }
+          },
+          "default": {
+            "description": "Failure; the problem envelope's `code` identifies the cause.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemResponse"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -458,6 +627,16 @@
                 }
               }
             }
+          },
+          "default": {
+            "description": "Failure; the problem envelope's `code` identifies the cause.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemResponse"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -495,6 +674,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/JourneyVehicleListResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Failure; the problem envelope's `code` identifies the cause.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemResponse"
                 }
               }
             }
@@ -545,6 +734,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/JourneyVehicleResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Failure; the problem envelope's `code` identifies the cause.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemResponse"
                 }
               }
             }
@@ -608,6 +807,16 @@
                 }
               }
             }
+          },
+          "default": {
+            "description": "Failure; the problem envelope's `code` identifies the cause.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemResponse"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -665,6 +874,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/JourneyVehicleRevisionResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Failure; the problem envelope's `code` identifies the cause.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemResponse"
                 }
               }
             }
@@ -738,6 +957,16 @@
                 }
               }
             }
+          },
+          "default": {
+            "description": "Failure; the problem envelope's `code` identifies the cause.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemResponse"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -783,6 +1012,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/DriverAttestationListResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Failure; the problem envelope's `code` identifies the cause.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemResponse"
                 }
               }
             }
@@ -836,6 +1075,16 @@
                 }
               }
             }
+          },
+          "default": {
+            "description": "Failure; the problem envelope's `code` identifies the cause.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemResponse"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -877,6 +1126,16 @@
                 }
               }
             }
+          },
+          "default": {
+            "description": "Failure; the problem envelope's `code` identifies the cause.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemResponse"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -901,6 +1160,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/GarageListResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Failure; the problem envelope's `code` identifies the cause.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemResponse"
                 }
               }
             }
@@ -940,6 +1209,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/GarageResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Failure; the problem envelope's `code` identifies the cause.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemResponse"
                 }
               }
             }
@@ -989,6 +1268,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/GarageRevisionAppendResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Failure; the problem envelope's `code` identifies the cause.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemResponse"
                 }
               }
             }
@@ -1051,6 +1340,16 @@
                 }
               }
             }
+          },
+          "default": {
+            "description": "Failure; the problem envelope's `code` identifies the cause.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemResponse"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -1100,6 +1399,16 @@
                 }
               }
             }
+          },
+          "default": {
+            "description": "Failure; the problem envelope's `code` identifies the cause.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemResponse"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -1134,6 +1443,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/GarageVehicleListResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Failure; the problem envelope's `code` identifies the cause.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemResponse"
                 }
               }
             }
@@ -1181,6 +1500,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/GarageVehicleResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Failure; the problem envelope's `code` identifies the cause.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemResponse"
                 }
               }
             }
@@ -1241,6 +1570,16 @@
                 }
               }
             }
+          },
+          "default": {
+            "description": "Failure; the problem envelope's `code` identifies the cause.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemResponse"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -1290,6 +1629,16 @@
                 }
               }
             }
+          },
+          "default": {
+            "description": "Failure; the problem envelope's `code` identifies the cause.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemResponse"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -1324,6 +1673,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/GarageInviteListResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Failure; the problem envelope's `code` identifies the cause.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemResponse"
                 }
               }
             }
@@ -1367,6 +1726,16 @@
         "responses": {
           "204": {
             "description": "No Content"
+          },
+          "default": {
+            "description": "Failure; the problem envelope's `code` identifies the cause.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemResponse"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -1403,6 +1772,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/GarageInviteRedeemResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Failure; the problem envelope's `code` identifies the cause.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemResponse"
                 }
               }
             }
@@ -1457,6 +1836,35 @@
           "name",
           "version",
           "status"
+        ]
+      },
+      "ProblemResponse": {
+        "description": "ProblemResponse is the error envelope every failure response\ncarries, following the spirit of RFC 7807 (application/problem+json)\nso clients see a structured, parseable failure rather than a\nfree-form string. The generated OpenAPI document references it as\nevery operation's default (non-2xx) response.",
+        "type": "object",
+        "properties": {
+          "status": {
+            "description": "Status echoes the HTTP status code of the response.",
+            "type": "integer",
+            "format": "int64",
+            "readOnly": true,
+            "example": 400
+          },
+          "code": {
+            "description": "Code is the stable machine-readable failure identifier\n(snake_case, for example \"invalid_request\" or\n\"journey_not_found\"). Branch on this, not on Detail.",
+            "type": "string",
+            "readOnly": true,
+            "example": "invalid_request"
+          },
+          "detail": {
+            "description": "Detail is the human-readable explanation of this occurrence\nof the failure. Wording may change between releases.",
+            "type": "string",
+            "readOnly": true
+          }
+        },
+        "required": [
+          "status",
+          "code",
+          "detail"
         ]
       },
       "HealthResponse": {

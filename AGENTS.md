@@ -113,11 +113,16 @@ source — never hand-edit `internal/server/api/spec/openapi.{json,yaml}`.
 - After touching routes or contract structs, run `just generate` and
   commit the regenerated artifacts. `just ci` fails when the committed
   artifacts are stale (`generate-check`).
-- Undocumented contract fields are a lint-level warning today: the
-  generator prints a count, and `-missing-docs=error` lists every
-  offender (the issue #43 backfill worklist). The capstone flips CI
-  to error once the backfill lands, so document fields as you touch
-  them.
+- An undocumented module-local contract field fails generation (and
+  with it `just ci`): the api package is at 100% field docs and stays
+  there. Upstream dependency fields (opencaravan-go) only warn —
+  their doc comments belong in their own repos and flow in on the
+  next module bump.
+- Failure responses share one RFC 7807-style `ProblemResponse`
+  envelope, emitted as every operation's `default` response. Branch
+  on its `code` field. Per-operation failure enumerations live in
+  handler GoDoc only — mirroring them into the spec by hand would
+  drift.
 - Route coverage is pinned by tests: every table route must resolve
   to its own mux pattern, spec paths must equal table paths, and
   session routes must vanish when the macaroon stack is not wired.

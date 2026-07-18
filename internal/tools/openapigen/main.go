@@ -37,8 +37,8 @@ func jsonEncoder(w io.Writer) *json.Encoder {
 
 func main() {
 	out := flag.String("out", "spec", "directory to write openapi.json and openapi.yaml into")
-	missingDocs := flag.String("missing-docs", "warn",
-		"policy for contract fields without doc comments: warn (summary) or error (list every field and fail)")
+	missingDocs := flag.String("missing-docs", "error",
+		"policy for module-local contract fields without doc comments: error (list and fail; the default) or warn (summary only). Upstream dependency fields always warn — their docs land in their own repos.")
 	flag.Parse()
 
 	// Validate the policy up front, not only when there is something
@@ -74,20 +74,36 @@ func main() {
 	fmt.Printf("openapigen: wrote %s and %s (%d routes)\n",
 		filepath.Join(*out, "openapi.json"), filepath.Join(*out, "openapi.yaml"), len(api.Routes()))
 
-	// The missing-doc rule (issue #43 phase 2, warn level; the
-	// capstone flips CI to error once the backfill lands). The
-	// artifacts are written either way — an undocumented field is a
-	// documentation gap, not a broken contract.
-	if len(res.Undocumented) > 0 {
+	// The missing-doc rule, at error since the issue #43 capstone:
+	// the api package reached 100% field docs, so any module-local
+	// regression fails generation (and with it `just ci`'s
+	// generate-check). Upstream dependency fields stay a warning —
+	// their doc comments belong in their own repos and flow in here
+	// on the next module bump. The artifacts are written either way:
+	// an undocumented field is a documentation gap, not a broken
+	// contract.
+	const modulePrefix = "github.com/wheelsdown/spivot-server/"
+	var local, upstream []string
+	for _, field := range res.Undocumented {
+		if strings.HasPrefix(field, modulePrefix) {
+			local = append(local, field)
+		} else {
+			upstream = append(upstream, field)
+		}
+	}
+	if len(upstream) > 0 {
+		fmt.Fprintf(os.Stderr, "openapigen: warning: %d upstream dependency contract fields lack doc comments (document them in their own repos)\n",
+			len(upstream))
+	}
+	if len(local) > 0 {
 		if *missingDocs == "error" {
-			for _, field := range res.Undocumented {
+			for _, field := range local {
 				fmt.Fprintf(os.Stderr, "  undocumented: %s\n", field)
 			}
-			fmt.Fprintf(os.Stderr, "openapigen: error: %d contract fields lack doc comments\n", len(res.Undocumented))
+			fmt.Fprintf(os.Stderr, "openapigen: error: %d module-local contract fields lack doc comments\n", len(local))
 			os.Exit(1)
 		}
-		fmt.Fprintf(os.Stderr, "openapigen: warning: %d contract fields lack doc comments (-missing-docs=error lists them; issue #43 backfill)\n",
-			len(res.Undocumented))
+		fmt.Fprintf(os.Stderr, "openapigen: warning: %d module-local contract fields lack doc comments\n", len(local))
 	}
 }
 
@@ -177,7 +193,16 @@ func buildDocument(routes []api.Route, schemas *schemaBuilder) (*omap, error) {
 			"structs) by internal/tools/openapigen; it cannot drift from the "+
 			"implementation. The `x-spivot-auth` extension on each operation records "+
 			"the enforced authentication posture, derived from the same table that "+
-			"wires the middleware.")
+			"wires the middleware.\n\n"+
+			"Every operation's `default` response is the shared RFC 7807-style "+
+			"problem envelope (`application/problem+json`); branch on its `code` "+
+			"field, not its prose.").
+		set("contact", newOmap().
+			set("name", "Spivot Server").
+			set("url", "https://github.com/wheelsdown/spivot-server")).
+		set("license", newOmap().
+			set("name", "Apache 2.0").
+			set("identifier", "Apache-2.0"))
 
 	tags := make([]any, 0, len(api.RouteTags()))
 	for _, tag := range api.RouteTags() {
@@ -198,10 +223,35 @@ func buildDocument(routes []api.Route, schemas *schemaBuilder) (*omap, error) {
 				"caveats and, for journey-scoped operations, a journey caveat that "+
 				"must match the journey named in the request path."))
 
+	tagGroups := []any{
+		newOmap().set("name", "System").set("tags", []string{"System"}),
+		newOmap().set("name", "Identity").set("tags", []string{"Identity"}),
+		newOmap().set("name", "Journeys").set("tags", []string{"Journeys", "Journey Vehicles"}),
+		newOmap().set("name", "Garages").set("tags", []string{"Garages"}),
+	}
+	// A tag absent from every group disappears from the rendered
+	// sidebar entirely — fail generation instead of shipping an
+	// invisible section.
+	grouped := map[string]bool{}
+	for _, group := range tagGroups {
+		for _, tag := range group.(*omap).values["tags"].([]string) {
+			grouped[tag] = true
+		}
+	}
+	for _, tag := range api.RouteTags() {
+		if !grouped[tag.Name] {
+			return nil, fmt.Errorf("tag %q has no x-tagGroups entry; it would vanish from the sidebar", tag.Name)
+		}
+	}
+
 	doc := newOmap().
 		set("openapi", "3.1.0").
 		set("info", info).
+		set("externalDocs", newOmap().
+			set("description", "Source, issues, and the issue #43 contract plan").
+			set("url", "https://github.com/wheelsdown/spivot-server")).
 		set("tags", tags).
+		set("x-tagGroups", tagGroups).
 		set("paths", paths).
 		set("components", newOmap().
 			set("securitySchemes", securitySchemes).
@@ -243,7 +293,7 @@ func buildOperation(rt api.Route, schemas *schemaBuilder) (*omap, error) {
 	}
 
 	responses := newOmap()
-	for _, status := range rt.SuccessStatuses {
+	for _, status := range rt.ResponseStatuses {
 		response := newOmap().set("description", http.StatusText(status))
 		if rt.Response != nil {
 			schema, err := schemas.schemaFor(reflect.TypeOf(rt.Response))
@@ -255,6 +305,18 @@ func buildOperation(rt api.Route, schemas *schemaBuilder) (*omap, error) {
 		}
 		responses.set(fmt.Sprintf("%d", status), response)
 	}
+	// Every status not explicitly listed carries the shared RFC
+	// 7807-style problem envelope. Modeled once, referenced
+	// everywhere — per-operation failure enumerations live in the
+	// handlers' GoDoc and would drift if mirrored here by hand.
+	problemSchema, err := schemas.schemaFor(reflect.TypeOf(api.ProblemResponse{}))
+	if err != nil {
+		return nil, fmt.Errorf("problem schema: %w", err)
+	}
+	responses.set("default", newOmap().
+		set("description", "Failure; the problem envelope's `code` identifies the cause.").
+		set("content", newOmap().
+			set("application/problem+json", newOmap().set("schema", problemSchema))))
 	op.set("responses", responses)
 
 	auth := newOmap().set("posture", string(rt.Auth))

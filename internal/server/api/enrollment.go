@@ -212,21 +212,35 @@ func parseClientAppCSR(csrPEM string) (*x509.CertificateRequest, error) {
 	return csr, nil
 }
 
-// writeProblem emits a JSON error body following the spirit of RFC 7807
-// (application/problem+json) so clients see a structured, parseable
-// failure rather than a free-form string. The fields are deliberately
-// minimal: status, code, detail. Title can be added per-call if a
+// ProblemResponse is the error envelope every failure response
+// carries, following the spirit of RFC 7807 (application/problem+json)
+// so clients see a structured, parseable failure rather than a
+// free-form string. The generated OpenAPI document references it as
+// every operation's default (non-2xx) response.
+type ProblemResponse struct {
+	// Status echoes the HTTP status code of the response.
+	Status int `json:"status" openapi:"readOnly,example=400"`
+	// Code is the stable machine-readable failure identifier
+	// (snake_case, for example "invalid_request" or
+	// "journey_not_found"). Branch on this, not on Detail.
+	Code string `json:"code" openapi:"readOnly,example=invalid_request"`
+	// Detail is the human-readable explanation of this occurrence
+	// of the failure. Wording may change between releases.
+	Detail string `json:"detail" openapi:"readOnly"`
+}
+
+// writeProblem emits a [ProblemResponse]. The fields are deliberately
+// minimal: status, code, detail. Title can be added if a
 // human-readable summary is useful; the code field is the machine
 // reading.
 func writeProblem(w http.ResponseWriter, logger interface{ Error(string, ...any) }, status int, code, detail string) {
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(status)
-	body := map[string]any{
-		"status": status,
-		"code":   code,
-		"detail": detail,
-	}
-	if err := json.NewEncoder(w).Encode(body); err != nil {
+	if err := json.NewEncoder(w).Encode(ProblemResponse{
+		Status: status,
+		Code:   code,
+		Detail: detail,
+	}); err != nil {
 		// Body already half-written; the logger sees the encode failure
 		// for operator diagnostics but the client gets whatever made it
 		// onto the wire.
