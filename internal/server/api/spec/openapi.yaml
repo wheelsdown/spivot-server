@@ -1695,9 +1695,21 @@ components:
       type: object
       properties:
         vehicle:
-          $ref: '#/components/schemas/Vehicle'
+          description: |-
+            Vehicle is the signed metadata bundle (v=1) describing the
+            vehicle. Its owner_user_id must match the session user and
+            its integrity signature must verify against the owner's
+            enrolled signing key.
+          allOf:
+            - $ref: '#/components/schemas/Vehicle'
         initial_acl:
-          $ref: '#/components/schemas/VehicleACL'
+          description: |-
+            InitialACL is the signed authorization bundle (v=1) naming
+            the vehicle's authorized drivers. Signed by the same owner
+            under the same rules as Vehicle; the pair is accepted or
+            rejected atomically.
+          allOf:
+            - $ref: '#/components/schemas/VehicleACL'
       required:
         - vehicle
         - initial_acl
@@ -1953,22 +1965,52 @@ components:
       type: object
       properties:
         id:
+          description: |-
+            ID is the vehicle's identifier as claimed by the signed
+            bundle, scoped to the journey.
           type: string
+          format: uuid
+          readOnly: true
         journey_id:
+          description: JourneyID is the journey this vehicle was uploaded against.
           type: string
+          format: uuid
+          readOnly: true
         owner_user_id:
+          description: |-
+            OwnerUserID is the user who signed (and therefore owns) the
+            vehicle's bundles.
           type: string
+          format: uuid
+          readOnly: true
         current_revision_version:
+          description: |-
+            CurrentRevisionVersion is the head pointer of the vehicle's
+            metadata revision chain (monotonically increasing).
           type: integer
           format: int64
+          readOnly: true
         current_acl_version:
+          description: |-
+            CurrentACLVersion is the head pointer of the vehicle's ACL
+            revision chain (monotonically increasing).
           type: integer
           format: int64
+          readOnly: true
         vehicle:
-          $ref: '#/components/schemas/Vehicle'
+          description: |-
+            Vehicle is the latest signed metadata bundle, decoded from
+            the stored canonical bytes verbatim.
+          allOf:
+            - $ref: '#/components/schemas/Vehicle'
+          readOnly: true
         received_at:
+          description: |-
+            ReceivedAt is when the server accepted the vehicle's
+            original create.
           type: string
           format: date-time
+          readOnly: true
       required:
         - id
         - journey_id
@@ -1986,6 +2028,9 @@ components:
       type: object
       properties:
         vehicles:
+          description: |-
+            Vehicles is every vehicle uploaded against the journey,
+            oldest first.
           type: array
           items:
             $ref: '#/components/schemas/JourneyVehicleResponse'
@@ -2000,24 +2045,54 @@ components:
       type: object
       properties:
         id:
+          description: |-
+            ID is the server-assigned identifier of the stored ACL
+            revision row.
           type: string
+          format: uuid
+          readOnly: true
         journey_vehicle_id:
+          description: JourneyVehicleID is the vehicle this ACL revision belongs to.
           type: string
+          format: uuid
+          readOnly: true
         acl_version:
+          description: |-
+            ACLVersion is the revision's version as claimed by the
+            signed bundle. It advanced the head pointer, so it is now
+            the vehicle's current_acl_version.
           type: integer
           format: int64
+          readOnly: true
         effective_time:
+          description: |-
+            EffectiveTime is when the ACL takes effect, per the signed
+            bundle. Trust evaluation consults the ACL in effect at an
+            attestation's effective time, not the newest one.
           type: string
           format: date-time
+          readOnly: true
         emergency_rule:
+          description: |-
+            EmergencyRule is the bundle's non-ACL-driver fallback
+            policy. Omitted when the bundle carries none (equivalent to
+            "none": no fallback, non-ACL drivers record as violations).
           anyOf:
             - $ref: '#/components/schemas/VehicleEmergencyRule'
             - type: "null"
+          readOnly: true
         integrity:
-          $ref: '#/components/schemas/Integrity'
+          description: |-
+            Integrity is the owner's signature envelope over the
+            bundle's canonical bytes, echoed as verified and stored.
+          allOf:
+            - $ref: '#/components/schemas/Integrity'
+          readOnly: true
         received_at:
+          description: ReceivedAt is when the server accepted this revision.
           type: string
           format: date-time
+          readOnly: true
       required:
         - id
         - journey_vehicle_id
@@ -2034,20 +2109,42 @@ components:
       type: object
       properties:
         id:
+          description: |-
+            ID is the server-assigned identifier of the stored metadata
+            revision row.
           type: string
+          format: uuid
+          readOnly: true
         journey_vehicle_id:
+          description: JourneyVehicleID is the vehicle this revision belongs to.
           type: string
+          format: uuid
+          readOnly: true
         revision_version:
+          description: |-
+            RevisionVersion is the revision's version as claimed by the
+            signed bundle. It advanced the head pointer, so it is now
+            the vehicle's current_revision_version.
           type: integer
           format: int64
+          readOnly: true
         revision_time:
+          description: |-
+            RevisionTime is the bundle's self-declared revision
+            timestamp.
           type: string
           format: date-time
+          readOnly: true
         vehicle:
-          $ref: '#/components/schemas/Vehicle'
+          description: Vehicle is the decoded metadata bundle that is now current.
+          allOf:
+            - $ref: '#/components/schemas/Vehicle'
+          readOnly: true
         received_at:
+          description: ReceivedAt is when the server accepted this revision.
           type: string
           format: date-time
+          readOnly: true
       required:
         - id
         - journey_vehicle_id
@@ -2117,30 +2214,84 @@ components:
       type: object
       properties:
         id:
+          description: |-
+            ID is the server-assigned identifier of the stored
+            attestation row.
           type: string
+          format: uuid
+          readOnly: true
         journey_vehicle_id:
+          description: |-
+            JourneyVehicleID is the vehicle whose wheel the driver
+            attested to taking.
           type: string
+          format: uuid
+          readOnly: true
         segment_id:
+          description: |-
+            SegmentID is the journey segment the attestation applies to,
+            per the signed payload.
           type: string
+          readOnly: true
         driver_user_id:
+          description: |-
+            DriverUserID is the user who signed the attestation —
+            drivers attest to their own handoffs, so this always matches
+            the submitting session's user.
           type: string
+          format: uuid
+          readOnly: true
         effective_time:
+          description: |-
+            EffectiveTime is when the driver took the wheel, per the
+            signed payload. The (vehicle, driver, effective_time) tuple
+            is the replay key: a gossiped duplicate returns the existing
+            record with 200 instead of 409.
           type: string
           format: date-time
+          readOnly: true
         acl_version_consulted:
+          description: |-
+            ACLVersionConsulted is the ACL revision the server's trust
+            evaluator consulted — the one in effect at EffectiveTime,
+            not necessarily the newest.
           type: integer
           format: int64
+          readOnly: true
         prior_attestation_hash:
+          description: |-
+            PriorAttestationHash is the canonical hash
+            ("sha256:<64 lowercase hex>") of the predecessor attestation
+            in the handoff chain. Omitted on a chain root (the vehicle's
+            first driver).
           type:
             - string
             - "null"
+          readOnly: true
         trust_flag:
+          description: |-
+            TrustFlag is the server-evaluated trust outcome: the driver
+            was in the consulted ACL (authorized), permitted only by the
+            vehicle's emergency fallback rule (emergency_fallback), or
+            neither — retained as evidence but untrusted (acl_violation).
           type: string
+          enum:
+            - authorized
+            - emergency_fallback
+            - acl_violation
+          readOnly: true
         integrity:
-          $ref: '#/components/schemas/Integrity'
+          description: |-
+            Integrity is the driver's signature envelope over the
+            attestation's canonical bytes.
+          allOf:
+            - $ref: '#/components/schemas/Integrity'
+          readOnly: true
         received_at:
+          description: ReceivedAt is when the server recorded the attestation.
           type: string
           format: date-time
+          readOnly: true
         fork_siblings:
           description: |-
             ForkSiblings names other attestations that share this
@@ -2170,14 +2321,32 @@ components:
       type: object
       properties:
         id:
+          description: ID is the sibling attestation's server-assigned identifier.
           type: string
+          format: uuid
+          readOnly: true
         driver_user_id:
+          description: |-
+            DriverUserID is the user the sibling attestation names as
+            driver.
           type: string
+          format: uuid
+          readOnly: true
         effective_time:
+          description: |-
+            EffectiveTime is when the sibling claims its driver took the
+            wheel.
           type: string
           format: date-time
+          readOnly: true
         trust_flag:
+          description: TrustFlag is the sibling's server-evaluated trust outcome.
           type: string
+          enum:
+            - authorized
+            - emergency_fallback
+            - acl_violation
+          readOnly: true
       required:
         - id
         - driver_user_id
@@ -2192,6 +2361,11 @@ components:
       type: object
       properties:
         attestations:
+          description: |-
+            Attestations is every recorded attestation for the vehicle,
+            ordered by effective_time ascending. Low-trust rows are
+            included; filter on trust_flag to show only authorized
+            drivers.
           type: array
           items:
             $ref: '#/components/schemas/DriverAttestationResponse'
@@ -2212,11 +2386,25 @@ components:
       type: object
       properties:
         as_of:
+          description: |-
+            AsOf is the resolved query timestamp the answer is relative
+            to: the ?at value when supplied, otherwise the server's
+            current time.
           type: string
           format: date-time
+          readOnly: true
         attestation:
-          $ref: '#/components/schemas/DriverAttestationResponse'
+          description: |-
+            Attestation is the driver attestation in effect at AsOf —
+            the highest effective_time at or before it, ties broken by
+            most recently received.
+          allOf:
+            - $ref: '#/components/schemas/DriverAttestationResponse'
         fork_siblings:
+          description: |-
+            ForkSiblings names competing attestations sharing the picked
+            attestation's prior_attestation_hash, so clients can surface
+            a conflicting handoff claim. Omitted when there is no fork.
           type: array
           items:
             $ref: '#/components/schemas/DriverAttestationForkSibling'

@@ -23,7 +23,15 @@ import (
 // the canonical bytes of each verbatim and verifies both
 // signatures before accepting the create.
 type JourneyVehicleCreateRequest struct {
-	Vehicle    opencaravan.Vehicle    `json:"vehicle"`
+	// Vehicle is the signed metadata bundle (v=1) describing the
+	// vehicle. Its owner_user_id must match the session user and
+	// its integrity signature must verify against the owner's
+	// enrolled signing key.
+	Vehicle opencaravan.Vehicle `json:"vehicle"`
+	// InitialACL is the signed authorization bundle (v=1) naming
+	// the vehicle's authorized drivers. Signed by the same owner
+	// under the same rules as Vehicle; the pair is accepted or
+	// rejected atomically.
 	InitialACL opencaravan.VehicleACL `json:"initial_acl"`
 }
 
@@ -40,13 +48,26 @@ type JourneyVehicleCreateRequest struct {
 // so the protocol type can evolve independently from the
 // server's public API surface.
 type JourneyVehicleResponse struct {
-	ID                     string              `json:"id"`
-	JourneyID              string              `json:"journey_id"`
-	OwnerUserID            string              `json:"owner_user_id"`
-	CurrentRevisionVersion int                 `json:"current_revision_version"`
-	CurrentACLVersion      int                 `json:"current_acl_version"`
-	Vehicle                opencaravan.Vehicle `json:"vehicle"`
-	ReceivedAt             time.Time           `json:"received_at"`
+	// ID is the vehicle's identifier as claimed by the signed
+	// bundle, scoped to the journey.
+	ID string `json:"id" openapi:"format=uuid,readOnly"`
+	// JourneyID is the journey this vehicle was uploaded against.
+	JourneyID string `json:"journey_id" openapi:"format=uuid,readOnly"`
+	// OwnerUserID is the user who signed (and therefore owns) the
+	// vehicle's bundles.
+	OwnerUserID string `json:"owner_user_id" openapi:"format=uuid,readOnly"`
+	// CurrentRevisionVersion is the head pointer of the vehicle's
+	// metadata revision chain (monotonically increasing).
+	CurrentRevisionVersion int `json:"current_revision_version" openapi:"readOnly"`
+	// CurrentACLVersion is the head pointer of the vehicle's ACL
+	// revision chain (monotonically increasing).
+	CurrentACLVersion int `json:"current_acl_version" openapi:"readOnly"`
+	// Vehicle is the latest signed metadata bundle, decoded from
+	// the stored canonical bytes verbatim.
+	Vehicle opencaravan.Vehicle `json:"vehicle" openapi:"readOnly"`
+	// ReceivedAt is when the server accepted the vehicle's
+	// original create.
+	ReceivedAt time.Time `json:"received_at" openapi:"readOnly"`
 }
 
 // JourneyVehicleListResponse is the envelope returned by
@@ -54,6 +75,8 @@ type JourneyVehicleResponse struct {
 // phases add pagination metadata or filter cursors without changing
 // the field name "vehicles" that clients already index against.
 type JourneyVehicleListResponse struct {
+	// Vehicles is every vehicle uploaded against the journey,
+	// oldest first.
 	Vehicles []JourneyVehicleResponse `json:"vehicles"`
 }
 
@@ -62,13 +85,28 @@ type JourneyVehicleListResponse struct {
 // version landed and to render an "ACL changed at $time" entry in a
 // vehicle history view.
 type JourneyVehicleACLRevisionResponse struct {
-	ID               string                            `json:"id"`
-	JourneyVehicleID string                            `json:"journey_vehicle_id"`
-	ACLVersion       int                               `json:"acl_version"`
-	EffectiveTime    time.Time                         `json:"effective_time"`
-	EmergencyRule    *opencaravan.VehicleEmergencyRule `json:"emergency_rule,omitempty"`
-	Integrity        opencaravan.Integrity             `json:"integrity"`
-	ReceivedAt       time.Time                         `json:"received_at"`
+	// ID is the server-assigned identifier of the stored ACL
+	// revision row.
+	ID string `json:"id" openapi:"format=uuid,readOnly"`
+	// JourneyVehicleID is the vehicle this ACL revision belongs to.
+	JourneyVehicleID string `json:"journey_vehicle_id" openapi:"format=uuid,readOnly"`
+	// ACLVersion is the revision's version as claimed by the
+	// signed bundle. It advanced the head pointer, so it is now
+	// the vehicle's current_acl_version.
+	ACLVersion int `json:"acl_version" openapi:"readOnly"`
+	// EffectiveTime is when the ACL takes effect, per the signed
+	// bundle. Trust evaluation consults the ACL in effect at an
+	// attestation's effective time, not the newest one.
+	EffectiveTime time.Time `json:"effective_time" openapi:"readOnly"`
+	// EmergencyRule is the bundle's non-ACL-driver fallback
+	// policy. Omitted when the bundle carries none (equivalent to
+	// "none": no fallback, non-ACL drivers record as violations).
+	EmergencyRule *opencaravan.VehicleEmergencyRule `json:"emergency_rule,omitempty" openapi:"readOnly"`
+	// Integrity is the owner's signature envelope over the
+	// bundle's canonical bytes, echoed as verified and stored.
+	Integrity opencaravan.Integrity `json:"integrity" openapi:"readOnly"`
+	// ReceivedAt is when the server accepted this revision.
+	ReceivedAt time.Time `json:"received_at" openapi:"readOnly"`
 }
 
 // JourneyVehicleRevisionResponse is what the metadata revision
@@ -76,12 +114,22 @@ type JourneyVehicleACLRevisionResponse struct {
 // Vehicle bundle that's now current. Symmetric with
 // [JourneyVehicleACLRevisionResponse] but for the metadata side.
 type JourneyVehicleRevisionResponse struct {
-	ID               string              `json:"id"`
-	JourneyVehicleID string              `json:"journey_vehicle_id"`
-	RevisionVersion  int                 `json:"revision_version"`
-	RevisionTime     time.Time           `json:"revision_time"`
-	Vehicle          opencaravan.Vehicle `json:"vehicle"`
-	ReceivedAt       time.Time           `json:"received_at"`
+	// ID is the server-assigned identifier of the stored metadata
+	// revision row.
+	ID string `json:"id" openapi:"format=uuid,readOnly"`
+	// JourneyVehicleID is the vehicle this revision belongs to.
+	JourneyVehicleID string `json:"journey_vehicle_id" openapi:"format=uuid,readOnly"`
+	// RevisionVersion is the revision's version as claimed by the
+	// signed bundle. It advanced the head pointer, so it is now
+	// the vehicle's current_revision_version.
+	RevisionVersion int `json:"revision_version" openapi:"readOnly"`
+	// RevisionTime is the bundle's self-declared revision
+	// timestamp.
+	RevisionTime time.Time `json:"revision_time" openapi:"readOnly"`
+	// Vehicle is the decoded metadata bundle that is now current.
+	Vehicle opencaravan.Vehicle `json:"vehicle" openapi:"readOnly"`
+	// ReceivedAt is when the server accepted this revision.
+	ReceivedAt time.Time `json:"received_at" openapi:"readOnly"`
 }
 
 // handleJourneyVehicleCreate implements POST /v1/journeys/{id}/vehicles.
