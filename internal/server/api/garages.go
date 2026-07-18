@@ -82,7 +82,7 @@ type GarageRevisionAppendResponse struct {
 	ReceivedAt time.Time `json:"received_at" openapi:"readOnly"`
 	// Garage is the garage's head state after the append, owner
 	// list reconciled — no follow-up GET needed.
-	Garage GarageResponse `json:"garage"`
+	Garage GarageResponse `json:"garage" openapi:"readOnly"`
 }
 
 // GarageOwnershipAcceptanceResponse is what the acceptance POST
@@ -109,7 +109,7 @@ type GarageOwnershipAcceptanceResponse struct {
 	ReceivedAt time.Time `json:"received_at" openapi:"readOnly"`
 	// Garage is the garage's head state after the acceptance, with
 	// the accepter's owner row now marked accepted.
-	Garage GarageResponse `json:"garage"`
+	Garage GarageResponse `json:"garage" openapi:"readOnly"`
 }
 
 // handleGarageCreate implements POST /v1/garages.

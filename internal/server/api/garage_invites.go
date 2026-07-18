@@ -91,7 +91,7 @@ type GarageInviteRedeemResponse struct {
 	RedeemedAt time.Time `json:"redeemed_at" openapi:"readOnly"`
 	// Garage is the garage's head state with the redeemer now an
 	// accepted owner — no follow-up GET needed.
-	Garage GarageResponse `json:"garage"`
+	Garage GarageResponse `json:"garage" openapi:"readOnly"`
 }
 
 // handleGarageInviteCreate implements POST /v1/garages/{id}/invites.

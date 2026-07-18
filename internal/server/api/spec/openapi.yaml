@@ -2402,6 +2402,7 @@ components:
             most recently received.
           allOf:
             - $ref: '#/components/schemas/DriverAttestationResponse'
+          readOnly: true
         fork_siblings:
           description: |-
             ForkSiblings names competing attestations sharing the picked
@@ -2410,6 +2411,7 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/DriverAttestationForkSibling'
+          readOnly: true
       required:
         - as_of
         - attestation
@@ -2643,6 +2645,7 @@ components:
             list reconciled — no follow-up GET needed.
           allOf:
             - $ref: '#/components/schemas/GarageResponse'
+          readOnly: true
       required:
         - revision_id
         - garage_id
@@ -2732,6 +2735,7 @@ components:
             the accepter's owner row now marked accepted.
           allOf:
             - $ref: '#/components/schemas/GarageResponse'
+          readOnly: true
       required:
         - acceptance_id
         - garage_id
@@ -3042,6 +3046,7 @@ components:
             accepted owner — no follow-up GET needed.
           allOf:
             - $ref: '#/components/schemas/GarageResponse'
+          readOnly: true
       required:
         - redemption_id
         - garage_invite_id

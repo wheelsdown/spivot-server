@@ -2899,14 +2899,16 @@
               {
                 "$ref": "#/components/schemas/DriverAttestationResponse"
               }
-            ]
+            ],
+            "readOnly": true
           },
           "fork_siblings": {
             "description": "ForkSiblings names competing attestations sharing the picked\nattestation's prior_attestation_hash, so clients can surface\na conflicting handoff claim. Omitted when there is no fork.",
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/DriverAttestationForkSibling"
-            }
+            },
+            "readOnly": true
           }
         },
         "required": [
@@ -3132,7 +3134,8 @@
               {
                 "$ref": "#/components/schemas/GarageResponse"
               }
-            ]
+            ],
+            "readOnly": true
           }
         },
         "required": [
@@ -3230,7 +3233,8 @@
               {
                 "$ref": "#/components/schemas/GarageResponse"
               }
-            ]
+            ],
+            "readOnly": true
           }
         },
         "required": [
@@ -3539,7 +3543,8 @@
               {
                 "$ref": "#/components/schemas/GarageResponse"
               }
-            ]
+            ],
+            "readOnly": true
           }
         },
         "required": [

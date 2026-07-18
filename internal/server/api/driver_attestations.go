@@ -409,11 +409,11 @@ type CurrentDriverResponse struct {
 	// Attestation is the driver attestation in effect at AsOf —
 	// the highest effective_time at or before it, ties broken by
 	// most recently received.
-	Attestation DriverAttestationResponse `json:"attestation"`
+	Attestation DriverAttestationResponse `json:"attestation" openapi:"readOnly"`
 	// ForkSiblings names competing attestations sharing the picked
 	// attestation's prior_attestation_hash, so clients can surface
 	// a conflicting handoff claim. Omitted when there is no fork.
-	ForkSiblings []DriverAttestationForkSibling `json:"fork_siblings,omitempty"`
+	ForkSiblings []DriverAttestationForkSibling `json:"fork_siblings,omitempty" openapi:"readOnly"`
 }
 
 // handleCurrentDriver implements
