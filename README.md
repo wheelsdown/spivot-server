@@ -13,10 +13,11 @@ operable reference implementation from the beginning.
 
 The primary release artifact is a well-labeled, OCI-compliant multi-arch
 container image. The current release line includes the complete
-client-app enrollment + session macaroon auth stack, the first
-protected CRUD endpoints (journey + telemetry), and a documented HTTP/3
-+ mTLS Traefik recipe an operator can stand up in under fifteen
-minutes.
+client-app enrollment + session macaroon auth stack, the journey /
+vehicle / garage protocol surface with signed-payload integrity
+verification, a generated OpenAPI contract with an embedded API
+explorer at `/docs/`, and a documented HTTP/3 + mTLS Traefik recipe an
+operator can stand up in under fifteen minutes.
 
 ## Project Status
 
@@ -60,6 +61,20 @@ Current foundation:
   participant-membership check). Validates the full auth stack
   composes correctly before unlocking the rest of the protocol
   API surface.
+- Journey-scoped vehicle bundles: signed Vehicle metadata + VehicleACL
+  revision chains, driver attestations with server-evaluated trust
+  (authorized / emergency-fallback / ACL-violation), and point-in-time
+  current-driver resolution.
+- Signed-payload integrity verification (ecdsa-p256-sha256 over
+  canonical bytes) backed by the enrolled-certificate store.
+- Household garages: shared vehicle libraries with signed revisions,
+  two-phase ownership acceptance, and revocable invite tokens.
+- Authenticated server-registration invite minting with a server-level
+  policy gate (denied / admin-only / any-user) advertised via
+  `/v1/server` capabilities.
+- Generated OpenAPI 3.1 contract projected from the route table and
+  contract structs, drift-gated in CI, with an embedded Scalar
+  explorer at `/docs/`.
 - Container-first release engineering with OCI labels and health checks.
 - Embedded SQL migration metadata for OpenCaravan journey storage.
 
@@ -113,168 +128,31 @@ label checks, `spivot-server version`, and a live container health check.
 
 ## API Surface
 
-The current HTTP surface is deliberately small:
+The API's machine-readable contract is generated from the Go source —
+the route table and contract structs *are* the spec — and served by
+the running binary:
 
-```text
-GET  /                          service summary
-GET  /health                    liveness check
-GET  /readyz                    readiness check
-GET  /v1/server                 server discovery, capabilities, and policy snapshot
-GET  /v1/version                build and runtime version metadata
-POST /v1/client-apps/enroll     redeem a server_registration invite + CSR
-                                for a signed leaf certificate
-POST /v1/client-apps/invites    (requires client cert) mint a single-use
-                                server_registration invite to onboard a
-                                new user. Optional {expires_in_seconds}
-                                (default 24h, max 7d). Returns the
-                                plaintext token once. Capped at 10
-                                outstanding unconsumed invites per user
-                                (429 when reached)
-GET  /v1/client-apps/invites    (requires client cert) list the caller's
-                                own minted invites (no plaintext tokens),
-                                newest first, including used/expired rows
-POST /v1/sessions               (requires client cert) issue a session
-                                macaroon for a single SessionAction,
-                                optionally scoped to a journey
-POST /v1/journeys               (requires client cert) create a new
-                                journey with the caller as host
-POST /v1/garages                (requires client cert) create a new
-                                garage with the caller as the sole
-                                accepted owner; revision_version = 1
-GET  /v1/garages                (requires client cert) list every
-                                garage where the caller is an owner,
-                                accepted or pending (so clients
-                                surface invitations alongside owned)
-GET  /v1/garages/{id}           (requires client cert; caller must
-                                be an owner) load the garage's
-                                current head state + materialized
-                                owner list
-POST /v1/garages/{id}/revisions (requires client cert; caller must
-                                be an accepted owner and must equal
-                                Garage.signed_by) publish the next
-                                signed revision (rename, add/remove
-                                owners)
-POST /v1/garages/{id}/ownership-acceptances
-                                (requires client cert; caller must
-                                equal acceptance.accepter_user_id)
-                                accept a pending ownership
-                                invitation
-POST /v1/garages/{id}/vehicles  (requires client cert; caller must
-                                be an accepted owner) add a vehicle
-                                to the garage at revision_version=1
-GET  /v1/garages/{id}/vehicles  (requires client cert; caller must
-                                be an owner, accepted or pending)
-                                list the garage's vehicles —
-                                pending invitees can preview the
-                                library they're being invited into
-GET  /v1/garages/{id}/vehicles/{vid}
-                                (requires client cert; caller must
-                                be an owner) load a single garage
-                                vehicle's current head state
-POST /v1/garages/{id}/vehicles/{vid}/revisions
-                                (requires client cert; caller must
-                                be an accepted owner) publish a
-                                new signed revision (rename,
-                                change photos, update capacity)
-POST /v1/garages/{id}/invites   (requires client cert; caller must
-                                be an accepted owner) mint a fresh
-                                invite token for sharing the garage;
-                                response carries the plaintext
-                                token once, never retrievable from
-                                the server again
-GET  /v1/garages/{id}/invites   (requires client cert; caller must
-                                be an accepted owner) list every
-                                invite issued for the garage —
-                                token field is never populated on
-                                this path
-POST /v1/garages/{id}/invites/{inviteId}/revoke
-                                (requires client cert; caller must
-                                be an accepted owner) revoke an
-                                outstanding invite so further
-                                redeems fail
-POST /v1/garage-invites/redeem  (requires client cert) body
-                                {"token": "..."}; redeems the
-                                invite and adds the caller as an
-                                accepted owner of the inviter's
-                                garage. Token in body so it
-                                doesn't leak into access logs
-GET  /v1/journeys/{id}          (requires session macaroon scoped to
-                                the journey + journey.read) load journey
-POST /v1/journeys/{id}/telemetry
-                                (requires session macaroon scoped to
-                                the journey + telemetry.write) record
-                                a telemetry batch
-POST /v1/journeys/{id}/vehicles  (requires session macaroon scoped to
-                                the journey + journey.write) upload a
-                                journey-scoped Vehicle metadata bundle
-                                AND its initial signed VehicleACL in
-                                one atomic request; body shape is
-                                {"vehicle": <Vehicle>, "initial_acl":
-                                <VehicleACL>}. Both signatures are
-                                verified independently; both signers
-                                must belong to the same owner user.
-GET  /v1/journeys/{id}/vehicles  (requires session macaroon scoped to
-                                the journey + journey.read) list every
-                                Vehicle uploaded against the journey,
-                                each with its current decoded metadata
-                                bundle
-GET  /v1/journeys/{id}/vehicles/{vid}
-                                (requires session macaroon scoped to
-                                the journey + journey.read) load a
-                                single journey vehicle with its
-                                current metadata bundle
-POST /v1/journeys/{id}/vehicles/{vid}/revisions
-                                (requires session macaroon scoped to
-                                the journey + journey.write) publish
-                                a new signed Vehicle metadata bundle
-                                revision; the vehicle's
-                                current_revision_version pointer
-                                advances when the supplied version is
-                                strictly greater. Frozen when the
-                                owner is no longer a journey
-                                participant.
-POST /v1/journeys/{id}/vehicles/{vid}/acl-revisions
-                                (requires session macaroon scoped to
-                                the journey + journey.write) append a
-                                new signed VehicleACL revision; the
-                                vehicle's current_acl_version pointer
-                                advances when the supplied version is
-                                strictly greater. Frozen when the
-                                owner is no longer a journey
-                                participant.
-POST /v1/journeys/{id}/vehicles/{vid}/driver-attestations
-                                (requires session macaroon scoped to
-                                the journey + journey.write) record a
-                                signed DriverAttestation; the server
-                                resolves the VehicleACL revision
-                                current at the attestation's
-                                effective_time and classifies the
-                                trust outcome as authorized,
-                                emergency_fallback, or acl_violation.
-                                Gossiped replays of the same
-                                (vehicle, driver, effective_time)
-                                tuple return 200 with the existing
-                                record instead of 409
-GET  /v1/journeys/{id}/vehicles/{vid}/driver-attestations
-                                (requires session macaroon scoped to
-                                the journey + journey.read) list
-                                every recorded DriverAttestation
-                                ordered by effective_time ascending,
-                                including low-trust rows so clients
-                                can audit the full chain of custody
-GET  /v1/journeys/{id}/vehicles/{vid}/current-driver
-                                (requires session macaroon scoped to
-                                the journey + journey.read) returns
-                                the DriverAttestation in effect at
-                                the optional ?at=<rfc3339> timestamp
-                                (defaults to now); includes fork
-                                siblings when the attestation chains
-                                to a contested predecessor
-```
+- **`/docs/`** — embedded Scalar API explorer, offline-capable, no
+  CDN dependency
+- **`/openapi.json`** / **`/openapi.yaml`** — the OpenAPI 3.1
+  document
+- [`internal/server/api/spec/`](internal/server/api/spec/) — the same
+  artifacts, committed, for reading without a running server
 
-Future OpenCaravan API routes will be documented as they land. Go package
-documentation is part of the public reader experience; exported symbols and
-packages should have useful Godoc comments.
+The surface today is 33 routes across five domains: System (health,
+readiness, discovery, version), Identity (client-app enrollment,
+session macaroons, server-registration invites), Journeys (create,
+fetch, telemetry batches), Journey Vehicles (signed vehicle bundles,
+ACL revisions, driver attestations, current-driver resolution), and
+Garages (shared vehicle libraries with signed revisions, two-phase
+ownership acceptance, and invite tokens).
+
+Every operation records its authentication posture in an
+`x-spivot-auth` extension derived from the same route table that
+wires the middleware, so the documented contract cannot drift from
+the enforced one. A stale committed spec fails `just ci`. Failure
+responses share one RFC 7807-style problem envelope; clients branch
+on its `code` field.
 
 ## OpenCaravan Protocol Version
 

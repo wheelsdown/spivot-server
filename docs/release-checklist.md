@@ -1,0 +1,141 @@
+# Release Checklist
+
+Use this for real release work, not just version bumps. The goal is a
+container image that is technically sound, operationally inspectable,
+and easy to roll back.
+
+The phases are time-ordered: audits land first, while a fix is still
+cheap — a redundant surface collapsed before the release is one PR;
+the same fix after clients depend on it is migration work. Artifacts
+get cut once the tree is clean; validation and communication happen
+against the live build. The final deploy runs on the production host,
+which stays in the operator's hands. Skipping forward is fine; working
+backward is the smell.
+
+The release machinery itself is `just prepare-release` /
+`just publish-release` (or the `just release-github` one-shot) plus
+the tag-triggered GHCR workflow — see the Release Engineering sections
+of [README.md](../README.md) and [AGENTS.md](../AGENTS.md). This
+checklist is the judgment around that machinery, not a re-enumeration
+of its guards.
+
+## 1. Pre-release audits
+
+- [ ] **Code-path audit.** Sweep the surfaces this release touched for
+      redundant fields, parallel implementations, and dead code paths.
+      Per-PR review already happened; this pass looks *across* the
+      PRs, where seams drift.
+- [ ] **GoDoc narrative audit.** Lint (`revive` exported rules) and
+      the generator's missing-doc error already enforce *presence*;
+      this audit checks *quality* on surfaces the release touched:
+  - [ ] **Stand-alone test.** Each field's doc reads cleanly without
+        referencing sibling fields to disambiguate. If it can't be
+        written without "but when FieldB is set…", the design is
+        wrong — collapse, rename, or split.
+  - [ ] **Why-it-exists test.** Docs answer *why*, not just *what*.
+        If only the *what* is statable, the abstraction has no
+        narrative reason to exist separately.
+- [ ] **Contract audit.** The OpenAPI document is the product surface
+      clients build against; treat it like one.
+  - [ ] `just ci` green — `generate-check` proves the committed spec
+        matches the source.
+  - [ ] Module-local missing-doc count is zero (the generator
+        enforces this); note the upstream opencaravan-go count and
+        whether a module bump changed it.
+  - [ ] `/docs/` renders against a live build; spot-check a changed
+        operation's `x-spivot-auth` against the middleware it
+        actually wires.
+  - [ ] [ContractVersion](../internal/server/api/routes.go) reflects
+        this release: bump it if the documented contract changed
+        shape, and say so in the release notes either way.
+  - [ ] README defers to the generated contract — it must not grow a
+        hand-maintained route list again.
+- [ ] **Documentation audit.**
+  - [ ] [README.md](../README.md) Project Status and operator
+        sections describe the capabilities this release actually
+        ships.
+  - [ ] [AGENTS.md](../AGENTS.md) workflow and convention sections
+        match current reality.
+  - [ ] [docs/deployment/](deployment/) recipes still work as
+        written against this release's flags, env vars, and paths.
+- [ ] **Ops config review.**
+  - [ ] New/renamed `SPIVOT_*` env vars are documented and have
+        deliberate defaults.
+  - [ ] `data_dir` volume posture unchanged, or the change is called
+        out loudly in upgrade notes (the #38 vol-mismatch incident is
+        why this line exists).
+  - [ ] Healthcheck behavior unchanged, or the Dockerfile and
+        `container-check` moved together.
+
+## 2. Build readiness
+
+- [ ] Release-blocking PRs merged; follow-up cleanup explicitly
+      deferred, not silently included.
+- [ ] Candidate identity recorded before validation: intended
+      version, commit SHA, branch. The tag comes off a clean,
+      up-to-date `main` — the guards check this mechanically, but
+      verify the candidate commit is the release you *mean* to ship.
+- [ ] `just ci` green at the candidate commit.
+- [ ] `just prepare-release <version>` — runs the versioned CI gate,
+      builds the multi-arch OCI archive into `dist/release/`, records
+      prepared metadata. Publishes nothing.
+- [ ] Prepared archive smoke: the built image reports the intended
+      version (`prepare-release`'s container-check does this; read
+      the output rather than assuming).
+
+## 3. Cut
+
+- [ ] `just publish-release <version> [auto|prerelease|release]` —
+      guards (clean tree, `main` == `origin/main`, prepared metadata
+      matches HEAD), then tags, pushes, and creates the GitHub
+      release with the OCI archive + checksum + Buildx metadata.
+      `just release-github <version>` is the prepare+publish
+      one-shot; use the split form when you want to inspect the
+      prepared artifacts before they go public.
+- [ ] Tag-triggered [release workflow](../.github/workflows/release.yml)
+      completed; GHCR carries the new version tags.
+- [ ] Replace the autogenerated release notes with narrative notes
+      (phase 5) — `gh release edit <tag> --notes-file …`.
+
+## 4. Post-deploy validation
+
+The production host stays in the operator's hands; this phase is the
+operator's memory aid.
+
+- [ ] Previous image reference kept so rollback is one `docker run`
+      away, not an image hunt.
+- [ ] After the swap: `/health` and `/readyz` return 200 and
+      `/v1/version` reports the intended version and commit.
+- [ ] `/v1/server` advertises the expected capabilities and policy
+      snapshot; `/docs/` renders.
+- [ ] One authenticated request succeeds on a real enrolled-client
+      path (session mint or an identity-gated read).
+- [ ] Read `WARN`/`ERROR` output after restart like an incident is
+      coming: distinguish startup burst from steady-state regression;
+      explain or fix stale-config warnings instead of normalizing
+      them.
+
+## 5. Communication
+
+Release notes live on the GitHub release object, not in a repo file.
+They are narrative — a synthesis of the merged PRs' *whys*, not an
+autogenerated changelog with an intro.
+
+- [ ] **Title and theme**: `vX.Y.Z — The {Theme} Release`. If the
+      release has no thematic backbone, call it a maintenance bump
+      and keep it short rather than inflating it.
+- [ ] **Framing paragraph** placing the release in the project's arc.
+- [ ] **Walk the merged PRs** since the previous tag
+      (`git log <prev>..HEAD --merges`) and pull the why from PR
+      descriptions and linked issues.
+- [ ] **Group by operational story**, not code area; each bullet
+      states what changed *and why it mattered enough to ship*, with
+      `(#NNN)` cited inline.
+- [ ] **Diff stats line** for scale
+      (`git diff --shortstat <prev>..<tag>`).
+- [ ] **Upgrade notes** when the operator must do or expect anything:
+      config, schema, behavior, deprecations. Short, concrete,
+      numbered.
+- [ ] **Full changelog footer** comparing previous tag to this one.
+- [ ] **Read it cold** before publishing: does the story hold without
+      the source tabs open?
