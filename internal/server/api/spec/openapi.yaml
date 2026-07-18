@@ -1374,8 +1374,13 @@ components:
       type: object
       properties:
         expires_in_seconds:
+          description: |-
+            ExpiresInSeconds is the requested invite lifetime. Zero or
+            omitted selects the 24-hour default; values above the 7-day
+            cap (604800) or below zero are rejected with a 400.
           type: integer
           format: int64
+          example: 86400
     ClientAppInviteResponse:
       description: |-
         ClientAppInviteResponse is the wire shape for an issued invite.
@@ -1389,22 +1394,47 @@ components:
       type: object
       properties:
         scope:
+          description: |-
+            Scope is the invite's redemption scope. Always
+            "server_registration" — the only scope the enrollment
+            endpoint redeems, and the only one this endpoint mints.
           type: string
+          readOnly: true
         created_by_user_id:
+          description: |-
+            CreatedByUserID is the user id of the enrolled account that
+            minted the invite.
           type: string
+          format: uuid
+          readOnly: true
         token:
+          description: |-
+            Token is the plaintext invite token the invitee presents to
+            POST /v1/client-apps/enroll. Present only on the create
+            response: the server stores a SHA-256 hash, so the plaintext
+            is unrecoverable afterward and never appears on the list
+            path.
           type: string
+          readOnly: true
         created_at:
+          description: CreatedAt is when the invite was minted.
           type: string
           format: date-time
+          readOnly: true
         expires_at:
+          description: ExpiresAt is when the invite stops being redeemable.
           type: string
           format: date-time
+          readOnly: true
         used_at:
+          description: |-
+            UsedAt is when the invite was redeemed by an enrollment.
+            Omitted while the invite is still outstanding.
           type:
             - string
             - "null"
           format: date-time
+          readOnly: true
       required:
         - scope
         - created_by_user_id
@@ -1415,6 +1445,9 @@ components:
       type: object
       properties:
         invites:
+          description: |-
+            Invites is every invite the caller has minted, newest first,
+            including used and expired rows. Token is never present here.
           type: array
           items:
             $ref: '#/components/schemas/ClientAppInviteResponse'
@@ -1429,8 +1462,16 @@ components:
       type: object
       properties:
         title:
+          description: |-
+            Title names the journey. Required; leading and trailing
+            whitespace is trimmed, and a blank result is rejected with a
+            400.
           type: string
+          example: Alaska Summer 2027
         description:
+          description: |-
+            Description is optional free-form prose about the journey.
+            Whitespace is trimmed.
           type: string
       required:
         - title
@@ -1447,20 +1488,52 @@ components:
       type: object
       properties:
         id:
+          description: |-
+            ID is the journey's stable identifier: a random version 4
+            UUID, server-assigned at creation and immutable.
           type: string
+          format: uuid
+          readOnly: true
         title:
+          description: Title is the journey's display name as supplied by the host.
           type: string
         description:
+          description: |-
+            Description is the host-supplied prose description. Omitted
+            when empty.
           type: string
         host_user_id:
+          description: |-
+            HostUserID is the user id of the account that created the
+            journey and acts as its host participant.
           type: string
+          format: uuid
+          readOnly: true
         state:
+          description: |-
+            State is the OpenCaravan journey lifecycle state. Journeys
+            are created as "planned"; state transitions are a future
+            phase.
           type: string
+          enum:
+            - planned
+            - active
+            - closed
+            - expired
+            - deleted
+          readOnly: true
         visibility:
+          description: |-
+            Visibility controls who can discover the journey. Always
+            "private" today — a server-defined value, not yet an
+            OpenCaravan protocol enum.
           type: string
+          readOnly: true
         creation_time:
+          description: CreationTime is when the host created the journey.
           type: string
           format: date-time
+          readOnly: true
       required:
         - id
         - title
@@ -1478,8 +1551,17 @@ components:
       type: object
       properties:
         client_batch_id:
+          description: |-
+            ClientBatchID is the client-chosen idempotency key for this
+            batch. Retrying an already-accepted (device, client_batch_id)
+            tuple returns a 409 rather than recording a duplicate.
           type: string
         samples:
+          description: |-
+            Samples are the captured position samples. Phase 5 persists
+            the envelope (count + content digest) rather than expanding
+            each sample into queryable rows; each sample is still
+            protocol-validated on receipt.
           type: array
           items:
             $ref: '#/components/schemas/PositionSample'
@@ -1577,13 +1659,24 @@ components:
       type: object
       properties:
         batch_id:
+          description: |-
+            BatchID is the server-assigned id of the recorded batch, for
+            correlating client retries against server logs.
           type: string
+          format: uuid
+          readOnly: true
         received_count:
+          description: |-
+            ReceivedCount is the number of samples the server
+            acknowledged receiving in this batch.
           type: integer
           format: int64
+          readOnly: true
         received_time:
+          description: ReceivedTime is when the server recorded the batch.
           type: string
           format: date-time
+          readOnly: true
       required:
         - batch_id
         - received_count

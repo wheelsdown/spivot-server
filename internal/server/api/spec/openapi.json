@@ -1969,8 +1969,10 @@
         "type": "object",
         "properties": {
           "expires_in_seconds": {
+            "description": "ExpiresInSeconds is the requested invite lifetime. Zero or\nomitted selects the 24-hour default; values above the 7-day\ncap (604800) or below zero are rejected with a 400.",
             "type": "integer",
-            "format": "int64"
+            "format": "int64",
+            "example": 86400
           }
         }
       },
@@ -1979,28 +1981,41 @@
         "type": "object",
         "properties": {
           "scope": {
-            "type": "string"
+            "description": "Scope is the invite's redemption scope. Always\n\"server_registration\" — the only scope the enrollment\nendpoint redeems, and the only one this endpoint mints.",
+            "type": "string",
+            "readOnly": true
           },
           "created_by_user_id": {
-            "type": "string"
+            "description": "CreatedByUserID is the user id of the enrolled account that\nminted the invite.",
+            "type": "string",
+            "format": "uuid",
+            "readOnly": true
           },
           "token": {
-            "type": "string"
+            "description": "Token is the plaintext invite token the invitee presents to\nPOST /v1/client-apps/enroll. Present only on the create\nresponse: the server stores a SHA-256 hash, so the plaintext\nis unrecoverable afterward and never appears on the list\npath.",
+            "type": "string",
+            "readOnly": true
           },
           "created_at": {
+            "description": "CreatedAt is when the invite was minted.",
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "readOnly": true
           },
           "expires_at": {
+            "description": "ExpiresAt is when the invite stops being redeemable.",
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "readOnly": true
           },
           "used_at": {
+            "description": "UsedAt is when the invite was redeemed by an enrollment.\nOmitted while the invite is still outstanding.",
             "type": [
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "readOnly": true
           }
         },
         "required": [
@@ -2015,6 +2030,7 @@
         "type": "object",
         "properties": {
           "invites": {
+            "description": "Invites is every invite the caller has minted, newest first,\nincluding used and expired rows. Token is never present here.",
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/ClientAppInviteResponse"
@@ -2030,9 +2046,12 @@
         "type": "object",
         "properties": {
           "title": {
-            "type": "string"
+            "description": "Title names the journey. Required; leading and trailing\nwhitespace is trimmed, and a blank result is rejected with a\n400.",
+            "type": "string",
+            "example": "Alaska Summer 2027"
           },
           "description": {
+            "description": "Description is optional free-form prose about the journey.\nWhitespace is trimmed.",
             "type": "string"
           }
         },
@@ -2045,26 +2064,47 @@
         "type": "object",
         "properties": {
           "id": {
-            "type": "string"
+            "description": "ID is the journey's stable identifier: a random version 4\nUUID, server-assigned at creation and immutable.",
+            "type": "string",
+            "format": "uuid",
+            "readOnly": true
           },
           "title": {
+            "description": "Title is the journey's display name as supplied by the host.",
             "type": "string"
           },
           "description": {
+            "description": "Description is the host-supplied prose description. Omitted\nwhen empty.",
             "type": "string"
           },
           "host_user_id": {
-            "type": "string"
+            "description": "HostUserID is the user id of the account that created the\njourney and acts as its host participant.",
+            "type": "string",
+            "format": "uuid",
+            "readOnly": true
           },
           "state": {
-            "type": "string"
+            "description": "State is the OpenCaravan journey lifecycle state. Journeys\nare created as \"planned\"; state transitions are a future\nphase.",
+            "type": "string",
+            "enum": [
+              "planned",
+              "active",
+              "closed",
+              "expired",
+              "deleted"
+            ],
+            "readOnly": true
           },
           "visibility": {
-            "type": "string"
+            "description": "Visibility controls who can discover the journey. Always\n\"private\" today — a server-defined value, not yet an\nOpenCaravan protocol enum.",
+            "type": "string",
+            "readOnly": true
           },
           "creation_time": {
+            "description": "CreationTime is when the host created the journey.",
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "readOnly": true
           }
         },
         "required": [
@@ -2081,9 +2121,11 @@
         "type": "object",
         "properties": {
           "client_batch_id": {
+            "description": "ClientBatchID is the client-chosen idempotency key for this\nbatch. Retrying an already-accepted (device, client_batch_id)\ntuple returns a 409 rather than recording a duplicate.",
             "type": "string"
           },
           "samples": {
+            "description": "Samples are the captured position samples. Phase 5 persists\nthe envelope (count + content digest) rather than expanding\neach sample into queryable rows; each sample is still\nprotocol-validated on receipt.",
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/PositionSample"
@@ -2202,15 +2244,22 @@
         "type": "object",
         "properties": {
           "batch_id": {
-            "type": "string"
+            "description": "BatchID is the server-assigned id of the recorded batch, for\ncorrelating client retries against server logs.",
+            "type": "string",
+            "format": "uuid",
+            "readOnly": true
           },
           "received_count": {
+            "description": "ReceivedCount is the number of samples the server\nacknowledged receiving in this batch.",
             "type": "integer",
-            "format": "int64"
+            "format": "int64",
+            "readOnly": true
           },
           "received_time": {
+            "description": "ReceivedTime is when the server recorded the batch.",
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "readOnly": true
           }
         },
         "required": [
