@@ -91,6 +91,25 @@ changes behavior without updating the affected docs is incomplete, the
 same way a PR that changes a function without updating its tests is
 incomplete.
 
+## API Contract (OpenAPI)
+
+The native API's machine-readable contract is generated from the Go
+source — never hand-edit `internal/server/api/spec/openapi.{json,yaml}`.
+
+- The route table in `internal/server/api/routes.go` is the single
+  source of truth: mux registration, auth posture, and OpenAPI
+  operation metadata all come from the same entry. Add new endpoints
+  there; nothing is registered ad hoc.
+- Contract-struct GoDoc IS the spec: a field's doc comment becomes its
+  property `description` in the generated document. Optional
+  `openapi:"format=…,enum=…,readOnly"` struct tags add schema metadata
+  the `json` tag cannot express.
+- After touching routes or contract structs, run `just generate` and
+  commit the regenerated artifacts.
+- The server serves the committed artifacts in-process:
+  `/openapi.json`, `/openapi.yaml`, and the Scalar explorer at
+  `/docs/` (vendored, offline-capable — see `internal/server/docs`).
+
 ## Container & Release Engineering
 
 - The production artifact is the container image, not a macOS package or

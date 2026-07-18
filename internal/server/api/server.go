@@ -21,6 +21,8 @@ import (
 	"github.com/wheelsdown/spivot-server/internal/platform/logging"
 	"github.com/wheelsdown/spivot-server/internal/platform/proxy"
 	"github.com/wheelsdown/spivot-server/internal/platform/storage"
+	"github.com/wheelsdown/spivot-server/internal/server/api/spec"
+	"github.com/wheelsdown/spivot-server/internal/server/docs"
 	"github.com/wheelsdown/spivot-server/internal/server/middleware"
 )
 
@@ -380,6 +382,17 @@ func NewServer(cfg Config, logger *slog.Logger) *Server {
 
 // Handler returns the API HTTP handler.
 //
+// Routes are registered from the declarative table returned by
+// [Routes]; each entry's [AuthPosture] selects the middleware wrapped
+// around the handler at the registration site, so the table is both
+// the documentation and the enforcement of every route's auth
+// requirement. AuthSession routes are registered only when
+// [Config.MacaroonVerifier] is wired: without a verifier,
+// [middleware.RequireSession] would always 401 and the routes would
+// be dead code. Their per-handler constraints run through
+// verifier.CheckConstraints so attenuator attacks against the
+// journey caveat are defeated by macaroon AND semantics.
+//
 // Middleware composition (outermost first):
 //
 //  1. withRequestInfo — parses forwarded headers and TLS peer state
@@ -401,93 +414,40 @@ func NewServer(cfg Config, logger *slog.Logger) *Server {
 //     carries the cached RequestInfo, the resolved Identity, and
 //     (when present) the verified Session — every observable
 //     dimension surfaces on the access log line.
-//  5. The route mux. Individual handlers wrap themselves in
-//     [middleware.RequireIdentity] or [middleware.RequireSession]
-//     at the registration site when they require those layers.
+//  5. The route mux, registered from the table.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /", s.handleRoot)
-	mux.HandleFunc("GET /health", s.handleHealth)
-	mux.HandleFunc("GET /readyz", s.handleReady)
-	mux.HandleFunc("GET /v1/server", s.handleServerInfo)
-	mux.HandleFunc("GET /v1/version", s.handleVersion)
-	mux.HandleFunc("POST /v1/client-apps/enroll", s.handleClientAppEnroll)
-	// POST /v1/sessions requires a resolved identity. Wrapping
-	// here at the registration site keeps the auth requirement
-	// visible in the route table — anyone reading Handler() can
-	// see at a glance which routes are public and which require
-	// an enrolled client app.
-	mux.Handle("POST /v1/sessions", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleSessionCreate)))
-	// Authenticated server-registration invite minting: an enrolled
-	// user mints a single-use token to onboard a brand-new user. The
-	// unauthenticated consumer of these tokens is
-	// POST /v1/client-apps/enroll above.
-	mux.Handle("POST /v1/client-apps/invites", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleClientAppInviteCreate)))
-	mux.Handle("GET /v1/client-apps/invites", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleClientAppInviteList)))
-	// POST /v1/journeys is identity-only (the caller creates a new
-	// journey before any macaroon could reference it), so it is
-	// registered unconditionally — deployments that intentionally
-	// omit the session stack still need to be able to create
-	// journeys. The handler's own 503 path covers the
-	// JourneyStore-not-wired case.
-	mux.Handle("POST /v1/journeys", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleJourneyCreate)))
-	// Garage endpoints are identity-only (no journey context).
-	// The garage container is account-scoped: authority is
-	// "are you an owner of this garage?" — enforced per-handler
-	// via [storage.Store.GarageOwnerByUserAndGarage].
-	mux.Handle("POST /v1/garages", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleGarageCreate)))
-	mux.Handle("GET /v1/garages", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleGarageList)))
-	mux.Handle("GET /v1/garages/{id}", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleGarageGet)))
-	mux.Handle("POST /v1/garages/{id}/revisions", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleGarageRevisionAppend)))
-	mux.Handle("POST /v1/garages/{id}/ownership-acceptances", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleGarageOwnershipAccept)))
-	mux.Handle("POST /v1/garages/{id}/vehicles", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleGarageVehicleCreate)))
-	mux.Handle("GET /v1/garages/{id}/vehicles", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleGarageVehicleList)))
-	mux.Handle("GET /v1/garages/{id}/vehicles/{vid}", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleGarageVehicleGet)))
-	mux.Handle("POST /v1/garages/{id}/vehicles/{vid}/revisions", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleGarageVehicleRevisionAppend)))
-	mux.Handle("POST /v1/garages/{id}/invites", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleGarageInviteCreate)))
-	mux.Handle("GET /v1/garages/{id}/invites", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleGarageInviteList)))
-	mux.Handle("POST /v1/garages/{id}/invites/{inviteId}/revoke", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleGarageInviteRevoke)))
-	mux.Handle("POST /v1/garage-invites/redeem", middleware.RequireIdentity(s.logger, http.HandlerFunc(s.handleGarageInviteRedeem)))
-	// The journey-scoped routes require a session macaroon naming
-	// the requested journey and the appropriate action; the
-	// per-handler constraints run through
-	// verifier.CheckConstraints so attenuator attacks against the
-	// journey caveat are defeated by macaroon AND semantics.
-	// Registered only when MacaroonVerifier is wired: without a
-	// verifier, RequireSession would always 401 and the routes
-	// would be dead code.
-	if s.cfg.MacaroonVerifier != nil {
-		mux.Handle("GET /v1/journeys/{id}", middleware.RequireSession(s.cfg.MacaroonVerifier, s.logger,
-			middleware.SessionActionJourneyFromPath(opencaravan.SessionActionJourneyRead, "id"),
-		)(http.HandlerFunc(s.handleJourneyGet)))
-		mux.Handle("POST /v1/journeys/{id}/telemetry", middleware.RequireSession(s.cfg.MacaroonVerifier, s.logger,
-			middleware.SessionActionJourneyFromPath(opencaravan.SessionActionTelemetryWrite, "id"),
-		)(http.HandlerFunc(s.handleJourneyTelemetry)))
-		mux.Handle("POST /v1/journeys/{id}/vehicles", middleware.RequireSession(s.cfg.MacaroonVerifier, s.logger,
-			middleware.SessionActionJourneyFromPath(opencaravan.SessionActionJourneyWrite, "id"),
-		)(http.HandlerFunc(s.handleJourneyVehicleCreate)))
-		mux.Handle("GET /v1/journeys/{id}/vehicles", middleware.RequireSession(s.cfg.MacaroonVerifier, s.logger,
-			middleware.SessionActionJourneyFromPath(opencaravan.SessionActionJourneyRead, "id"),
-		)(http.HandlerFunc(s.handleJourneyVehicleList)))
-		mux.Handle("GET /v1/journeys/{id}/vehicles/{vid}", middleware.RequireSession(s.cfg.MacaroonVerifier, s.logger,
-			middleware.SessionActionJourneyFromPath(opencaravan.SessionActionJourneyRead, "id"),
-		)(http.HandlerFunc(s.handleJourneyVehicleGet)))
-		mux.Handle("POST /v1/journeys/{id}/vehicles/{vid}/acl-revisions", middleware.RequireSession(s.cfg.MacaroonVerifier, s.logger,
-			middleware.SessionActionJourneyFromPath(opencaravan.SessionActionJourneyWrite, "id"),
-		)(http.HandlerFunc(s.handleJourneyVehicleACLAppend)))
-		mux.Handle("POST /v1/journeys/{id}/vehicles/{vid}/revisions", middleware.RequireSession(s.cfg.MacaroonVerifier, s.logger,
-			middleware.SessionActionJourneyFromPath(opencaravan.SessionActionJourneyWrite, "id"),
-		)(http.HandlerFunc(s.handleJourneyVehicleRevisionAppend)))
-		mux.Handle("POST /v1/journeys/{id}/vehicles/{vid}/driver-attestations", middleware.RequireSession(s.cfg.MacaroonVerifier, s.logger,
-			middleware.SessionActionJourneyFromPath(opencaravan.SessionActionJourneyWrite, "id"),
-		)(http.HandlerFunc(s.handleDriverAttestationRecord)))
-		mux.Handle("GET /v1/journeys/{id}/vehicles/{vid}/driver-attestations", middleware.RequireSession(s.cfg.MacaroonVerifier, s.logger,
-			middleware.SessionActionJourneyFromPath(opencaravan.SessionActionJourneyRead, "id"),
-		)(http.HandlerFunc(s.handleDriverAttestationList)))
-		mux.Handle("GET /v1/journeys/{id}/vehicles/{vid}/current-driver", middleware.RequireSession(s.cfg.MacaroonVerifier, s.logger,
-			middleware.SessionActionJourneyFromPath(opencaravan.SessionActionJourneyRead, "id"),
-		)(http.HandlerFunc(s.handleCurrentDriver)))
+	for _, rt := range Routes() {
+		h := rt.handler(s)
+		switch rt.Auth {
+		case AuthPublic:
+			// No wrapping; the handler serves unauthenticated
+			// requests.
+		case AuthIdentity:
+			h = middleware.RequireIdentity(s.logger, h)
+		case AuthSession:
+			if s.cfg.MacaroonVerifier == nil {
+				continue
+			}
+			h = middleware.RequireSession(s.cfg.MacaroonVerifier, s.logger,
+				middleware.SessionActionJourneyFromPath(rt.SessionAction, rt.JourneyPathParam),
+			)(h)
+		default:
+			// Fail closed: an unknown posture must never register
+			// as public. This is a programmer error in the route
+			// table, also caught by the table integrity test.
+			panic(fmt.Sprintf("api: route %s %s has unknown auth posture %q", rt.Method, rt.Path, rt.Auth))
+		}
+		mux.Handle(rt.Method+" "+rt.Path, h)
 	}
+	// The contract meta-surface: the generated OpenAPI document and
+	// the embedded Scalar explorer. Served by the same process but
+	// deliberately absent from the route table — they describe the
+	// API, they are not part of the versioned API contract.
+	mux.HandleFunc("GET /openapi.json", s.handleOpenAPIJSON)
+	mux.HandleFunc("GET /openapi.yaml", s.handleOpenAPIYAML)
+	mux.Handle("GET /docs/{$}", docs.PageHandler("/openapi.json"))
+	mux.Handle("GET /docs/"+docs.ScalarAssetName, docs.ScalarAssetHandler())
 
 	h := s.withLogging(mux)
 	if s.cfg.MacaroonVerifier != nil {
@@ -605,23 +565,76 @@ func (s *Server) accessLogger() *slog.Logger {
 	return s.logger
 }
 
+// RootResponse is the identity banner served at GET /.
+type RootResponse struct {
+	// Name is the human-readable server product name.
+	Name string `json:"name"`
+	// Version is the running spivot-server release version.
+	Version string `json:"version"`
+	// Status is "ok" whenever the process is serving requests.
+	Status string `json:"status"`
+	// PublicURL is the canonical URL served by the edge proxy.
+	// Omitted when no public URL is configured.
+	PublicURL string `json:"public_url,omitempty"`
+}
+
+// HealthResponse is the liveness payload served at GET /health.
+type HealthResponse struct {
+	// Status is "healthy" whenever the process is serving requests.
+	Status string `json:"status"`
+	// Version is the running spivot-server release version.
+	Version string `json:"version"`
+	// Uptime is the process uptime as a Go duration string.
+	Uptime string `json:"uptime"`
+}
+
+// ReadinessResponse is the readiness payload served at GET /readyz.
+// Status is "ready" with a 200 when the backing store answers a ping
+// (or none is wired), "unready" with a 503 when it does not.
+type ReadinessResponse struct {
+	// Status is "ready" or "unready".
+	Status string `json:"status"`
+	// Version is the running spivot-server release version.
+	Version string `json:"version"`
+}
+
+// VersionResponse is the build/runtime detail served at GET
+// /v1/version. It mirrors the key set of [buildinfo.RuntimeInfo];
+// a field added there must be added here (and vice versa) so the
+// documented contract stays truthful.
+type VersionResponse struct {
+	// Version is the release version injected at build time.
+	Version string `json:"version"`
+	// GitCommit is the short commit hash the binary was built from.
+	GitCommit string `json:"git_commit"`
+	// GitBranch is the branch the binary was built from.
+	GitBranch string `json:"git_branch"`
+	// BuildTime is the UTC build timestamp (RFC 3339).
+	BuildTime string `json:"build_time"`
+	// GoVersion is the Go toolchain that produced the binary.
+	GoVersion string `json:"go_version"`
+	// OS is the runtime operating system (GOOS).
+	OS string `json:"os"`
+	// Arch is the runtime architecture (GOARCH).
+	Arch string `json:"arch"`
+	// Uptime is the process uptime as a Go duration string.
+	Uptime string `json:"uptime"`
+}
+
 func (s *Server) handleRoot(w http.ResponseWriter, _ *http.Request) {
-	response := map[string]string{
-		"name":    "Spivot Server",
-		"version": buildinfo.Version,
-		"status":  "ok",
-	}
-	if publicURL := s.publicURLString(); publicURL != "" {
-		response["public_url"] = publicURL
-	}
-	writeJSON(w, response, s.logger)
+	writeJSON(w, RootResponse{
+		Name:      "Spivot Server",
+		Version:   buildinfo.Version,
+		Status:    "ok",
+		PublicURL: s.publicURLString(),
+	}, s.logger)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, map[string]string{
-		"status":  "healthy",
-		"version": buildinfo.Version,
-		"uptime":  buildinfo.Uptime().String(),
+	writeJSON(w, HealthResponse{
+		Status:  "healthy",
+		Version: buildinfo.Version,
+		Uptime:  buildinfo.Uptime().String(),
 	}, s.logger)
 }
 
@@ -631,22 +644,51 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		defer cancel()
 		if err := s.cfg.Store.Ping(ctx); err != nil {
 			s.logger.Warn("readiness check failed", "error", err)
-			writeJSONStatus(w, http.StatusServiceUnavailable, map[string]string{
-				"status":  "unready",
-				"version": buildinfo.Version,
+			writeJSONStatus(w, http.StatusServiceUnavailable, ReadinessResponse{
+				Status:  "unready",
+				Version: buildinfo.Version,
 			}, s.logger)
 			return
 		}
 	}
 
-	writeJSON(w, map[string]string{
-		"status":  "ready",
-		"version": buildinfo.Version,
+	writeJSON(w, ReadinessResponse{
+		Status:  "ready",
+		Version: buildinfo.Version,
 	}, s.logger)
 }
 
 func (s *Server) handleVersion(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, buildinfo.RuntimeInfo(), s.logger)
+	info := buildinfo.RuntimeInfo()
+	writeJSON(w, VersionResponse{
+		Version:   info["version"],
+		GitCommit: info["git_commit"],
+		GitBranch: info["git_branch"],
+		BuildTime: info["build_time"],
+		GoVersion: info["go_version"],
+		OS:        info["os"],
+		Arch:      info["arch"],
+		Uptime:    info["uptime"],
+	}, s.logger)
+}
+
+// handleOpenAPIJSON serves the generated OpenAPI document in JSON
+// form. The bytes are embedded at build time from the spec package;
+// regeneration happens via `just generate`, never at runtime.
+func (s *Server) handleOpenAPIJSON(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if _, err := w.Write(spec.JSON); err != nil {
+		s.logger.Debug("failed to write OpenAPI JSON response", "error", err)
+	}
+}
+
+// handleOpenAPIYAML serves the generated OpenAPI document in YAML
+// form.
+func (s *Server) handleOpenAPIYAML(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/yaml")
+	if _, err := w.Write(spec.YAML); err != nil {
+		s.logger.Debug("failed to write OpenAPI YAML response", "error", err)
+	}
 }
 
 func (s *Server) handleServerInfo(w http.ResponseWriter, _ *http.Request) {

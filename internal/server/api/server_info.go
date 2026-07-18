@@ -86,38 +86,47 @@ type DataPolicy struct {
 	ImageResourceCache bool `json:"image_resource_cache"`
 }
 
-type serverInfoResponse struct {
+// ServerInfoResponse is the discovery document served at GET
+// /v1/server: who this server is, what implementation and protocol
+// version it runs, what capabilities it advertises, and the policy
+// snapshot journeys created here are pinned to.
+type ServerInfoResponse struct {
 	Name           string               `json:"name"`
 	PublicURL      string               `json:"public_url,omitempty"`
-	Implementation implementationInfo   `json:"implementation"`
-	Protocol       protocolInfo         `json:"protocol"`
-	Capabilities   serverCapabilities   `json:"capabilities"`
+	Implementation ImplementationInfo   `json:"implementation"`
+	Protocol       ProtocolInfo         `json:"protocol"`
+	Capabilities   ServerCapabilities   `json:"capabilities"`
 	Policy         ServerPolicySnapshot `json:"policy"`
 }
 
-type implementationInfo struct {
+// ImplementationInfo identifies the server software build advertised
+// at GET /v1/server.
+type ImplementationInfo struct {
 	Name      string `json:"name"`
 	Version   string `json:"version"`
 	Commit    string `json:"commit"`
 	BuildTime string `json:"build_time"`
 }
 
-type protocolInfo struct {
+// ProtocolInfo identifies the OpenCaravan wire-format version this
+// server implements.
+type ProtocolInfo struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
 }
 
-// serverCapabilities is a convenience projection from ServerPolicyDocument plus
+// ServerCapabilities is a convenience projection from ServerPolicyDocument plus
 // concrete implementation state. Keep policy-backed fields derived in
 // serverCapabilitiesFromPolicy so the advertised policy remains the source of
 // truth.
-type serverCapabilities struct {
-	Registration registrationCapabilities `json:"registration"`
-	Journeys     journeyCapabilities      `json:"journeys"`
-	Data         dataCapabilities         `json:"data"`
+type ServerCapabilities struct {
+	Registration RegistrationCapabilities `json:"registration"`
+	Journeys     JourneyCapabilities      `json:"journeys"`
+	Data         DataCapabilities         `json:"data"`
 }
 
-type registrationCapabilities struct {
+// RegistrationCapabilities describes how users join this server.
+type RegistrationCapabilities struct {
 	Mode string `json:"mode"`
 	// MintPolicy advertises who may mint server_registration invites via
 	// POST /v1/client-apps/invites (denied | admin-only | any-user). It
@@ -130,14 +139,17 @@ type registrationCapabilities struct {
 	MintPolicy string `json:"mint_policy"`
 }
 
-type journeyCapabilities struct {
+// JourneyCapabilities describes the journey behavior this server
+// supports.
+type JourneyCapabilities struct {
 	InviteOnly          bool `json:"invite_only"`
 	InviteLinks         bool `json:"invite_links"`
 	InviteUseLimits     bool `json:"invite_use_limits"`
 	DeletionTimePerItem bool `json:"deletion_time_per_item"`
 }
 
-type dataCapabilities struct {
+// DataCapabilities describes data retention and storage behavior.
+type DataCapabilities struct {
 	SQLiteStorage       bool `json:"sqlite_storage"`
 	TelemetryStorage    bool `json:"telemetry_storage"`
 	ImageResourceUpload bool `json:"image_resource_upload"`
@@ -166,19 +178,19 @@ func DefaultServerPolicyDocument() ServerPolicyDocument {
 	}
 }
 
-func (s *Server) serverInfo() serverInfoResponse {
+func (s *Server) serverInfo() ServerInfoResponse {
 	policy := serverPolicyDocumentFromSnapshot(s.cfg.PolicySnapshot)
 
-	return serverInfoResponse{
+	return ServerInfoResponse{
 		Name:      "Spivot Server",
 		PublicURL: s.publicURLString(),
-		Implementation: implementationInfo{
+		Implementation: ImplementationInfo{
 			Name:      "spivot-server",
 			Version:   buildinfo.Version,
 			Commit:    buildinfo.GitCommit,
 			BuildTime: buildinfo.BuildTime,
 		},
-		Protocol: protocolInfo{
+		Protocol: ProtocolInfo{
 			Name:    "OpenCaravan",
 			Version: openCaravanProtocolVersion,
 		},
@@ -190,8 +202,8 @@ func (s *Server) serverInfo() serverInfoResponse {
 // capabilities builds the advertised capabilities projection from the
 // (immutable, hashed) policy document plus mutable runtime config — the
 // invite mint policy. Keeping the mint policy here rather than in the
-// policy document is deliberate: see registrationCapabilities.MintPolicy.
-func (s *Server) capabilities(policy ServerPolicyDocument) serverCapabilities {
+// policy document is deliberate: see RegistrationCapabilities.MintPolicy.
+func (s *Server) capabilities(policy ServerPolicyDocument) ServerCapabilities {
 	caps := serverCapabilitiesFromPolicy(policy)
 	mintPolicy := s.cfg.InviteMintPolicy
 	if mintPolicy == "" {
@@ -213,18 +225,18 @@ func serverPolicyDocumentFromSnapshot(snapshot ServerPolicySnapshot) ServerPolic
 	return policy
 }
 
-func serverCapabilitiesFromPolicy(policy ServerPolicyDocument) serverCapabilities {
-	return serverCapabilities{
-		Registration: registrationCapabilities{
+func serverCapabilitiesFromPolicy(policy ServerPolicyDocument) ServerCapabilities {
+	return ServerCapabilities{
+		Registration: RegistrationCapabilities{
 			Mode: policy.Registration.Mode,
 		},
-		Journeys: journeyCapabilities{
+		Journeys: JourneyCapabilities{
 			InviteOnly:          policy.Journeys.Visibility == policyJourneyVisibilityInviteOnly,
 			InviteLinks:         policy.Journeys.InviteLinks,
 			InviteUseLimits:     policy.Journeys.InviteUseLimits,
 			DeletionTimePerItem: policy.Data.RetentionControl == policyRetentionJourneyDeletionTime,
 		},
-		Data: dataCapabilities{
+		Data: DataCapabilities{
 			SQLiteStorage:       true,
 			TelemetryStorage:    false,
 			ImageResourceUpload: false,
