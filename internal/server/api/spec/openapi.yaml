@@ -1201,8 +1201,9 @@ components:
             KeyAttestation is optional. When present, it proves the CSR's private
             key resides in platform-managed hardware storage. Servers may make
             attestation required for some scopes.
-          allOf:
+          anyOf:
             - $ref: '#/components/schemas/KeyAttestation'
+            - type: "null"
       required:
         - type
         - version
@@ -1319,7 +1320,9 @@ components:
           type: integer
           format: int64
         journey_id:
-          type: string
+          type:
+            - string
+            - "null"
         actions:
           type: array
           items:
@@ -1398,7 +1401,9 @@ components:
           type: string
           format: date-time
         used_at:
-          type: string
+          type:
+            - string
+            - "null"
           format: date-time
       required:
         - scope
@@ -1489,7 +1494,9 @@ components:
             canonical "sha256:<64 lowercase hex>" shape, but the
             telemetry endpoint accepts any non-empty string — strict
             shape enforcement is the audit replay's job.
-          type: string
+          type:
+            - string
+            - "null"
       required:
         - client_batch_id
         - samples
@@ -1518,21 +1525,33 @@ components:
         longitude_e7:
           type: integer
         altitude_mm:
-          type: integer
+          type:
+            - integer
+            - "null"
           format: int64
         horizontal_accuracy_mm:
-          type: integer
+          type:
+            - integer
+            - "null"
           format: int64
         vertical_accuracy_mm:
-          type: integer
+          type:
+            - integer
+            - "null"
           format: int64
         speed_mm_s:
-          type: integer
+          type:
+            - integer
+            - "null"
           format: int64
         heading_deg_e2:
-          type: integer
+          type:
+            - integer
+            - "null"
         battery_level_permille:
-          type: integer
+          type:
+            - integer
+            - "null"
         source:
           type: string
         motion_state:
@@ -1670,14 +1689,16 @@ components:
             vehicle, content-addressed via [BlobRef]. The bytes are
             uploaded to the server's blob layer; multiple Vehicle
             revisions referencing the same photo deduplicate by hash.
-          allOf:
+          anyOf:
             - $ref: '#/components/schemas/BlobRef'
+            - type: "null"
         banner_blob:
           description: |-
             BannerBlob references the wide / detail-view photo, same
             content-addressed model as AvatarBlob.
-          allOf:
+          anyOf:
             - $ref: '#/components/schemas/BlobRef'
+            - type: "null"
         notes:
           description: |-
             Notes is owner-authored free text. Surface in client UIs as
@@ -1688,8 +1709,9 @@ components:
             Integrity is the owner's signature over CanonicalEncoding().
             Optional on a draft Vehicle that has not yet been signed;
             required on the wire — the server rejects unsigned uploads.
-          allOf:
+          anyOf:
             - $ref: '#/components/schemas/Integrity'
+            - type: "null"
       required:
         - id
         - owner_user_id
@@ -1791,14 +1813,17 @@ components:
           items:
             type: string
         emergency_rule:
-          $ref: '#/components/schemas/VehicleEmergencyRule'
+          anyOf:
+            - $ref: '#/components/schemas/VehicleEmergencyRule'
+            - type: "null"
         effective_time:
           type: string
           format: date-time
         integrity:
           description: Integrity is the owner's signature over CanonicalEncoding().
-          allOf:
+          anyOf:
             - $ref: '#/components/schemas/Integrity'
+            - type: "null"
       required:
         - vehicle_id
         - owner_user_id
@@ -1892,7 +1917,9 @@ components:
           type: string
           format: date-time
         emergency_rule:
-          $ref: '#/components/schemas/VehicleEmergencyRule'
+          anyOf:
+            - $ref: '#/components/schemas/VehicleEmergencyRule'
+            - type: "null"
         integrity:
           $ref: '#/components/schemas/Integrity'
         received_at:
@@ -1974,11 +2001,14 @@ components:
           type: integer
           format: int64
         prior_attestation_hash:
-          type: string
+          type:
+            - string
+            - "null"
         integrity:
           description: Integrity is the driver's signature over CanonicalEncoding().
-          allOf:
+          anyOf:
             - $ref: '#/components/schemas/Integrity'
+            - type: "null"
       required:
         - vehicle_id
         - segment_id
@@ -2008,7 +2038,9 @@ components:
           type: integer
           format: int64
         prior_attestation_hash:
-          type: string
+          type:
+            - string
+            - "null"
         trust_flag:
           type: string
         integrity:
@@ -2140,7 +2172,9 @@ components:
         signed_by:
           type: string
         integrity:
-          $ref: '#/components/schemas/Integrity'
+          anyOf:
+            - $ref: '#/components/schemas/Integrity'
+            - type: "null"
       required:
         - id
         - name
@@ -2168,7 +2202,9 @@ components:
           type: string
           format: date-time
         accepted_time:
-          type: string
+          type:
+            - string
+            - "null"
           format: date-time
       required:
         - user_id
@@ -2217,7 +2253,9 @@ components:
           type: string
           format: date-time
         accepted_time:
-          type: string
+          type:
+            - string
+            - "null"
           format: date-time
       required:
         - user_id
@@ -2284,7 +2322,9 @@ components:
           type: string
           format: date-time
         integrity:
-          $ref: '#/components/schemas/Integrity'
+          anyOf:
+            - $ref: '#/components/schemas/Integrity'
+            - type: "null"
       required:
         - garage_id
         - revision_version_accepted
@@ -2373,14 +2413,16 @@ components:
           description: |-
             AvatarBlob references the compact / map-tile photo via
             the protocol's content-addressed blob layer. See [BlobRef].
-          allOf:
+          anyOf:
             - $ref: '#/components/schemas/BlobRef'
+            - type: "null"
         banner_blob:
           description: |-
             BannerBlob references the wide / detail-view photo via the
             content-addressed blob layer.
-          allOf:
+          anyOf:
             - $ref: '#/components/schemas/BlobRef'
+            - type: "null"
         notes:
           type: string
         signed_by:
@@ -2390,7 +2432,9 @@ components:
             RevisionTime to confirm the signer was an accepted owner then.
           type: string
         integrity:
-          $ref: '#/components/schemas/Integrity'
+          anyOf:
+            - $ref: '#/components/schemas/Integrity'
+            - type: "null"
       required:
         - id
         - garage_id
@@ -2480,7 +2524,9 @@ components:
           type: integer
           format: int64
         revoked_at:
-          type: string
+          type:
+            - string
+            - "null"
           format: date-time
       required:
         - id

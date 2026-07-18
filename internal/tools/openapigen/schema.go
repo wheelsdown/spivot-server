@@ -76,7 +76,11 @@ func (b *schemaBuilder) schemaFor(t reflect.Type) (*omap, error) {
 
 	switch t.Kind() {
 	case reflect.Pointer:
-		return b.schemaFor(t.Elem())
+		elem, err := b.schemaFor(t.Elem())
+		if err != nil {
+			return nil, err
+		}
+		return nullable(elem), nil
 	case reflect.Struct:
 		if t.Name() != "" {
 			return b.refFor(t)
@@ -118,6 +122,21 @@ func (b *schemaBuilder) schemaFor(t reflect.Type) (*omap, error) {
 	}
 }
 
+// nullable widens a schema to admit JSON null, the wire value a nil
+// pointer decodes from (and, without omitempty, encodes to). Typed
+// schemas grow "null" in their type; $refs wrap in anyOf because a
+// $ref cannot carry sibling keys; schemas with no type constraint
+// (RawMessage, interface) already admit null.
+func nullable(schema *omap) *omap {
+	if _, isRef := schema.get("$ref"); isRef {
+		return newOmap().set("anyOf", []any{schema, newOmap().set("type", "null")})
+	}
+	if typ, ok := schema.get("type"); ok {
+		schema.set("type", []any{typ, "null"})
+	}
+	return schema
+}
+
 // schemaForStruct builds the object schema for a struct type,
 // following encoding/json semantics: tag-renamed fields, skipped "-"
 // fields, promoted embedded fields, and omitempty/omitzero optionality.
@@ -147,11 +166,14 @@ func (b *schemaBuilder) schemaForStruct(t reflect.Type) (*omap, error) {
 func (b *schemaBuilder) collectStructFields(t reflect.Type, properties *omap, required *[]string) error {
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
-		tag := field.Tag.Get("json")
-		if tag == "-" {
+		tagName, tagOpts, _ := strings.Cut(field.Tag.Get("json"), ",")
+		// Go 1.26's encoder ignores a field whose tag name is "-"
+		// whether or not options follow ("-", "-,omitempty"), so the
+		// schema must too (verified empirically against this
+		// module's toolchain).
+		if tagName == "-" {
 			continue
 		}
-		tagName, tagOpts, _ := strings.Cut(tag, ",")
 
 		if field.Anonymous && tagName == "" {
 			embedded := field.Type

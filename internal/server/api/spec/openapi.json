@@ -1801,9 +1801,12 @@
           },
           "key_attestation": {
             "description": "KeyAttestation is optional. When present, it proves the CSR's private\nkey resides in platform-managed hardware storage. Servers may make\nattestation required for some scopes.",
-            "allOf": [
+            "anyOf": [
               {
                 "$ref": "#/components/schemas/KeyAttestation"
+              },
+              {
+                "type": "null"
               }
             ]
           }
@@ -1912,7 +1915,10 @@
             "format": "int64"
           },
           "journey_id": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "actions": {
             "type": "array",
@@ -1990,7 +1996,10 @@
             "format": "date-time"
           },
           "used_at": {
-            "type": "string",
+            "type": [
+              "string",
+              "null"
+            ],
             "format": "date-time"
           }
         },
@@ -2082,7 +2091,10 @@
           },
           "driver_attestation_hash": {
             "description": "DriverAttestationHash optionally links this batch to the\n[opencaravan.DriverAttestation] that was in effect when the\nsamples were captured. When set, the server persists it on\nthe telemetry_batches row so a future audit replay can\ndowngrade the chain of custody if the linked attestation\nlater fails verification. The protocol expects the\ncanonical \"sha256:<64 lowercase hex>\" shape, but the\ntelemetry endpoint accepts any non-empty string — strict\nshape enforcement is the audit replay's job.",
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -2124,26 +2136,44 @@
             "type": "integer"
           },
           "altitude_mm": {
-            "type": "integer",
+            "type": [
+              "integer",
+              "null"
+            ],
             "format": "int64"
           },
           "horizontal_accuracy_mm": {
-            "type": "integer",
+            "type": [
+              "integer",
+              "null"
+            ],
             "format": "int64"
           },
           "vertical_accuracy_mm": {
-            "type": "integer",
+            "type": [
+              "integer",
+              "null"
+            ],
             "format": "int64"
           },
           "speed_mm_s": {
-            "type": "integer",
+            "type": [
+              "integer",
+              "null"
+            ],
             "format": "int64"
           },
           "heading_deg_e2": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "battery_level_permille": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "source": {
             "type": "string"
@@ -2249,17 +2279,23 @@
           },
           "avatar_blob": {
             "description": "AvatarBlob references the compact / map-tile photo for this\nvehicle, content-addressed via [BlobRef]. The bytes are\nuploaded to the server's blob layer; multiple Vehicle\nrevisions referencing the same photo deduplicate by hash.",
-            "allOf": [
+            "anyOf": [
               {
                 "$ref": "#/components/schemas/BlobRef"
+              },
+              {
+                "type": "null"
               }
             ]
           },
           "banner_blob": {
             "description": "BannerBlob references the wide / detail-view photo, same\ncontent-addressed model as AvatarBlob.",
-            "allOf": [
+            "anyOf": [
               {
                 "$ref": "#/components/schemas/BlobRef"
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -2269,9 +2305,12 @@
           },
           "integrity": {
             "description": "Integrity is the owner's signature over CanonicalEncoding().\nOptional on a draft Vehicle that has not yet been signed;\nrequired on the wire — the server rejects unsigned uploads.",
-            "allOf": [
+            "anyOf": [
               {
                 "$ref": "#/components/schemas/Integrity"
+              },
+              {
+                "type": "null"
               }
             ]
           }
@@ -2349,7 +2388,14 @@
             }
           },
           "emergency_rule": {
-            "$ref": "#/components/schemas/VehicleEmergencyRule"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VehicleEmergencyRule"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "effective_time": {
             "type": "string",
@@ -2357,9 +2403,12 @@
           },
           "integrity": {
             "description": "Integrity is the owner's signature over CanonicalEncoding().",
-            "allOf": [
+            "anyOf": [
               {
                 "$ref": "#/components/schemas/Integrity"
+              },
+              {
+                "type": "null"
               }
             ]
           }
@@ -2458,7 +2507,14 @@
             "format": "date-time"
           },
           "emergency_rule": {
-            "$ref": "#/components/schemas/VehicleEmergencyRule"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VehicleEmergencyRule"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "integrity": {
             "$ref": "#/components/schemas/Integrity"
@@ -2534,13 +2590,19 @@
             "format": "int64"
           },
           "prior_attestation_hash": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "integrity": {
             "description": "Integrity is the driver's signature over CanonicalEncoding().",
-            "allOf": [
+            "anyOf": [
               {
                 "$ref": "#/components/schemas/Integrity"
+              },
+              {
+                "type": "null"
               }
             ]
           }
@@ -2578,7 +2640,10 @@
             "format": "int64"
           },
           "prior_attestation_hash": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "trust_flag": {
             "type": "string"
@@ -2701,7 +2766,14 @@
             "type": "string"
           },
           "integrity": {
-            "$ref": "#/components/schemas/Integrity"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Integrity"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -2725,7 +2797,10 @@
             "format": "date-time"
           },
           "accepted_time": {
-            "type": "string",
+            "type": [
+              "string",
+              "null"
+            ],
             "format": "date-time"
           }
         },
@@ -2784,7 +2859,10 @@
             "format": "date-time"
           },
           "accepted_time": {
-            "type": "string",
+            "type": [
+              "string",
+              "null"
+            ],
             "format": "date-time"
           }
         },
@@ -2866,7 +2944,14 @@
             "format": "date-time"
           },
           "integrity": {
-            "$ref": "#/components/schemas/Integrity"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Integrity"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -2955,17 +3040,23 @@
           },
           "avatar_blob": {
             "description": "AvatarBlob references the compact / map-tile photo via\nthe protocol's content-addressed blob layer. See [BlobRef].",
-            "allOf": [
+            "anyOf": [
               {
                 "$ref": "#/components/schemas/BlobRef"
+              },
+              {
+                "type": "null"
               }
             ]
           },
           "banner_blob": {
             "description": "BannerBlob references the wide / detail-view photo via the\ncontent-addressed blob layer.",
-            "allOf": [
+            "anyOf": [
               {
                 "$ref": "#/components/schemas/BlobRef"
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -2977,7 +3068,14 @@
             "type": "string"
           },
           "integrity": {
-            "$ref": "#/components/schemas/Integrity"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Integrity"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -3082,7 +3180,10 @@
             "format": "int64"
           },
           "revoked_at": {
-            "type": "string",
+            "type": [
+              "string",
+              "null"
+            ],
             "format": "date-time"
           }
         },

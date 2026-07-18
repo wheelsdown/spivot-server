@@ -18,15 +18,19 @@ type sampleEmbedded struct {
 
 type sampleContract struct {
 	sampleEmbedded
-	ID        string          `json:"id"`
-	Count     int             `json:"count,omitempty"`
-	When      time.Time       `json:"when"`
-	Blob      []byte          `json:"blob"`
-	Payload   json.RawMessage `json:"payload"`
-	Notes     []string        `json:"notes,omitempty"`
-	Hidden    string          `json:"-"`
-	unexpored string          //nolint:unused // proves unexported fields are skipped
-	Flag      string          `json:"flag" openapi:"enum=on|off,readOnly"`
+	ID         string          `json:"id"`
+	Count      int             `json:"count,omitempty"`
+	When       time.Time       `json:"when"`
+	Blob       []byte          `json:"blob"`
+	Payload    json.RawMessage `json:"payload"`
+	Notes      []string        `json:"notes,omitempty"`
+	Maybe      *string         `json:"maybe,omitempty"`
+	MaybeChild *sampleEmbedded `json:"maybe_child,omitempty"`
+	Hidden     string          `json:"-"`
+	//nolint:staticcheck // SA5008: the ambiguous tag is the point — Go 1.26 ignores the field, and the schema must match.
+	HiddenOpt string `json:"-,omitempty"`
+	unexpored string //nolint:unused // proves unexported fields are skipped
+	Flag      string `json:"flag" openapi:"enum=on|off,readOnly"`
 }
 
 func TestSchemaBuilderReflectsJSONShape(t *testing.T) {
@@ -82,8 +86,20 @@ func TestSchemaBuilderReflectsJSONShape(t *testing.T) {
 	if _, ok := schema.Properties["Hidden"]; ok {
 		t.Error(`json:"-" field leaked into schema`)
 	}
+	if _, ok := schema.Properties["-"]; ok {
+		t.Error(`json:"-,omitempty" produced a "-" property; Go 1.26 ignores the field`)
+	}
 	if _, ok := schema.Properties["unexpored"]; ok {
 		t.Error("unexported field leaked into schema")
+	}
+
+	// Pointer fields admit JSON null: inline schemas widen their
+	// type, $ref schemas wrap in anyOf.
+	if got := schema.Properties["maybe"]["type"]; !reflect.DeepEqual(got, []any{"string", "null"}) {
+		t.Errorf("maybe type = %v, want [string null]", got)
+	}
+	if _, ok := schema.Properties["maybe_child"]["anyOf"]; !ok {
+		t.Errorf("maybe_child = %v, want anyOf [$ref, null]", schema.Properties["maybe_child"])
 	}
 
 	wantRequired := []string{"kind", "id", "when", "blob", "payload", "flag"}
