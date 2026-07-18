@@ -19,16 +19,44 @@ import (
 // [opencaravan.DriverAttestation] augmented with the
 // server-computed trust_flag and fork-detection metadata.
 type DriverAttestationResponse struct {
-	ID                   string                         `json:"id"`
-	JourneyVehicleID     string                         `json:"journey_vehicle_id"`
-	SegmentID            string                         `json:"segment_id"`
-	DriverUserID         string                         `json:"driver_user_id"`
-	EffectiveTime        time.Time                      `json:"effective_time"`
-	ACLVersionConsulted  int                            `json:"acl_version_consulted"`
-	PriorAttestationHash *string                        `json:"prior_attestation_hash,omitempty"`
-	TrustFlag            storage.DriverAttestationTrust `json:"trust_flag"`
-	Integrity            opencaravan.Integrity          `json:"integrity"`
-	ReceivedAt           time.Time                      `json:"received_at"`
+	// ID is the server-assigned identifier of the stored
+	// attestation row.
+	ID string `json:"id" openapi:"format=uuid,readOnly"`
+	// JourneyVehicleID is the vehicle whose wheel the driver
+	// attested to taking.
+	JourneyVehicleID string `json:"journey_vehicle_id" openapi:"format=uuid,readOnly"`
+	// SegmentID is the journey segment the attestation applies to,
+	// per the signed payload. Opaque at this layer: the server does
+	// not yet verify the segment exists.
+	SegmentID string `json:"segment_id" openapi:"format=uuid,readOnly"`
+	// DriverUserID is the user who signed the attestation —
+	// drivers attest to their own handoffs, so this always matches
+	// the submitting session's user.
+	DriverUserID string `json:"driver_user_id" openapi:"format=uuid,readOnly"`
+	// EffectiveTime is when the driver took the wheel, per the
+	// signed payload. The (vehicle, driver, effective_time) tuple
+	// is the replay key: a gossiped duplicate returns the existing
+	// record with 200 instead of 409.
+	EffectiveTime time.Time `json:"effective_time" openapi:"readOnly"`
+	// ACLVersionConsulted is the ACL revision the server's trust
+	// evaluator consulted — the one in effect at EffectiveTime,
+	// not necessarily the newest.
+	ACLVersionConsulted int `json:"acl_version_consulted" openapi:"readOnly"`
+	// PriorAttestationHash is the canonical hash
+	// ("sha256:<64 lowercase hex>") of the predecessor attestation
+	// in the handoff chain. Omitted on a chain root (the vehicle's
+	// first driver).
+	PriorAttestationHash *string `json:"prior_attestation_hash,omitempty" openapi:"readOnly"`
+	// TrustFlag is the server-evaluated trust outcome: the driver
+	// was in the consulted ACL (authorized), permitted only by the
+	// vehicle's emergency fallback rule (emergency_fallback), or
+	// neither — retained as evidence but untrusted (acl_violation).
+	TrustFlag storage.DriverAttestationTrust `json:"trust_flag" openapi:"enum=authorized|emergency_fallback|acl_violation,readOnly"`
+	// Integrity is the driver's signature envelope over the
+	// attestation's canonical bytes.
+	Integrity opencaravan.Integrity `json:"integrity" openapi:"readOnly"`
+	// ReceivedAt is when the server recorded the attestation.
+	ReceivedAt time.Time `json:"received_at" openapi:"readOnly"`
 	// ForkSiblings names other attestations that share this
 	// attestation's prior_attestation_hash. Populated only on the
 	// POST response so the submitting client can immediately see
@@ -42,10 +70,16 @@ type DriverAttestationResponse struct {
 // sibling: enough to identify who else claimed the same
 // predecessor and when, without exposing the full payload.
 type DriverAttestationForkSibling struct {
-	ID            string                         `json:"id"`
-	DriverUserID  string                         `json:"driver_user_id"`
-	EffectiveTime time.Time                      `json:"effective_time"`
-	TrustFlag     storage.DriverAttestationTrust `json:"trust_flag"`
+	// ID is the sibling attestation's server-assigned identifier.
+	ID string `json:"id" openapi:"format=uuid,readOnly"`
+	// DriverUserID is the user the sibling attestation names as
+	// driver.
+	DriverUserID string `json:"driver_user_id" openapi:"format=uuid,readOnly"`
+	// EffectiveTime is when the sibling claims its driver took the
+	// wheel.
+	EffectiveTime time.Time `json:"effective_time" openapi:"readOnly"`
+	// TrustFlag is the sibling's server-evaluated trust outcome.
+	TrustFlag storage.DriverAttestationTrust `json:"trust_flag" openapi:"enum=authorized|emergency_fallback|acl_violation,readOnly"`
 }
 
 // DriverAttestationListResponse is the envelope returned by the
@@ -53,6 +87,10 @@ type DriverAttestationForkSibling struct {
 // or filter metadata without breaking clients indexing on
 // "attestations".
 type DriverAttestationListResponse struct {
+	// Attestations is every recorded attestation for the vehicle,
+	// ordered by effective_time ascending. Low-trust rows are
+	// included; filter on trust_flag to show only authorized
+	// drivers.
 	Attestations []DriverAttestationResponse `json:"attestations"`
 }
 
@@ -364,8 +402,17 @@ func (s *Server) replayExistingAttestation(ctx context.Context, journeyVehicleID
 // auditable when the caller didn't supply one (server used
 // time.Now()).
 type CurrentDriverResponse struct {
-	AsOf         time.Time                      `json:"as_of"`
-	Attestation  DriverAttestationResponse      `json:"attestation"`
+	// AsOf is the resolved query timestamp the answer is relative
+	// to: the ?at value when supplied, otherwise the server's
+	// current time.
+	AsOf time.Time `json:"as_of" openapi:"readOnly"`
+	// Attestation is the driver attestation in effect at AsOf —
+	// the highest effective_time at or before it, ties broken by
+	// most recently received.
+	Attestation DriverAttestationResponse `json:"attestation"`
+	// ForkSiblings names competing attestations sharing the picked
+	// attestation's prior_attestation_hash, so clients can surface
+	// a conflicting handoff claim. Omitted when there is no fork.
 	ForkSiblings []DriverAttestationForkSibling `json:"fork_siblings,omitempty"`
 }
 
