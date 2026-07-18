@@ -3,7 +3,11 @@ package api
 //go:generate go run github.com/wheelsdown/spivot-server/internal/tools/openapigen
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
+	"slices"
+	"strings"
 
 	"github.com/opencaravan/opencaravan-go"
 )
@@ -63,6 +67,10 @@ type Route struct {
 	// nil when the operation takes no body. The generator walks it
 	// with reflection to emit the requestBody schema.
 	Request any
+	// RequestOptional marks a route whose handler accepts an empty
+	// body and applies defaults (requestBody.required: false in the
+	// generated spec). Only meaningful when Request is non-nil.
+	RequestOptional bool
 	// Response is a zero value of the success-response contract
 	// type, nil when success carries no body (204).
 	Response any
@@ -85,6 +93,131 @@ const (
 	tagJourneyVehicles = "Journey Vehicles"
 	tagGarages         = "Garages"
 )
+
+// ContractVersion is the version advertised as info.version of the
+// generated OpenAPI document. Deliberately decoupled from the build
+// version so the committed artifact does not churn every release:
+// bump it when the documented contract changes shape, freeze it at
+// 1.0.0 when the capstone phase of issue #43 declares the surface
+// stable. It lives here — next to the route table — so a contract
+// change and its version bump happen in the same file.
+const ContractVersion = "0.1.0"
+
+// RouteTag pairs a route-table tag name with the description rendered
+// for it in the generated documentation.
+type RouteTag struct {
+	// Name is the tag value route entries reference.
+	Name string
+	// Description is the rendered blurb for the tag's sidebar
+	// section.
+	Description string
+}
+
+// RouteTags returns every documented tag in sidebar display order.
+// [ValidateRoutes] fails on a route naming a tag missing here, so a
+// new domain cluster cannot ship an undescribed sidebar section.
+func RouteTags() []RouteTag {
+	return []RouteTag{
+		{tagSystem, "Service identity, health, readiness, and build metadata."},
+		{tagIdentity, "Client-app enrollment, session macaroons, and server-registration invites."},
+		{tagJourneys, "Journey lifecycle and telemetry."},
+		{tagJourneyVehicles, "Journey-scoped vehicle bundles, ACL revisions, and driver attestations."},
+		{tagGarages, "Account-scoped garage containers: revisions, ownership, vehicles, and invites."},
+	}
+}
+
+// PathParams returns the {wildcard} segment names of a ServeMux
+// pattern path, in order of appearance. "{$}" and "..." suffixes are
+// not parameters.
+func PathParams(path string) []string {
+	var params []string
+	for seg := range strings.SplitSeq(path, "/") {
+		if strings.HasPrefix(seg, "{") && strings.HasSuffix(seg, "}") {
+			name := strings.TrimSuffix(strings.TrimPrefix(seg, "{"), "}")
+			name = strings.TrimSuffix(name, "...")
+			if name != "" && name != "$" {
+				params = append(params, name)
+			}
+		}
+	}
+	return params
+}
+
+// ValidateRoutes rejects route-table entries with missing, colliding,
+// or incoherent metadata. It is the single copy of the table's
+// invariants: [Server.Handler] panics on a table that fails it (a
+// malformed entry must never register), the openapigen generator
+// refuses to emit a spec from one, and TestRouteTableIntegrity keeps
+// it green in CI.
+func ValidateRoutes(routes []Route) error {
+	if len(routes) == 0 {
+		return errors.New("route table is empty")
+	}
+	knownTags := map[string]bool{}
+	for _, tag := range RouteTags() {
+		knownTags[tag.Name] = true
+	}
+	validMethods := map[string]bool{
+		http.MethodGet: true, http.MethodPost: true, http.MethodPut: true,
+		http.MethodPatch: true, http.MethodDelete: true,
+	}
+	seenOps := map[string]bool{}
+	seenPatterns := map[string]bool{}
+	for _, rt := range routes {
+		id := rt.Method + " " + rt.Path
+		switch {
+		case !validMethods[rt.Method]:
+			return fmt.Errorf("route %s: unexpected method", id)
+		case !strings.HasPrefix(rt.Path, "/"):
+			return fmt.Errorf("route %s: path does not start with /", id)
+		case rt.OperationID == "":
+			return fmt.Errorf("route %s: missing OperationID", id)
+		case rt.Summary == "":
+			return fmt.Errorf("route %s: missing Summary", id)
+		case len(rt.Tags) == 0:
+			return fmt.Errorf("route %s: missing Tags", id)
+		case len(rt.SuccessStatuses) == 0:
+			return fmt.Errorf("route %s: missing SuccessStatuses", id)
+		case rt.handler == nil:
+			return fmt.Errorf("route %s: missing handler binding", id)
+		case seenOps[rt.OperationID]:
+			return fmt.Errorf("route %s: duplicate OperationID %q", id, rt.OperationID)
+		case seenPatterns[id]:
+			return fmt.Errorf("route %s: duplicate registration", id)
+		case rt.RequestOptional && rt.Request == nil:
+			return fmt.Errorf("route %s: RequestOptional without Request", id)
+		}
+		seenOps[rt.OperationID] = true
+		seenPatterns[id] = true
+
+		for _, tag := range rt.Tags {
+			if !knownTags[tag] {
+				return fmt.Errorf("route %s: tag %q has no RouteTags entry", id, tag)
+			}
+		}
+
+		switch rt.Auth {
+		case AuthPublic, AuthIdentity:
+			if rt.SessionAction != "" || rt.JourneyPathParam != "" {
+				return fmt.Errorf("route %s: session metadata on non-session route", id)
+			}
+		case AuthSession:
+			if rt.SessionAction == "" {
+				return fmt.Errorf("route %s: AuthSession without SessionAction", id)
+			}
+			if !slices.Contains(PathParams(rt.Path), rt.JourneyPathParam) {
+				return fmt.Errorf("route %s: JourneyPathParam %q not present in path", id, rt.JourneyPathParam)
+			}
+		default:
+			return fmt.Errorf("route %s: unknown auth posture %q", id, rt.Auth)
+		}
+
+		if rt.Response == nil && (len(rt.SuccessStatuses) != 1 || rt.SuccessStatuses[0] != http.StatusNoContent) {
+			return fmt.Errorf("route %s: nil Response requires exactly one 204 success status", id)
+		}
+	}
+	return nil
+}
 
 // bindHandler adapts a Server method expression to the route table's
 // binder shape so table entries stay one line per route.
@@ -189,6 +322,7 @@ func Routes() []Route {
 			Tags:            []string{tagIdentity},
 			Auth:            AuthIdentity,
 			Request:         ClientAppInviteCreateRequest{},
+			RequestOptional: true, // empty body mints with defaults
 			Response:        ClientAppInviteResponse{},
 			SuccessStatuses: []int{http.StatusCreated},
 			handler:         bindHandler((*Server).handleClientAppInviteCreate),
@@ -463,6 +597,7 @@ func Routes() []Route {
 			Tags:            []string{tagGarages},
 			Auth:            AuthIdentity,
 			Request:         GarageInviteCreateRequest{},
+			RequestOptional: true, // empty body mints with defaults
 			Response:        GarageInviteResponse{},
 			SuccessStatuses: []int{http.StatusCreated},
 			handler:         bindHandler((*Server).handleGarageInviteCreate),

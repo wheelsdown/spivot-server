@@ -199,7 +199,12 @@ mod-tidy-check:
     @test -z "$(git diff --name-only -- go.mod go.sum)" || (echo "go.mod/go.sum not tidy - run 'go mod tidy'" && git diff -- go.mod go.sum && exit 1)
 
 [group('test')]
-ci: fmt-check mod-tidy-check lint test container-check
+generate-check:
+    go generate ./...
+    @test -z "$(git diff --name-only -- internal/server/api/spec)" || (echo "OpenAPI artifacts stale - run 'just generate' and commit the result" && git diff --stat -- internal/server/api/spec && exit 1)
+
+[group('test')]
+ci: fmt-check mod-tidy-check generate-check lint test container-check
 
 # --- Operations ---
 

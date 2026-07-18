@@ -9,81 +9,94 @@ import (
 	"testing"
 )
 
-// TestRouteTableIntegrity is the fail-closed guard on the route
-// table: every entry must carry complete, coherent metadata, because
-// both Handler registration and the generated OpenAPI contract are
-// projected from it. A malformed entry caught here never reaches a
-// running mux or a published spec.
+// TestRouteTableIntegrity is the CI hook for the fail-closed guard on
+// the route table: [ValidateRoutes] holds the invariants, and both
+// [Server.Handler] (panic at startup) and the openapigen generator
+// (refuse to emit) enforce it. This test keeps the shipping table
+// green so neither ever fires in anger.
 func TestRouteTableIntegrity(t *testing.T) {
-	routes := Routes()
-	if len(routes) == 0 {
-		t.Fatal("route table is empty")
+	if err := ValidateRoutes(Routes()); err != nil {
+		t.Fatalf("route table invalid: %v", err)
+	}
+}
+
+// TestValidateRoutesRejectsMalformedEntries proves the guard actually
+// bites on each invariant it claims to hold.
+func TestValidateRoutesRejectsMalformedEntries(t *testing.T) {
+	// valid returns a minimal well-formed entry tests then break in
+	// exactly one way.
+	valid := func() Route {
+		return Route{
+			Method:          http.MethodGet,
+			Path:            "/v1/widgets/{id}",
+			OperationID:     "widgetGet",
+			Summary:         "Fetch a widget",
+			Tags:            []string{tagSystem},
+			Auth:            AuthIdentity,
+			Response:        RootResponse{},
+			SuccessStatuses: []int{http.StatusOK},
+			handler:         bindHandler((*Server).handleRoot),
+		}
 	}
 
-	validAuth := map[AuthPosture]bool{AuthPublic: true, AuthIdentity: true, AuthSession: true}
-	seenPatterns := map[string]bool{}
-	seenOps := map[string]bool{}
-
-	for _, rt := range routes {
-		id := rt.Method + " " + rt.Path
-		t.Run(id, func(t *testing.T) {
-			if rt.Method != http.MethodGet && rt.Method != http.MethodPost &&
-				rt.Method != http.MethodPut && rt.Method != http.MethodPatch && rt.Method != http.MethodDelete {
-				t.Errorf("unexpected method %q", rt.Method)
-			}
-			if !strings.HasPrefix(rt.Path, "/") {
-				t.Errorf("path %q does not start with /", rt.Path)
-			}
-			if rt.OperationID == "" {
-				t.Error("missing OperationID")
-			}
-			if rt.Summary == "" {
-				t.Error("missing Summary")
-			}
-			if len(rt.Tags) == 0 {
-				t.Error("missing Tags")
-			}
-			if rt.handler == nil {
-				t.Error("missing handler binding")
-			}
-			if len(rt.SuccessStatuses) == 0 {
-				t.Error("missing SuccessStatuses")
-			}
-			if !validAuth[rt.Auth] {
-				t.Errorf("unknown auth posture %q", rt.Auth)
-			}
-
-			if seenPatterns[id] {
-				t.Errorf("duplicate registration %q", id)
-			}
-			seenPatterns[id] = true
-			if seenOps[rt.OperationID] {
-				t.Errorf("duplicate OperationID %q", rt.OperationID)
-			}
-			seenOps[rt.OperationID] = true
-
-			if rt.Auth == AuthSession {
-				if rt.SessionAction == "" {
-					t.Error("AuthSession route missing SessionAction")
-				}
-				if rt.JourneyPathParam == "" {
-					t.Error("AuthSession route missing JourneyPathParam")
-				} else if !strings.Contains(rt.Path, "{"+rt.JourneyPathParam+"}") {
-					t.Errorf("JourneyPathParam %q not a wildcard in path %q", rt.JourneyPathParam, rt.Path)
-				}
-			} else {
-				if rt.SessionAction != "" || rt.JourneyPathParam != "" {
-					t.Error("session metadata set on non-session route")
-				}
-			}
-
-			if rt.Response == nil {
-				if len(rt.SuccessStatuses) != 1 || rt.SuccessStatuses[0] != http.StatusNoContent {
-					t.Error("nil Response requires exactly one 204 success status")
-				}
+	tests := []struct {
+		name    string
+		mutate  func(*Route)
+		wantErr string
+	}{
+		{"unknown method", func(r *Route) { r.Method = "FETCH" }, "unexpected method"},
+		{"relative path", func(r *Route) { r.Path = "v1/widgets" }, "does not start with /"},
+		{"missing operation id", func(r *Route) { r.OperationID = "" }, "missing OperationID"},
+		{"missing summary", func(r *Route) { r.Summary = "" }, "missing Summary"},
+		{"missing tags", func(r *Route) { r.Tags = nil }, "missing Tags"},
+		{"unknown tag", func(r *Route) { r.Tags = []string{"Widgets"} }, "no RouteTags entry"},
+		{"missing statuses", func(r *Route) { r.SuccessStatuses = nil }, "missing SuccessStatuses"},
+		{"missing handler", func(r *Route) { r.handler = nil }, "missing handler binding"},
+		{"unknown posture", func(r *Route) { r.Auth = AuthPosture("token") }, "unknown auth posture"},
+		{"session metadata on identity route", func(r *Route) { r.JourneyPathParam = "id" }, "session metadata"},
+		{"session without action", func(r *Route) { r.Auth = AuthSession; r.JourneyPathParam = "id" }, "without SessionAction"},
+		{"session param not in path", func(r *Route) {
+			r.Auth = AuthSession
+			r.SessionAction = "journey.read"
+			r.JourneyPathParam = "journeyId"
+		}, "not present in path"},
+		{"nil response without 204", func(r *Route) { r.Response = nil }, "204"},
+		{"request optional without request", func(r *Route) { r.RequestOptional = true }, "RequestOptional without Request"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rt := valid()
+			tt.mutate(&rt)
+			err := ValidateRoutes([]Route{rt})
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("err = %v, want containing %q", err, tt.wantErr)
 			}
 		})
 	}
+
+	t.Run("duplicate operation id", func(t *testing.T) {
+		a, b := valid(), valid()
+		b.Path = "/v1/widgets"
+		b.JourneyPathParam = ""
+		err := ValidateRoutes([]Route{a, b})
+		if err == nil || !strings.Contains(err.Error(), "duplicate OperationID") {
+			t.Fatalf("err = %v, want duplicate OperationID", err)
+		}
+	})
+	t.Run("duplicate registration", func(t *testing.T) {
+		a, b := valid(), valid()
+		b.OperationID = "widgetGetAgain"
+		err := ValidateRoutes([]Route{a, b})
+		if err == nil || !strings.Contains(err.Error(), "duplicate registration") {
+			t.Fatalf("err = %v, want duplicate registration", err)
+		}
+	})
+	t.Run("valid entry passes", func(t *testing.T) {
+		rt := valid()
+		if err := ValidateRoutes([]Route{rt}); err != nil {
+			t.Fatalf("valid route rejected: %v", err)
+		}
+	})
 }
 
 // TestContractMetaSurface verifies the generated spec and the

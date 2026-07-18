@@ -185,8 +185,14 @@ func (b *schemaBuilder) collectStructFields(t reflect.Type, properties *omap, re
 					set("description", doc).
 					set("allOf", []any{fieldSchema})
 			} else {
+				// The author's doc comment always wins over a
+				// type-derived description (json.RawMessage and
+				// interface schemas carry a generic one).
 				withDoc := newOmap().set("description", doc)
 				for _, k := range fieldSchema.keys {
+					if k == "description" {
+						continue
+					}
 					withDoc.set(k, fieldSchema.values[k])
 				}
 				fieldSchema = withDoc
@@ -194,6 +200,13 @@ func (b *schemaBuilder) collectStructFields(t reflect.Type, properties *omap, re
 		}
 		if err := applyOpenAPITag(fieldSchema, field.Tag.Get("openapi")); err != nil {
 			return fmt.Errorf("field %s: %w", field.Name, err)
+		}
+		if _, exists := properties.get(name); exists {
+			// encoding/json resolves same-name collisions with
+			// depth/tag shadowing rules this generator does not
+			// implement; refuse to guess which field wins rather
+			// than document the wrong shape.
+			return fmt.Errorf("duplicate property %q (embedded-field shadowing is not supported)", name)
 		}
 		properties.set(name, fieldSchema)
 

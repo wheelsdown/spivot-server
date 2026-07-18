@@ -98,14 +98,19 @@ source — never hand-edit `internal/server/api/spec/openapi.{json,yaml}`.
 
 - The route table in `internal/server/api/routes.go` is the single
   source of truth: mux registration, auth posture, and OpenAPI
-  operation metadata all come from the same entry. Add new endpoints
-  there; nothing is registered ad hoc.
+  operation metadata all come from the same entry. Add new API
+  endpoints there. The one deliberate exception is the contract
+  meta-surface (`/openapi.json`, `/openapi.yaml`, `/docs/`), which
+  `Server.Handler` registers directly — it describes the API and is
+  not part of the versioned contract, so it must not appear in the
+  spec's paths.
 - Contract-struct GoDoc IS the spec: a field's doc comment becomes its
   property `description` in the generated document. Optional
   `openapi:"format=…,enum=…,readOnly"` struct tags add schema metadata
   the `json` tag cannot express.
 - After touching routes or contract structs, run `just generate` and
-  commit the regenerated artifacts.
+  commit the regenerated artifacts. `just ci` fails when the committed
+  artifacts are stale (`generate-check`).
 - The server serves the committed artifacts in-process:
   `/openapi.json`, `/openapi.yaml`, and the Scalar explorer at
   `/docs/` (vendored, offline-capable — see `internal/server/docs`).

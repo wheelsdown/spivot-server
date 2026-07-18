@@ -145,7 +145,7 @@ paths:
       tags:
         - Identity
       requestBody:
-        required: true
+        required: false
         content:
           application/json:
             schema:
@@ -776,7 +776,7 @@ paths:
           schema:
             type: string
       requestBody:
-        required: true
+        required: false
         content:
           application/json:
             schema:
@@ -935,17 +935,33 @@ components:
       type: object
       properties:
         name:
+          description: Name is the human-readable server product name.
           type: string
         public_url:
+          description: |-
+            PublicURL is the canonical URL served by the edge proxy.
+            Omitted when no public URL is configured.
           type: string
         implementation:
-          $ref: '#/components/schemas/ImplementationInfo'
+          description: Implementation identifies the server software build.
+          allOf:
+            - $ref: '#/components/schemas/ImplementationInfo'
         protocol:
-          $ref: '#/components/schemas/ProtocolInfo'
+          description: |-
+            Protocol identifies the OpenCaravan wire-format version the
+            server speaks.
+          allOf:
+            - $ref: '#/components/schemas/ProtocolInfo'
         capabilities:
-          $ref: '#/components/schemas/ServerCapabilities'
+          description: Capabilities advertises what this deployment supports.
+          allOf:
+            - $ref: '#/components/schemas/ServerCapabilities'
         policy:
-          $ref: '#/components/schemas/ServerPolicySnapshot'
+          description: |-
+            Policy is the policy snapshot journeys created on this server
+            are pinned to.
+          allOf:
+            - $ref: '#/components/schemas/ServerPolicySnapshot'
       required:
         - name
         - implementation
@@ -959,12 +975,16 @@ components:
       type: object
       properties:
         name:
+          description: Name is the implementation identifier ("spivot-server").
           type: string
         version:
+          description: Version is the release version injected at build time.
           type: string
         commit:
+          description: Commit is the short git commit hash the binary was built from.
           type: string
         build_time:
+          description: BuildTime is the UTC build timestamp (RFC 3339).
           type: string
       required:
         - name
@@ -978,8 +998,12 @@ components:
       type: object
       properties:
         name:
+          description: Name is the protocol identifier ("OpenCaravan").
           type: string
         version:
+          description: |-
+            Version is the OpenCaravan wire-format version. Pre-1.0, a
+            bump signals "expect change"; 1.0 freezes the wire format.
           type: string
       required:
         - name
@@ -993,11 +1017,17 @@ components:
       type: object
       properties:
         registration:
-          $ref: '#/components/schemas/RegistrationCapabilities'
+          description: Registration describes how users join this server.
+          allOf:
+            - $ref: '#/components/schemas/RegistrationCapabilities'
         journeys:
-          $ref: '#/components/schemas/JourneyCapabilities'
+          description: Journeys describes the journey behavior this server supports.
+          allOf:
+            - $ref: '#/components/schemas/JourneyCapabilities'
         data:
-          $ref: '#/components/schemas/DataCapabilities'
+          description: Data describes data retention and storage behavior.
+          allOf:
+            - $ref: '#/components/schemas/DataCapabilities'
       required:
         - registration
         - journeys
@@ -1007,6 +1037,7 @@ components:
       type: object
       properties:
         mode:
+          description: Mode identifies the registration model ("invite_only").
           type: string
         mint_policy:
           description: |-
@@ -1029,12 +1060,24 @@ components:
       type: object
       properties:
         invite_only:
+          description: |-
+            InviteOnly reports whether journeys are discoverable only by
+            invitation.
           type: boolean
         invite_links:
+          description: |-
+            InviteLinks reports whether journeys can create shareable
+            invite links.
           type: boolean
         invite_use_limits:
+          description: |-
+            InviteUseLimits reports whether invite use counts are
+            supported.
           type: boolean
         deletion_time_per_item:
+          description: |-
+            DeletionTimePerItem reports whether retained data deletion is
+            selected per journey via its deletion time.
           type: boolean
       required:
         - invite_only
@@ -1046,10 +1089,18 @@ components:
       type: object
       properties:
         sqlite_storage:
+          description: SQLiteStorage reports whether the server persists to SQLite.
           type: boolean
         telemetry_storage:
+          description: |-
+            TelemetryStorage reports whether individual telemetry samples
+            are expanded into queryable storage (Phase 5 stores only the
+            batch envelope).
           type: boolean
         image_resource_upload:
+          description: |-
+            ImageResourceUpload reports whether uploaded image resources
+            are accepted and served.
           type: boolean
       required:
         - sqlite_storage
@@ -1071,7 +1122,7 @@ components:
           description: CreatedTime is the RFC3339 UTC time when the snapshot was first recorded.
           type: string
         document:
-          description: Arbitrary JSON value.
+          description: Document is the internally normalized JSON policy document.
       required:
         - id
         - policy_hash
@@ -1080,9 +1131,8 @@ components:
     VersionResponse:
       description: |-
         VersionResponse is the build/runtime detail served at GET
-        /v1/version. It mirrors the key set of [buildinfo.RuntimeInfo];
-        a field added there must be added here (and vice versa) so the
-        documented contract stays truthful.
+        /v1/version: the same information [buildinfo.RuntimeInfo] reports
+        on the CLI, as a typed wire contract.
       type: object
       properties:
         version:

@@ -26,6 +26,30 @@ func TestPageHandlerRendersExplorerShell(t *testing.T) {
 	}
 }
 
+func TestAcceptsGzip(t *testing.T) {
+	tests := []struct {
+		header string
+		want   bool
+	}{
+		{"", false},
+		{"gzip", true},
+		{"gzip, deflate, br", true},
+		{"deflate, gzip;q=0.5", true},
+		{"br;q=1.0, gzip;q=0.8, *;q=0.1", true},
+		{"gzip;q=0", false},
+		{"gzip;q=0.0", false},
+		{"deflate", false},
+		{"x-gzip-like", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.header, func(t *testing.T) {
+			if got := acceptsGzip(tt.header); got != tt.want {
+				t.Errorf("acceptsGzip(%q) = %v, want %v", tt.header, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestScalarAssetHandler(t *testing.T) {
 	t.Run("gzip-capable client gets compressed bytes", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/docs/"+ScalarAssetName, nil)

@@ -28,7 +28,9 @@ import (
 	"html/template"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"sync"
 
 	_ "embed"
 )
@@ -89,28 +91,72 @@ func PageHandler(specURL string) http.Handler {
 	})
 }
 
+// scalarJS lazily inflates the embedded bundle exactly once, so
+// clients that cannot accept gzip cost one decompression per process
+// instead of one per request — and the ~3.7MB plain copy only exists
+// at all if such a client ever shows up.
+var scalarJS = sync.OnceValues(func() ([]byte, error) {
+	gz, err := gzip.NewReader(bytes.NewReader(scalarJSGzip))
+	if err != nil {
+		return nil, fmt.Errorf("docs: opening embedded scalar bundle: %w", err)
+	}
+	defer func() { _ = gz.Close() }()
+	body, err := io.ReadAll(gz)
+	if err != nil {
+		return nil, fmt.Errorf("docs: inflating embedded scalar bundle: %w", err)
+	}
+	return body, nil
+})
+
+// acceptsGzip reports whether the Accept-Encoding header value names
+// gzip as an acceptable coding. Unlike a substring check it does not
+// treat an explicit refusal ("gzip;q=0") as acceptance.
+func acceptsGzip(acceptEncoding string) bool {
+	for coding := range strings.SplitSeq(acceptEncoding, ",") {
+		name, params, hasParams := strings.Cut(strings.TrimSpace(coding), ";")
+		if strings.TrimSpace(name) != "gzip" {
+			continue
+		}
+		if hasParams {
+			if q, ok := strings.CutPrefix(strings.TrimSpace(params), "q="); ok {
+				if v, err := strconv.ParseFloat(q, 64); err == nil && v == 0 {
+					return false
+				}
+			}
+		}
+		return true
+	}
+	return false
+}
+
 // ScalarAssetHandler returns the handler serving the vendored Scalar
 // JavaScript bundle. The asset is stored gzipped; clients that accept
 // gzip (every browser) get the compressed bytes as-is, anyone else
-// gets a streaming decompression.
+// gets the once-inflated copy.
 func ScalarAssetHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 		// The bundle is version-pinned and only changes with a new
 		// server build; a day of caching keeps repeat visits fast
-		// without wedging upgrades for long.
+		// without wedging upgrades for long. The response body
+		// depends on Accept-Encoding, so any shared cache in front
+		// of the server must key on it — without Vary, a cache
+		// could hand raw gzip bytes to a client that never asked
+		// for them.
 		w.Header().Set("Cache-Control", "public, max-age=86400")
-		if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+		w.Header().Set("Vary", "Accept-Encoding")
+		if acceptsGzip(r.Header.Get("Accept-Encoding")) {
 			w.Header().Set("Content-Encoding", "gzip")
+			w.Header().Set("Content-Length", strconv.Itoa(len(scalarJSGzip)))
 			_, _ = w.Write(scalarJSGzip)
 			return
 		}
-		gz, err := gzip.NewReader(bytes.NewReader(scalarJSGzip))
+		body, err := scalarJS()
 		if err != nil {
 			http.Error(w, "embedded asset corrupt", http.StatusInternalServerError)
 			return
 		}
-		defer func() { _ = gz.Close() }()
-		_, _ = io.Copy(w, gz)
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		_, _ = w.Write(body)
 	})
 }

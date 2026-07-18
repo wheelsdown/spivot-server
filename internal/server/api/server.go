@@ -3,6 +3,7 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strconv"
 	"time"
 
@@ -416,8 +418,16 @@ func NewServer(cfg Config, logger *slog.Logger) *Server {
 //     dimension surfaces on the access log line.
 //  5. The route mux, registered from the table.
 func (s *Server) Handler() http.Handler {
+	routes := Routes()
+	// Fail closed: a table that fails validation (unknown posture,
+	// incoherent session metadata, colliding registrations) must
+	// never reach the mux. This is a programmer error, also caught
+	// by the table integrity test before it can ship.
+	if err := ValidateRoutes(routes); err != nil {
+		panic(fmt.Sprintf("api: invalid route table: %v", err))
+	}
 	mux := http.NewServeMux()
-	for _, rt := range Routes() {
+	for _, rt := range routes {
 		h := rt.handler(s)
 		switch rt.Auth {
 		case AuthPublic:
@@ -432,11 +442,6 @@ func (s *Server) Handler() http.Handler {
 			h = middleware.RequireSession(s.cfg.MacaroonVerifier, s.logger,
 				middleware.SessionActionJourneyFromPath(rt.SessionAction, rt.JourneyPathParam),
 			)(h)
-		default:
-			// Fail closed: an unknown posture must never register
-			// as public. This is a programmer error in the route
-			// table, also caught by the table integrity test.
-			panic(fmt.Sprintf("api: route %s %s has unknown auth posture %q", rt.Method, rt.Path, rt.Auth))
 		}
 		mux.Handle(rt.Method+" "+rt.Path, h)
 	}
@@ -599,9 +604,8 @@ type ReadinessResponse struct {
 }
 
 // VersionResponse is the build/runtime detail served at GET
-// /v1/version. It mirrors the key set of [buildinfo.RuntimeInfo];
-// a field added there must be added here (and vice versa) so the
-// documented contract stays truthful.
+// /v1/version: the same information [buildinfo.RuntimeInfo] reports
+// on the CLI, as a typed wire contract.
 type VersionResponse struct {
 	// Version is the release version injected at build time.
 	Version string `json:"version"`
@@ -659,35 +663,54 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleVersion(w http.ResponseWriter, _ *http.Request) {
-	info := buildinfo.RuntimeInfo()
 	writeJSON(w, VersionResponse{
-		Version:   info["version"],
-		GitCommit: info["git_commit"],
-		GitBranch: info["git_branch"],
-		BuildTime: info["build_time"],
-		GoVersion: info["go_version"],
-		OS:        info["os"],
-		Arch:      info["arch"],
-		Uptime:    info["uptime"],
+		Version:   buildinfo.Version,
+		GitCommit: buildinfo.GitCommit,
+		GitBranch: buildinfo.GitBranch,
+		BuildTime: buildinfo.BuildTime,
+		GoVersion: runtime.Version(),
+		OS:        runtime.GOOS,
+		Arch:      runtime.GOARCH,
+		Uptime:    buildinfo.Uptime().String(),
 	}, s.logger)
 }
+
+// Spec artifact ETags, computed once: the bytes are embedded at build
+// time and immutable for the life of the binary, so a strong hash
+// lets the Scalar explorer's per-page-load /openapi.json fetch
+// collapse to a 304 on every visit after the first.
+var (
+	specJSONETag = fmt.Sprintf(`"%x"`, sha256.Sum256(spec.JSON))
+	specYAMLETag = fmt.Sprintf(`"%x"`, sha256.Sum256(spec.YAML))
+)
 
 // handleOpenAPIJSON serves the generated OpenAPI document in JSON
 // form. The bytes are embedded at build time from the spec package;
 // regeneration happens via `just generate`, never at runtime.
-func (s *Server) handleOpenAPIJSON(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	if _, err := w.Write(spec.JSON); err != nil {
-		s.logger.Debug("failed to write OpenAPI JSON response", "error", err)
-	}
+func (s *Server) handleOpenAPIJSON(w http.ResponseWriter, r *http.Request) {
+	s.serveSpec(w, r, "application/json", specJSONETag, spec.JSON)
 }
 
 // handleOpenAPIYAML serves the generated OpenAPI document in YAML
 // form.
-func (s *Server) handleOpenAPIYAML(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "application/yaml")
-	if _, err := w.Write(spec.YAML); err != nil {
-		s.logger.Debug("failed to write OpenAPI YAML response", "error", err)
+func (s *Server) handleOpenAPIYAML(w http.ResponseWriter, r *http.Request) {
+	s.serveSpec(w, r, "application/yaml", specYAMLETag, spec.YAML)
+}
+
+// serveSpec writes an embedded spec artifact with revalidation
+// caching: no-cache forces clients to ask every time, the ETag lets
+// the answer be an empty 304 until the binary (and therefore the
+// spec) changes.
+func (s *Server) serveSpec(w http.ResponseWriter, r *http.Request, contentType, etag string, body []byte) {
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("ETag", etag)
+	if r.Header.Get("If-None-Match") == etag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	w.Header().Set("Content-Type", contentType)
+	if _, err := w.Write(body); err != nil {
+		s.logger.Debug("failed to write OpenAPI response", "error", err, "content_type", contentType)
 	}
 }
 
