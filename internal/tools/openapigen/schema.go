@@ -211,7 +211,11 @@ func (b *schemaBuilder) collectStructFields(t reflect.Type, properties *omap, re
 		}
 		doc := b.docs.fieldDoc(t.PkgPath(), t.Name(), field.Name)
 		if doc == "" && t.Name() != "" {
-			key := t.String() + "." + field.Name
+			// Keyed by full import path: embedded types bypass the
+			// component-name collision check, so two same-named
+			// types from different packages must not share (and
+			// under-report) a worklist entry.
+			key := t.PkgPath() + "." + t.Name() + "." + field.Name
 			if !b.undocSeen[key] {
 				b.undocSeen[key] = true
 				b.undocumented = append(b.undocumented, key)

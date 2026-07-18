@@ -2,11 +2,12 @@ package main
 
 import (
 	"encoding/json"
-	"github.com/wheelsdown/spivot-server/internal/server/api"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wheelsdown/spivot-server/internal/server/api"
 )
 
 func emptyDocs() *docIndex {
