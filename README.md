@@ -6,77 +6,62 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/wheelsdown/spivot-server)](https://goreportcard.com/report/github.com/wheelsdown/spivot-server)
 [![OCI Image](https://img.shields.io/badge/OCI-ghcr.io%2Fwheelsdown%2Fspivot--server-blue)](https://github.com/wheelsdown/spivot-server/pkgs/container/spivot-server)
 
-Spivot Server is the reference Go back end for OpenCaravan, an open protocol
-for coordinating group drives over networks. The server is being built
-alongside the first OpenCaravan specification so the protocol has a practical,
-operable reference implementation from the beginning.
+Spivot Server is the reference Go back end for OpenCaravan, an open
+protocol for coordinating group drives — road trips, convoys, club
+runs, and the everyday logistics of people moving together in more
+than one vehicle. The server is being built alongside the first
+OpenCaravan specification so the protocol has a practical, operable
+reference implementation from the beginning.
 
-The primary release artifact is a well-labeled, OCI-compliant multi-arch
-container image. The current release line includes the complete
-client-app enrollment + session macaroon auth stack, the journey /
-vehicle / garage protocol surface with signed-payload integrity
-verification, a generated OpenAPI contract with an embedded API
-explorer at `/docs/`, and a documented HTTP/3 + mTLS Traefik recipe an
-operator can stand up in under fifteen minutes.
+## Peer-coordinated, not server-gated
+
+The design premise of OpenCaravan is that a journey belongs to its
+participants, not to a server.
+
+The events that matter in a group drive — a vehicle joining, its
+access list changing, a driver taking the wheel, a garage adding an
+owner — are **signed statements by the participant with the authority
+to make them**. A vehicle's metadata is signed by its owner. An ACL
+revision is signed by the owner it belongs to. A driver attestation is
+signed by the driver themselves. Each payload travels as canonical
+bytes under an integrity envelope, so any peer holding the signer's
+certificate chain can verify it — over this server's API, but equally
+device-to-device at a trailhead with no coverage, or relayed through
+whatever transport the moment offers. Enrollment exists precisely to
+make that possible: it binds a device to a key, and apps pin the CA
+chain so peer-to-peer validation works with no server in the path.
+
+The server, in turn, verifies, records, and redistributes — it is a
+durable coordinator and an auditor, not a gatekeeper. When a driver
+attestation arrives, the server doesn't decide whether the handoff was
+*allowed to happen*; it evaluates the claim against the ACL that was
+in effect at that moment and records the outcome — authorized,
+emergency fallback, or violation — as an auditable judgment. Low-trust
+events are retained as evidence, not rejected. Peers gossiping the
+same event to the server is the normal case, answered idempotently
+rather than treated as a conflict. History is append-only signed
+revision chains; departure freezes a chain rather than deleting it.
+
+The goal is an ecosystem: many apps, written by many people,
+coordinating journey events with each other — through this server,
+through ad hoc or alternative network flows when that's what the road
+provides, and through both interchangeably. This repository exists so
+that ecosystem has a reference coordinator that is honest, inspectable,
+and boring to operate.
 
 ## Project Status
 
-Spivot Server is pre-release software. Expect API and schema changes while the
-OpenCaravan protocol vocabulary settles.
+Spivot Server is pre-release software. Expect API and schema changes
+while the OpenCaravan protocol vocabulary settles.
 
-Current foundation:
-
-- Go HTTP service with a small `main` shim around a testable `run` entry point.
-- Structured logging with `log/slog`.
-- Health, readiness, version, and server discovery endpoints.
-- In-band server policy snapshot advertisement.
-- Server-local certificate authority (`spivot-server ca init`) that issues
-  short-lived client app certificates.
-- Single-use invite tokens for client app enrollment, with first-run
-  bootstrap logging for unattended container deployments.
-- `POST /v1/client-apps/enroll` HTTP endpoint that redeems a
-  server_registration invite + CSR for a 7-day signed leaf certificate.
-- Identity middleware that resolves a presented client certificate
-  (direct mTLS or proxy-forwarded) to its enrolled `(user_id, client_app_id)`
-  via the `issued_certificates` audit table.
-- Macaroon issuer + verifier (`internal/platform/auth/macaroon`)
-  backed by a `macaroon_roots` HMAC keystore. The OpenCaravan caveat
-  vocabulary (`time<T`, `journey=`, `user=`, `client_app=`,
-  `action=`) is enforced at verify time, with unknown predicates
-  rejected fail-closed.
-- `POST /v1/sessions` endpoint that issues a session macaroon for
-  an authenticated client app. One macaroon authorizes one
-  `SessionAction` against an optional journey; multi-action
-  sessions are deferred to a future protocol extension.
-- Session validation middleware (`AttachSession` + `RequireSession`)
-  that lifts the `Authorization: Macaroon ...` header, verifies
-  the macaroon signature once per request, and provides
-  composable per-handler constraints (action match, journey path
-  parameter match, custom). Mirrors the two-tier shape of the
-  identity middleware.
-- First end-to-end protected endpoints: `POST /v1/journeys`
-  (identity-only), `GET /v1/journeys/{id}` (journey-scoped
-  session macaroon), and `POST /v1/journeys/{id}/telemetry`
-  (journey-scoped + `telemetry.write` session macaroon, plus a
-  participant-membership check). Validates the full auth stack
-  composes correctly before unlocking the rest of the protocol
-  API surface.
-- Journey-scoped vehicle bundles: signed Vehicle metadata + VehicleACL
-  revision chains, driver attestations with server-evaluated trust
-  (authorized / emergency-fallback / ACL-violation), and point-in-time
-  current-driver resolution.
-- Signed-payload integrity verification (ecdsa-p256-sha256 over
-  canonical bytes) backed by the enrolled-certificate store.
-- Household garages: shared vehicle libraries with signed revisions,
-  two-phase ownership acceptance, and revocable invite tokens.
-- Authenticated server-registration invite minting with a server-level
-  policy gate (denied / admin-only / any-user) advertised via
-  `/v1/server` capabilities.
-- Generated OpenAPI 3.1 contract projected from the route table and
-  contract structs, drift-gated in CI, with an embedded Scalar
-  explorer at `/docs/`.
-- Container-first release engineering with OCI labels and health checks.
-- Embedded SQL migration metadata for OpenCaravan journey storage.
+The current release line carries the complete identity stack
+(client-app enrollment against a server-local CA, session macaroons,
+invite-gated onboarding), the journey / vehicle / garage protocol
+surface with signed-payload integrity verification throughout, and a
+generated OpenAPI contract served by the binary itself. The precise
+capabilities of any build are what its contract says they are — see
+[`/docs/`](docs/api.md) on a running server, or the
+[API documentation](docs/api.md).
 
 ## Requirements
 
@@ -100,6 +85,7 @@ In another shell:
 ```bash
 curl http://127.0.0.1:8080/health
 curl http://127.0.0.1:8080/v1/version
+open http://127.0.0.1:8080/docs/
 ```
 
 You can also run the command directly while developing:
@@ -122,307 +108,58 @@ just lint           # Run golangci-lint v2
 just ci             # Full local gate
 ```
 
-`just ci` is the required local gate before pushing changes. It runs formatting
-checks, module tidiness, linting, race tests, container build validation, OCI
-label checks, `spivot-server version`, and a live container health check.
+`just ci` is the required local gate before pushing changes. It runs
+formatting checks, module tidiness, OpenAPI artifact freshness,
+linting, race tests, container build validation, OCI label checks,
+`spivot-server version`, and a live container health check.
 
-## API Surface
+## Documentation
 
-The API's machine-readable contract is generated from the Go source —
-the route table and contract structs *are* the spec — and served by
-the running binary:
+Technical specifics live in targeted documents so this page can stay
+introductory:
 
-- **`/docs/`** — embedded Scalar API explorer, offline-capable, no
-  CDN dependency
-- **`/openapi.json`** / **`/openapi.yaml`** — the OpenAPI 3.1
-  document
-- [`internal/server/api/spec/`](internal/server/api/spec/) — the same
-  artifacts, committed, for reading without a running server
-
-The surface today is 33 routes across five domains: System (health,
-readiness, discovery, version), Identity (client-app enrollment,
-session macaroons, server-registration invites), Journeys (create,
-fetch, telemetry batches), Journey Vehicles (signed vehicle bundles,
-ACL revisions, driver attestations, current-driver resolution), and
-Garages (shared vehicle libraries with signed revisions, two-phase
-ownership acceptance, and invite tokens).
-
-Every operation records its authentication posture in an
-`x-spivot-auth` extension derived from the same route table that
-wires the middleware, so the documented contract cannot drift from
-the enforced one. A stale committed spec fails `just ci`. Failure
-responses share one RFC 7807-style problem envelope; clients branch
-on its `code` field.
-
-## OpenCaravan Protocol Version
-
-The `/v1/server.protocol.version` field advertises the OpenCaravan
-wire-format version this server implements (currently `0.1.0`). The
-protocol version is **decoupled** from the spivot-server release
-version: spivot-server releases that fix bugs or add capabilities
-without changing the wire format do not bump the protocol version, and
-spivot-server releases that consume a new wire format from
-opencaravan-go bump the protocol version in lockstep with that
-module's tag.
-
-The 0.x prefix signals pre-stable; a 1.0 protocol release will mark
-the wire format as frozen. A client should treat `0.1.x` and `0.1.y`
-as compatible (additive extensions only), and a leading-digit change
-(e.g., `0.1` → `0.2`) as a breaking wire-format revision that needs
-matching client work.
-
-In practice, when reading a deployed server: `spivot-server v0.X.Y`
-and `OpenCaravan vA.B.C` are independent vectors. A long divergence
-(server at `v0.5.0` while protocol is still `0.1.0`) is informative,
-not a bug — it tells a client author that the wire format has been
-stable for many server releases.
-
-## Vehicles, Garages, and Driver Attestations
-
-[`docs/vehicles.md`](docs/vehicles.md) covers how this server
-realizes the OpenCaravan vehicle protocol: storage schema rationale,
-per-endpoint behavior, the integrity verifier internals, and curl
-walkthroughs for the journey-side vehicle lifecycle and household
-garage sharing flows. Read
-[opencaravan-go/docs/vehicles.md](https://github.com/opencaravan/opencaravan-go/blob/main/docs/vehicles.md)
-first for the canonical wire-format specification; this server's
-doc starts every section by cross-referencing the spec.
-
-## Certificate Authority
-
-Spivot Server acts as its own certificate authority for the client apps that
-enroll with it. The CA's keypair and self-signed root certificate are
-generated on demand and persisted under `<data-dir>/identity/`:
-
-```bash
-spivot-server ca init        # generate keypair + self-signed root if absent
-spivot-server ca cert        # print the CA's certificate as PEM
-```
-
-`ca init` is idempotent: re-running it loads the existing CA and prints its
-fingerprint. The key is written with 0600 permissions and is never logged.
-Subject defaults to `CN=Spivot Server CA`; override with `--common-name` and
-`--organization` flags (or `SPIVOT_CA_COMMON_NAME` / `SPIVOT_CA_ORGANIZATION`
-env vars).
-
-Every leaf certificate the CA signs is recorded in the
-`issued_certificates` audit table (serial, subject, validity window,
-issuance time, revocation time). The identity middleware resolves a
-presented client certificate's serial back to its enrolled
-`(user_id, client_app_id)` through that table, so revoking a row by
-setting `revoked_at` is sufficient to break the identity binding —
-short-lived (7-day) leaf certs make CRL/OCSP infrastructure
-unnecessary for v0.
-
-## Client App Enrollment Invites
-
-Spivot Server uses single-use invite tokens to gate which apps may enroll.
-Each token carries a scope (`server_registration` for new users,
-`journey` for joining a private journey), an expiration, and a one-time-use
-guarantee. Only the SHA-256 hash of the token is stored on disk; the
-plaintext is shown to the operator exactly once at issuance.
-
-### First-run bootstrap
-
-The first time a fresh server starts with zero registered users and no
-active `server_registration` invite, it self-issues a 24-hour invite and
-prints a fenced banner to its stdout. The expected operator flow:
-
-```
-docker run ... ghcr.io/wheelsdown/spivot-server:latest serve
-...
-████████████████████████████████████████████████████████████████████
-  SPIVOT SERVER FIRST-RUN BOOTSTRAP
-  ────────────────────────────────────────────────────────────────
-  No administrator is registered. Use this server_registration
-  invite to enroll the first user. Single-use, 24h expiry.
-
-      <43-character base64url token>
-
-  iOS app: Settings → Add Account → Use Invite
-████████████████████████████████████████████████████████████████████
-```
-
-The operator copies the token from container logs into the first
-administrator's app. Subsequent restarts while the bootstrap invite is
-still active stay silent. Once a user is registered, the bootstrap path
-never runs again.
-
-### Day-two invites
-
-After bootstrap, any enrolled user can mint a `server_registration`
-invite to onboard a new user over the API:
-
-```bash
-curl -sX POST https://spivot.example/v1/client-apps/invites \
-  --cert client.pem --key client.key \
-  -H 'Content-Type: application/json' -d '{"expires_in_seconds": 86400}'
-```
-
-The 201 response carries the plaintext `token` once (never retrievable
-again); the new user redeems it through `POST /v1/client-apps/enroll`.
-The scope is fixed to `server_registration` — the body cannot request a
-different scope. Each invite is single-use, defaults to a 24-hour
-lifetime (max 7 days), and is attributed to the minting user so
-`GET /v1/client-apps/invites` can list a caller's own outstanding and
-historical invites. A user may hold at most **10** outstanding
-(unconsumed, unexpired) invites at once; the 11th returns `429` until
-one is consumed or expires — a bound on a single compromised credential
-being used as an account-minting faucet.
-
-Operators without an enrolled session (or scripting unattended setup)
-can still mint invites — including `journey`-scoped ones — directly via
-the CLI:
-
-```bash
-spivot-server invite create                         # 24h server_registration invite
-spivot-server invite create -scope journey -lifetime 168h    # 7 days
-```
-
-The CLI output includes the plaintext token, the scope, the expiration
-time, and the stored token hash for audit correlation. CLI- and
-bootstrap-issued invites have no minting user, so they do not appear in
-any user's `GET /v1/client-apps/invites` list.
-
-### Invite minting policy
-
-`SPIVOT_INVITE_MINT_POLICY` (also `--invite-mint-policy`) controls who
-may mint `server_registration` invites via `POST /v1/client-apps/invites`:
-
-- `any-user` *(default)* — any enrolled user may mint. Preserves the
-  out-of-the-box behavior so a build upgrade never silently locks out a
-  running client.
-- `admin-only` — only the **founding administrator** may mint. The
-  founding admin is the earliest-enrolled, non-disabled account (the one
-  that consumed the first-run bootstrap invite). Promoting additional
-  admins is future work.
-- `denied` — the API mints for no one; the operator uses the CLI/shell.
-
-The CLI `invite create` and the first-run bootstrap mint directly through
-storage and are **never** gated by this policy — shell access is the
-ultimate authority. The active mode is advertised at
-`GET /v1/server` under `capabilities.registration.mint_policy` so clients
-can show or hide an "invite a user" affordance; it is intentionally kept
-out of the content-addressed policy document (whose hash pins journey
-provenance), so flipping the mode does not churn `policy_hash`.
-
-> Security note: the default is `any-user` for upgrade continuity.
-> Operators wanting least-privilege onboarding should set `admin-only`
-> (or `denied` for CLI-only minting).
-
-## Storage Schema
-
-The first schema foundation lives in
-[`internal/platform/storage`](internal/platform/storage). Migrations are embedded
-with Go's standard `embed` package so the server can expose and apply the exact
-schema it was built with.
-
-The current schema covers, by capability area:
-
-- **Identity and accounts** — accounts, account devices, vehicles.
-- **Journeys** — journeys with per-journey policy snapshots, journey
-  invites, journey participants and consent, participant sessions, and
-  journey segments.
-- **Telemetry** — telemetry batches and position samples.
-- **Auth** — `issued_certificates` (audit trail of every leaf cert the
-  CA signs: serial, subject, validity window, issuance time, revocation
-  time), `client_app_invites` (hashed invite tokens with scope and
-  one-time-use semantics), `client_apps` (one row per enrolled app
-  installation), and `macaroon_roots` (HMAC root keys the session
-  macaroon issuer signs against — rotated rows retained so macaroons
-  signed under a since-rotated key remain verifiable until their own
-  `time<T` caveat fires).
-- **Federation and policy** — server policy snapshots, federated
-  servers (placeholder, federation isn't wired yet).
-
-The schema stores protocol-facing data conservatively: text identifiers,
-RFC3339 timestamp strings, integer-scaled coordinates, hashed invite tokens, and
-JSON extension documents. Runtime storage uses SQLite, with the embedded
-migrations applied at startup before the server begins handling API traffic.
-
-Container deployments reserve `/etc/spivot` for operator configuration and
-`/var/lib/spivot` for durable state. The default SQLite database path is
-`/var/lib/spivot/spivot.db` in the container and `data/spivot.db` for local
-development unless `SPIVOT_DATABASE_PATH` is set.
-
-## Containers
-
-`just container` performs a multi-arch build (defaults to
-`linux/amd64,linux/arm64`) via `docker buildx`. Output is a per-arch
-`docker save`-compatible tarball under `dist/` plus the host-arch
-variant loaded into the local Docker daemon for `just container-run`:
-
-```bash
-just container
-# → dist/spivot-server-linux-amd64.tar
-# → dist/spivot-server-linux-arm64.tar
-# → ghcr.io/wheelsdown/spivot-server:dev loaded into the local daemon
-```
-
-To smoke-test a release candidate against a remote deploy host, push
-the same multi-arch build to GHCR:
-
-```bash
-echo "$(gh auth token)" | docker login ghcr.io -u "$(gh api user -q .login)" --password-stdin
-just container-push ghcr.io/wheelsdown/spivot-server:dev
-```
-
-Tagged releases are intended to be consumed from GitHub Container
-Registry:
-
-```bash
-docker pull ghcr.io/wheelsdown/spivot-server:latest
-```
-
-For production Docker Compose deployments behind an existing reverse
-proxy, see
-[docs/deployment/docker-compose.md](docs/deployment/docker-compose.md).
-For the canonical HTTP/3 + mTLS deployment recipe (Traefik in front,
-client cert termination, worked enrollment walkthrough), see
-[docs/deployment/reverse-proxy.md](docs/deployment/reverse-proxy.md)
-and
-[examples/deploy/traefik/mtls/](examples/deploy/traefik/mtls/).
-
-## Release Engineering
-
-Release tags use semver with a leading `v`, such as `v0.1.0` or
-`v0.1.0-rc.1`.
-
-```bash
-just prepare-release v0.1.0
-just publish-release v0.1.0
-```
-
-The convenience wrapper runs both phases:
-
-```bash
-just release-github v0.1.0
-```
-
-The release workflow publishes multi-architecture OCI images to GHCR on release
-tags. Version data is injected at build time; release versions should not be
-hardcoded in Go source.
+- [docs/api.md](docs/api.md) — the generated OpenAPI contract, the
+  embedded `/docs/` explorer, and how the three version vectors
+  (server, protocol, contract) relate.
+- [docs/identity.md](docs/identity.md) — the certificate authority,
+  enrollment invites, first-run bootstrap, and the invite minting
+  policy.
+- [docs/vehicles.md](docs/vehicles.md) — how this server realizes the
+  OpenCaravan vehicle protocol: journey vehicles, ACL revisions,
+  driver attestations and trust evaluation, and household garages,
+  with curl walkthroughs. Read
+  [opencaravan-go/docs/vehicles.md](https://github.com/opencaravan/opencaravan-go/blob/main/docs/vehicles.md)
+  first for the canonical wire-format specification.
+- [docs/storage.md](docs/storage.md) — the SQLite schema, embedded
+  migrations, and data-directory layout.
+- [docs/deployment/](docs/deployment/) — operator recipes: Docker
+  Compose, the HTTP/3 + mTLS Traefik front end, and container build
+  mechanics.
+- [docs/release-checklist.md](docs/release-checklist.md) — the release
+  process around `just prepare-release` / `just publish-release`.
 
 ## Repository Layout
 
 ```text
 cmd/spivot-server/       command entry point and CLI parsing
 internal/app/            process lifecycle wiring
-internal/server/api/     HTTP API handlers
+internal/server/api/     HTTP API: route table, handlers, generated spec
+internal/server/docs/    embedded Scalar API explorer
 internal/server/middleware/  identity + session attach/require middleware
+internal/tools/openapigen/   OpenAPI generator (go:generate)
 internal/platform/       build info, identity (CA + key store), auth
                          (macaroon issuer/verifier), logging, proxy
                          (forwarded-headers handling), storage, and
                          shared platform code
 scripts/releng/          release engineering helpers
-docs/deployment/         operator-facing deployment recipes
+docs/                    project documentation (see above)
 examples/deploy/         reverse-proxy example configurations
 ```
 
 ## Contributing
 
-See [AGENTS.md](AGENTS.md) for the project conventions used by Codex and other
-automation:
+See [AGENTS.md](AGENTS.md) for the project conventions used by Codex
+and other automation:
 
 - prefer the Go standard library
 - keep PRs focused
@@ -433,8 +170,9 @@ automation:
 ## License
 
 Spivot Server is licensed under the Apache License, Version 2.0. See
-[LICENSE](LICENSE) and [NOTICE](NOTICE) for the full text and attribution.
+[LICENSE](LICENSE) and [NOTICE](NOTICE) for the full text and
+attribution.
 
-"Spivot" is a trademark of the Spivot project. The code license does not grant
-trademark rights; see [TRADEMARK.md](TRADEMARK.md) for what you can do with the
-name.
+"Spivot" is a trademark of the Spivot project. The code license does
+not grant trademark rights; see [TRADEMARK.md](TRADEMARK.md) for what
+you can do with the name.

@@ -14,8 +14,9 @@ backward is the smell.
 
 The release machinery itself is `just prepare-release` /
 `just publish-release` (or the `just release-github` one-shot) plus
-the tag-triggered GHCR workflow — see the Release Engineering sections
-of [README.md](../README.md) and [AGENTS.md](../AGENTS.md). This
+the tag-triggered GHCR workflow — see
+[deployment/containers.md](deployment/containers.md) and the Container
+& Release Engineering section of [AGENTS.md](../AGENTS.md). This
 checklist is the judgment around that machinery, not a re-enumeration
 of its guards.
 
