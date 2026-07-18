@@ -2899,14 +2899,16 @@
               {
                 "$ref": "#/components/schemas/DriverAttestationResponse"
               }
-            ]
+            ],
+            "readOnly": true
           },
           "fork_siblings": {
             "description": "ForkSiblings names competing attestations sharing the picked\nattestation's prior_attestation_hash, so clients can surface\na conflicting handoff claim. Omitted when there is no fork.",
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/DriverAttestationForkSibling"
-            }
+            },
+            "readOnly": true
           }
         },
         "required": [
@@ -2990,28 +2992,41 @@
         "type": "object",
         "properties": {
           "id": {
-            "type": "string"
+            "description": "ID is the garage's identifier as claimed by the signed\nGarage payload at creation.",
+            "type": "string",
+            "format": "uuid",
+            "readOnly": true
           },
           "name": {
-            "type": "string"
+            "description": "Name is the garage's display name from the current head\nrevision.",
+            "type": "string",
+            "readOnly": true
           },
           "current_revision_version": {
+            "description": "CurrentRevisionVersion is the head pointer of the garage's\nrevision chain (monotonically increasing).",
             "type": "integer",
-            "format": "int64"
+            "format": "int64",
+            "readOnly": true
           },
           "current_revision_time": {
+            "description": "CurrentRevisionTime is the head revision's self-declared\nrevision timestamp.",
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "readOnly": true
           },
           "created_at": {
+            "description": "CreatedAt is when the server accepted the garage's create.",
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "readOnly": true
           },
           "owners": {
+            "description": "Owners is the materialized current owner list, accepted and\npending alike.",
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/GarageOwnerResponse"
-            }
+            },
+            "readOnly": true
           }
         },
         "required": [
@@ -3028,18 +3043,25 @@
         "type": "object",
         "properties": {
           "user_id": {
-            "type": "string"
+            "description": "UserID is the owner's user id.",
+            "type": "string",
+            "format": "uuid",
+            "readOnly": true
           },
           "added_time": {
+            "description": "AddedTime is when a garage revision first named this user as\nan owner.",
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "readOnly": true
           },
           "accepted_time": {
+            "description": "AcceptedTime is when the user accepted ownership. Omitted\nwhile the invitation is still pending — pending owners hold\nno mutation authority.",
             "type": [
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "readOnly": true
           }
         },
         "required": [
@@ -3052,6 +3074,7 @@
         "type": "object",
         "properties": {
           "garages": {
+            "description": "Garages is every garage in which the caller appears as an\nowner, accepted or pending.",
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/GarageResponse"
@@ -3067,28 +3090,52 @@
         "type": "object",
         "properties": {
           "revision_id": {
-            "type": "string"
+            "description": "RevisionID is the server-assigned identifier of the stored\nrevision row.",
+            "type": "string",
+            "format": "uuid",
+            "readOnly": true
           },
           "garage_id": {
-            "type": "string"
+            "description": "GarageID is the garage the revision was appended to.",
+            "type": "string",
+            "format": "uuid",
+            "readOnly": true
           },
           "revision_version": {
+            "description": "RevisionVersion is the revision's version as claimed by the\nsigned payload. It advanced the head pointer, so it is now\nthe garage's current_revision_version.",
             "type": "integer",
-            "format": "int64"
+            "format": "int64",
+            "readOnly": true
           },
           "revision_time": {
+            "description": "RevisionTime is the payload's self-declared revision\ntimestamp.",
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "readOnly": true
           },
           "integrity": {
-            "$ref": "#/components/schemas/Integrity"
+            "description": "Integrity is the signing owner's signature envelope over the\npayload's canonical bytes.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Integrity"
+              }
+            ],
+            "readOnly": true
           },
           "received_at": {
+            "description": "ReceivedAt is when the server accepted the revision.",
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "readOnly": true
           },
           "garage": {
-            "$ref": "#/components/schemas/GarageResponse"
+            "description": "Garage is the garage's head state after the append, owner\nlist reconciled — no follow-up GET needed.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/GarageResponse"
+              }
+            ],
+            "readOnly": true
           }
         },
         "required": [
@@ -3142,28 +3189,52 @@
         "type": "object",
         "properties": {
           "acceptance_id": {
-            "type": "string"
+            "description": "AcceptanceID is the server-assigned identifier of the stored\nacceptance row.",
+            "type": "string",
+            "format": "uuid",
+            "readOnly": true
           },
           "garage_id": {
-            "type": "string"
+            "description": "GarageID is the garage whose ownership was accepted.",
+            "type": "string",
+            "format": "uuid",
+            "readOnly": true
           },
           "revision_version_accepted": {
+            "description": "RevisionVersionAccepted is the garage revision version the\nsigned acceptance is bound to — the owner list the accepter\nactually saw.",
             "type": "integer",
-            "format": "int64"
+            "format": "int64",
+            "readOnly": true
           },
           "accepted_time": {
+            "description": "AcceptedTime is the acceptance's self-declared timestamp. A\nreplay of the same (garage, accepter, revision) acceptance\nreturns the stored record with 200 instead of 201.",
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "readOnly": true
           },
           "integrity": {
-            "$ref": "#/components/schemas/Integrity"
+            "description": "Integrity is the accepter's signature envelope over the\nacceptance's canonical bytes.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Integrity"
+              }
+            ],
+            "readOnly": true
           },
           "received_at": {
+            "description": "ReceivedAt is when the server recorded the acceptance.",
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "readOnly": true
           },
           "garage": {
-            "$ref": "#/components/schemas/GarageResponse"
+            "description": "Garage is the garage's head state after the acceptance, with\nthe accepter's owner row now marked accepted.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/GarageResponse"
+              }
+            ],
+            "readOnly": true
           }
         },
         "required": [
@@ -3269,21 +3340,37 @@
         "type": "object",
         "properties": {
           "id": {
-            "type": "string"
+            "description": "ID is the vehicle's identifier as claimed by the signed\nbundle, scoped to the garage.",
+            "type": "string",
+            "format": "uuid",
+            "readOnly": true
           },
           "garage_id": {
-            "type": "string"
+            "description": "GarageID is the garage whose library holds the vehicle.",
+            "type": "string",
+            "format": "uuid",
+            "readOnly": true
           },
           "current_revision_version": {
+            "description": "CurrentRevisionVersion is the head pointer of the vehicle's\nrevision chain (monotonically increasing).",
             "type": "integer",
-            "format": "int64"
+            "format": "int64",
+            "readOnly": true
           },
           "garage_vehicle": {
-            "$ref": "#/components/schemas/GarageVehicle"
+            "description": "GarageVehicle is the latest signed bundle, decoded from the\nstored canonical bytes verbatim.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/GarageVehicle"
+              }
+            ],
+            "readOnly": true
           },
           "received_at": {
+            "description": "ReceivedAt is when the server accepted the vehicle's\noriginal create.",
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "readOnly": true
           }
         },
         "required": [
@@ -3299,6 +3386,7 @@
         "type": "object",
         "properties": {
           "vehicles": {
+            "description": "Vehicles is every vehicle in the garage's library, oldest\nfirst.",
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/GarageVehicleResponse"
@@ -3314,12 +3402,16 @@
         "type": "object",
         "properties": {
           "expires_in_seconds": {
+            "description": "ExpiresInSeconds is the requested invite lifetime. Zero or\nomitted selects the 7-day default; values above the 30-day\ncap (2592000) are rejected with a 400.",
             "type": "integer",
-            "format": "int64"
+            "format": "int64",
+            "example": 604800
           },
           "max_redemptions": {
+            "description": "MaxRedemptions is how many distinct redemptions the token\npermits. Zero or omitted selects single-use.",
             "type": "integer",
-            "format": "int64"
+            "format": "int64",
+            "example": 1
           }
         }
       },
@@ -3328,39 +3420,60 @@
         "type": "object",
         "properties": {
           "id": {
-            "type": "string"
+            "description": "ID is the invite's server-assigned identifier — the handle\nthe revoke endpoint takes.",
+            "type": "string",
+            "format": "uuid",
+            "readOnly": true
           },
           "garage_id": {
-            "type": "string"
+            "description": "GarageID is the garage the invite grants ownership of.",
+            "type": "string",
+            "format": "uuid",
+            "readOnly": true
           },
           "created_by_user_id": {
-            "type": "string"
+            "description": "CreatedByUserID is the accepted owner who minted the invite.",
+            "type": "string",
+            "format": "uuid",
+            "readOnly": true
           },
           "token": {
-            "type": "string"
+            "description": "Token is the plaintext invite token the invitee presents to\nPOST /v1/garage-invites/redeem. Present only on the create\nresponse: the server stores a SHA-256 hash, so the plaintext\nis unrecoverable afterward and never appears on the list\npath.",
+            "type": "string",
+            "readOnly": true
           },
           "created_at": {
+            "description": "CreatedAt is when the invite was minted.",
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "readOnly": true
           },
           "expires_at": {
+            "description": "ExpiresAt is when the invite stops being redeemable.",
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "readOnly": true
           },
           "max_redemptions": {
+            "description": "MaxRedemptions is how many distinct redemptions the token\npermits.",
             "type": "integer",
-            "format": "int64"
+            "format": "int64",
+            "readOnly": true
           },
           "redemption_count": {
+            "description": "RedemptionCount is how many redemptions have been recorded\nso far. The invite is exhausted when it reaches\nmax_redemptions.",
             "type": "integer",
-            "format": "int64"
+            "format": "int64",
+            "readOnly": true
           },
           "revoked_at": {
+            "description": "RevokedAt is when an owner revoked the invite. Omitted while\nthe invite is not revoked; a revoked invite can no longer be\nredeemed regardless of expiry or remaining redemptions.",
             "type": [
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "readOnly": true
           }
         },
         "required": [
@@ -3378,6 +3491,7 @@
         "type": "object",
         "properties": {
           "invites": {
+            "description": "Invites is every invite ever issued for the garage,\nincluding expired, revoked, and exhausted rows. Token is\nnever present here.",
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/GarageInviteResponse"
@@ -3393,6 +3507,7 @@
         "type": "object",
         "properties": {
           "token": {
+            "description": "Token is the plaintext invite token as handed to the invitee\nby an owner. It is the entire proof of authority — any\nauthenticated user holding it becomes an accepted owner.",
             "type": "string"
           }
         },
@@ -3405,17 +3520,31 @@
         "type": "object",
         "properties": {
           "redemption_id": {
-            "type": "string"
+            "description": "RedemptionID is the server-assigned identifier of the\nrecorded redemption.",
+            "type": "string",
+            "format": "uuid",
+            "readOnly": true
           },
           "garage_invite_id": {
-            "type": "string"
+            "description": "GarageInviteID is the invite the token resolved to.",
+            "type": "string",
+            "format": "uuid",
+            "readOnly": true
           },
           "redeemed_at": {
+            "description": "RedeemedAt is when the server recorded the redemption.",
             "type": "string",
-            "format": "date-time"
+            "format": "date-time",
+            "readOnly": true
           },
           "garage": {
-            "$ref": "#/components/schemas/GarageResponse"
+            "description": "Garage is the garage's head state with the redeemer now an\naccepted owner — no follow-up GET needed.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/GarageResponse"
+              }
+            ],
+            "readOnly": true
           }
         },
         "required": [

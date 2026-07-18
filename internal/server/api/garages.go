@@ -19,24 +19,43 @@ import (
 // pending); clients render pending invitations with reduced
 // affordance until acceptance.
 type GarageResponse struct {
-	ID                     string                `json:"id"`
-	Name                   string                `json:"name"`
-	CurrentRevisionVersion int                   `json:"current_revision_version"`
-	CurrentRevisionTime    time.Time             `json:"current_revision_time"`
-	CreatedAt              time.Time             `json:"created_at"`
-	Owners                 []GarageOwnerResponse `json:"owners"`
+	// ID is the garage's identifier as claimed by the signed
+	// Garage payload at creation.
+	ID string `json:"id" openapi:"format=uuid,readOnly"`
+	// Name is the garage's display name from the current head
+	// revision.
+	Name string `json:"name" openapi:"readOnly"`
+	// CurrentRevisionVersion is the head pointer of the garage's
+	// revision chain (monotonically increasing).
+	CurrentRevisionVersion int `json:"current_revision_version" openapi:"readOnly"`
+	// CurrentRevisionTime is the head revision's self-declared
+	// revision timestamp.
+	CurrentRevisionTime time.Time `json:"current_revision_time" openapi:"readOnly"`
+	// CreatedAt is when the server accepted the garage's create.
+	CreatedAt time.Time `json:"created_at" openapi:"readOnly"`
+	// Owners is the materialized current owner list, accepted and
+	// pending alike.
+	Owners []GarageOwnerResponse `json:"owners" openapi:"readOnly"`
 }
 
 // GarageOwnerResponse is the wire shape of one materialized
 // owner row. AcceptedTime is nil while the invitation is pending.
 type GarageOwnerResponse struct {
-	UserID       string     `json:"user_id"`
-	AddedTime    time.Time  `json:"added_time"`
-	AcceptedTime *time.Time `json:"accepted_time,omitempty"`
+	// UserID is the owner's user id.
+	UserID string `json:"user_id" openapi:"format=uuid,readOnly"`
+	// AddedTime is when a garage revision first named this user as
+	// an owner.
+	AddedTime time.Time `json:"added_time" openapi:"readOnly"`
+	// AcceptedTime is when the user accepted ownership. Omitted
+	// while the invitation is still pending — pending owners hold
+	// no mutation authority.
+	AcceptedTime *time.Time `json:"accepted_time,omitempty" openapi:"readOnly"`
 }
 
 // GarageListResponse is the envelope for GET /v1/garages.
 type GarageListResponse struct {
+	// Garages is every garage in which the caller appears as an
+	// owner, accepted or pending.
 	Garages []GarageResponse `json:"garages"`
 }
 
@@ -44,26 +63,53 @@ type GarageListResponse struct {
 // the revision metadata plus the new garage head state so the
 // client doesn't need to follow up with a GET.
 type GarageRevisionAppendResponse struct {
-	RevisionID      string                `json:"revision_id"`
-	GarageID        string                `json:"garage_id"`
-	RevisionVersion int                   `json:"revision_version"`
-	RevisionTime    time.Time             `json:"revision_time"`
-	Integrity       opencaravan.Integrity `json:"integrity"`
-	ReceivedAt      time.Time             `json:"received_at"`
-	Garage          GarageResponse        `json:"garage"`
+	// RevisionID is the server-assigned identifier of the stored
+	// revision row.
+	RevisionID string `json:"revision_id" openapi:"format=uuid,readOnly"`
+	// GarageID is the garage the revision was appended to.
+	GarageID string `json:"garage_id" openapi:"format=uuid,readOnly"`
+	// RevisionVersion is the revision's version as claimed by the
+	// signed payload. It advanced the head pointer, so it is now
+	// the garage's current_revision_version.
+	RevisionVersion int `json:"revision_version" openapi:"readOnly"`
+	// RevisionTime is the payload's self-declared revision
+	// timestamp.
+	RevisionTime time.Time `json:"revision_time" openapi:"readOnly"`
+	// Integrity is the signing owner's signature envelope over the
+	// payload's canonical bytes.
+	Integrity opencaravan.Integrity `json:"integrity" openapi:"readOnly"`
+	// ReceivedAt is when the server accepted the revision.
+	ReceivedAt time.Time `json:"received_at" openapi:"readOnly"`
+	// Garage is the garage's head state after the append, owner
+	// list reconciled — no follow-up GET needed.
+	Garage GarageResponse `json:"garage" openapi:"readOnly"`
 }
 
 // GarageOwnershipAcceptanceResponse is what the acceptance POST
 // returns — the recorded acceptance metadata plus the updated
 // garage state.
 type GarageOwnershipAcceptanceResponse struct {
-	AcceptanceID            string                `json:"acceptance_id"`
-	GarageID                string                `json:"garage_id"`
-	RevisionVersionAccepted int                   `json:"revision_version_accepted"`
-	AcceptedTime            time.Time             `json:"accepted_time"`
-	Integrity               opencaravan.Integrity `json:"integrity"`
-	ReceivedAt              time.Time             `json:"received_at"`
-	Garage                  GarageResponse        `json:"garage"`
+	// AcceptanceID is the server-assigned identifier of the stored
+	// acceptance row.
+	AcceptanceID string `json:"acceptance_id" openapi:"format=uuid,readOnly"`
+	// GarageID is the garage whose ownership was accepted.
+	GarageID string `json:"garage_id" openapi:"format=uuid,readOnly"`
+	// RevisionVersionAccepted is the garage revision version the
+	// signed acceptance is bound to — the owner list the accepter
+	// actually saw.
+	RevisionVersionAccepted int `json:"revision_version_accepted" openapi:"readOnly"`
+	// AcceptedTime is the acceptance's self-declared timestamp. A
+	// replay of the same (garage, accepter, revision) acceptance
+	// returns the stored record with 200 instead of 201.
+	AcceptedTime time.Time `json:"accepted_time" openapi:"readOnly"`
+	// Integrity is the accepter's signature envelope over the
+	// acceptance's canonical bytes.
+	Integrity opencaravan.Integrity `json:"integrity" openapi:"readOnly"`
+	// ReceivedAt is when the server recorded the acceptance.
+	ReceivedAt time.Time `json:"received_at" openapi:"readOnly"`
+	// Garage is the garage's head state after the acceptance, with
+	// the accepter's owner row now marked accepted.
+	Garage GarageResponse `json:"garage" openapi:"readOnly"`
 }
 
 // handleGarageCreate implements POST /v1/garages.
