@@ -29,16 +29,21 @@ type schemaBuilder struct {
 	// undocumented accumulates "pkg.Type.Field" for every emitted
 	// property whose Go field has no doc comment — the worklist for
 	// the issue #43 missing-doc rule, reported by main at the
-	// -missing-docs policy level.
+	// -missing-docs policy level. undocSeen dedupes it: embedded
+	// structs are re-walked at every embedding site (unlike directly
+	// referenced types, which the names cache visits once), and a
+	// field must not be listed once per site.
 	undocumented []string
+	undocSeen    map[string]bool
 }
 
 func newSchemaBuilder(docs *docIndex) *schemaBuilder {
 	return &schemaBuilder{
-		docs:    docs,
-		schemas: newOmap(),
-		names:   map[reflect.Type]string{},
-		byName:  map[string]reflect.Type{},
+		docs:      docs,
+		schemas:   newOmap(),
+		names:     map[reflect.Type]string{},
+		byName:    map[string]reflect.Type{},
+		undocSeen: map[string]bool{},
 	}
 }
 
@@ -206,7 +211,11 @@ func (b *schemaBuilder) collectStructFields(t reflect.Type, properties *omap, re
 		}
 		doc := b.docs.fieldDoc(t.PkgPath(), t.Name(), field.Name)
 		if doc == "" && t.Name() != "" {
-			b.undocumented = append(b.undocumented, t.String()+"."+field.Name)
+			key := t.String() + "." + field.Name
+			if !b.undocSeen[key] {
+				b.undocSeen[key] = true
+				b.undocumented = append(b.undocumented, key)
+			}
 		}
 		if doc != "" {
 			// A $ref must not carry siblings in every renderer;

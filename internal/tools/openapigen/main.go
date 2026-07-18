@@ -41,6 +41,15 @@ func main() {
 		"policy for contract fields without doc comments: warn (summary) or error (list every field and fail)")
 	flag.Parse()
 
+	// Validate the policy up front, not only when there is something
+	// to report — otherwise a typo'd value would pass silently on a
+	// fully documented tree and only explode when the first
+	// undocumented field appears.
+	if *missingDocs != "warn" && *missingDocs != "error" {
+		fmt.Fprintf(os.Stderr, "openapigen: unknown -missing-docs policy %q (want warn or error)\n", *missingDocs)
+		os.Exit(1)
+	}
+
 	// The default is relative because go:generate runs this command
 	// from the api package directory. Refuse to scatter artifacts
 	// anywhere that isn't the spec package.
@@ -70,22 +79,15 @@ func main() {
 	// artifacts are written either way — an undocumented field is a
 	// documentation gap, not a broken contract.
 	if len(res.Undocumented) > 0 {
-		switch *missingDocs {
-		case "warn":
-			fmt.Fprintf(os.Stderr, "openapigen: warning: %d contract fields lack doc comments (-missing-docs=error lists them; issue #43 backfill)\n",
-				len(res.Undocumented))
-		case "error":
+		if *missingDocs == "error" {
 			for _, field := range res.Undocumented {
 				fmt.Fprintf(os.Stderr, "  undocumented: %s\n", field)
 			}
 			fmt.Fprintf(os.Stderr, "openapigen: error: %d contract fields lack doc comments\n", len(res.Undocumented))
 			os.Exit(1)
-		default:
-			// Fail closed: an unrecognized policy must not be
-			// mistaken for "don't enforce".
-			fmt.Fprintf(os.Stderr, "openapigen: unknown -missing-docs policy %q (want warn or error)\n", *missingDocs)
-			os.Exit(1)
 		}
+		fmt.Fprintf(os.Stderr, "openapigen: warning: %d contract fields lack doc comments (-missing-docs=error lists them; issue #43 backfill)\n",
+			len(res.Undocumented))
 	}
 }
 
