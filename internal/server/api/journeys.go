@@ -17,7 +17,12 @@ import (
 // full [opencaravan.Journey] envelope as policy snapshots,
 // avatars, and feature flags become first-class.
 type JourneyCreateRequest struct {
-	Title       string `json:"title"`
+	// Title names the journey. Required; leading and trailing
+	// whitespace is trimmed, and a blank result is rejected with a
+	// 400.
+	Title string `json:"title" openapi:"example=Alaska Summer 2027"`
+	// Description is optional free-form prose about the journey.
+	// Whitespace is trimmed.
 	Description string `json:"description,omitempty"`
 }
 
@@ -30,13 +35,27 @@ type JourneyCreateRequest struct {
 // to opencaravan.Journey — so the protocol type can evolve
 // independently.
 type JourneyResponse struct {
-	ID           string    `json:"id"`
-	Title        string    `json:"title"`
-	Description  string    `json:"description,omitempty"`
-	HostUserID   string    `json:"host_user_id"`
-	State        string    `json:"state"`
-	Visibility   string    `json:"visibility"`
-	CreationTime time.Time `json:"creation_time"`
+	// ID is the journey's stable identifier: a random version 4
+	// UUID, server-assigned at creation and immutable.
+	ID string `json:"id" openapi:"format=uuid,readOnly"`
+	// Title is the journey's display name as supplied by the host.
+	Title string `json:"title"`
+	// Description is the host-supplied prose description. Omitted
+	// when empty.
+	Description string `json:"description,omitempty"`
+	// HostUserID is the user id of the account that created the
+	// journey and acts as its host participant.
+	HostUserID string `json:"host_user_id" openapi:"format=uuid,readOnly"`
+	// State is the OpenCaravan journey lifecycle state. Journeys
+	// are created as "planned"; state transitions are a future
+	// phase.
+	State string `json:"state" openapi:"enum=planned|active|closed|expired|deleted,readOnly"`
+	// Visibility controls who can discover the journey. Always
+	// "private" today — a server-defined value, not yet an
+	// OpenCaravan protocol enum.
+	Visibility string `json:"visibility" openapi:"readOnly"`
+	// CreationTime is when the host created the journey.
+	CreationTime time.Time `json:"creation_time" openapi:"readOnly"`
 }
 
 // handleJourneyCreate implements POST /v1/journeys.

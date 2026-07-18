@@ -29,8 +29,15 @@ const maxTelemetryBodyBytes = 1 << 20 // 1 MiB
 // without expanding individual samples; future phases will
 // promote Samples into per-row position_samples inserts.
 type TelemetryBatchRequest struct {
-	ClientBatchID string                       `json:"client_batch_id"`
-	Samples       []opencaravan.PositionSample `json:"samples"`
+	// ClientBatchID is the client-chosen idempotency key for this
+	// batch. Retrying an already-accepted (device, client_batch_id)
+	// tuple returns a 409 rather than recording a duplicate.
+	ClientBatchID string `json:"client_batch_id"`
+	// Samples are the captured position samples. Phase 5 persists
+	// the envelope (count + content digest) rather than expanding
+	// each sample into queryable rows; each sample is still
+	// protocol-validated on receipt.
+	Samples []opencaravan.PositionSample `json:"samples"`
 	// DriverAttestationHash optionally links this batch to the
 	// [opencaravan.DriverAttestation] that was in effect when the
 	// samples were captured. When set, the server persists it on
@@ -48,9 +55,14 @@ type TelemetryBatchRequest struct {
 // across logs) and the count of samples the server acknowledged
 // receiving.
 type TelemetryBatchResponse struct {
-	BatchID       string    `json:"batch_id"`
-	ReceivedCount int       `json:"received_count"`
-	ReceivedTime  time.Time `json:"received_time"`
+	// BatchID is the server-assigned id of the recorded batch, for
+	// correlating client retries against server logs.
+	BatchID string `json:"batch_id" openapi:"format=uuid,readOnly"`
+	// ReceivedCount is the number of samples the server
+	// acknowledged receiving in this batch.
+	ReceivedCount int `json:"received_count" openapi:"readOnly"`
+	// ReceivedTime is when the server recorded the batch.
+	ReceivedTime time.Time `json:"received_time" openapi:"readOnly"`
 }
 
 // handleJourneyTelemetry implements POST

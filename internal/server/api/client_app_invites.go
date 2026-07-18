@@ -45,7 +45,10 @@ const maxOutstandingClientAppInvites = 10
 // ClientAppInviteCreateRequest is the optional POST body. An empty body
 // (or no Content-Length) is valid and selects the defaults.
 type ClientAppInviteCreateRequest struct {
-	ExpiresInSeconds int `json:"expires_in_seconds,omitempty"`
+	// ExpiresInSeconds is the requested invite lifetime. Zero or
+	// omitted selects the 24-hour default; values above the 7-day
+	// cap (604800) or below zero are rejected with a 400.
+	ExpiresInSeconds int `json:"expires_in_seconds,omitempty" openapi:"example=86400"`
 }
 
 // ClientAppInviteResponse is the wire shape for an issued invite.
@@ -57,16 +60,32 @@ type ClientAppInviteCreateRequest struct {
 // the server, and exposing no public row handle is also what lets
 // revocation be cleanly deferred (there is nothing to revoke by).
 type ClientAppInviteResponse struct {
-	Scope           string     `json:"scope"`
-	CreatedByUserID string     `json:"created_by_user_id"`
-	Token           string     `json:"token,omitempty"`
-	CreatedAt       time.Time  `json:"created_at"`
-	ExpiresAt       time.Time  `json:"expires_at"`
-	UsedAt          *time.Time `json:"used_at,omitempty"`
+	// Scope is the invite's redemption scope. Always
+	// "server_registration" — the only scope the enrollment
+	// endpoint redeems, and the only one this endpoint mints.
+	Scope string `json:"scope" openapi:"readOnly"`
+	// CreatedByUserID is the user id of the enrolled account that
+	// minted the invite.
+	CreatedByUserID string `json:"created_by_user_id" openapi:"format=uuid,readOnly"`
+	// Token is the plaintext invite token the invitee presents to
+	// POST /v1/client-apps/enroll. Present only on the create
+	// response: the server stores a SHA-256 hash, so the plaintext
+	// is unrecoverable afterward and never appears on the list
+	// path.
+	Token string `json:"token,omitempty" openapi:"readOnly"`
+	// CreatedAt is when the invite was minted.
+	CreatedAt time.Time `json:"created_at" openapi:"readOnly"`
+	// ExpiresAt is when the invite stops being redeemable.
+	ExpiresAt time.Time `json:"expires_at" openapi:"readOnly"`
+	// UsedAt is when the invite was redeemed by an enrollment.
+	// Omitted while the invite is still outstanding.
+	UsedAt *time.Time `json:"used_at,omitempty" openapi:"readOnly"`
 }
 
 // ClientAppInviteListResponse is the envelope for the list endpoint.
 type ClientAppInviteListResponse struct {
+	// Invites is every invite the caller has minted, newest first,
+	// including used and expired rows. Token is never present here.
 	Invites []ClientAppInviteResponse `json:"invites"`
 }
 
