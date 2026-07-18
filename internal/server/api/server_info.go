@@ -86,38 +86,67 @@ type DataPolicy struct {
 	ImageResourceCache bool `json:"image_resource_cache"`
 }
 
-type serverInfoResponse struct {
-	Name           string               `json:"name"`
-	PublicURL      string               `json:"public_url,omitempty"`
-	Implementation implementationInfo   `json:"implementation"`
-	Protocol       protocolInfo         `json:"protocol"`
-	Capabilities   serverCapabilities   `json:"capabilities"`
-	Policy         ServerPolicySnapshot `json:"policy"`
+// ServerInfoResponse is the discovery document served at GET
+// /v1/server: who this server is, what implementation and protocol
+// version it runs, what capabilities it advertises, and the policy
+// snapshot journeys created here are pinned to.
+type ServerInfoResponse struct {
+	// Name is the human-readable server product name.
+	Name string `json:"name"`
+	// PublicURL is the canonical URL served by the edge proxy.
+	// Omitted when no public URL is configured.
+	PublicURL string `json:"public_url,omitempty"`
+	// Implementation identifies the server software build.
+	Implementation ImplementationInfo `json:"implementation"`
+	// Protocol identifies the OpenCaravan wire-format version the
+	// server speaks.
+	Protocol ProtocolInfo `json:"protocol"`
+	// Capabilities advertises what this deployment supports.
+	Capabilities ServerCapabilities `json:"capabilities"`
+	// Policy is the policy snapshot journeys created on this server
+	// are pinned to.
+	Policy ServerPolicySnapshot `json:"policy"`
 }
 
-type implementationInfo struct {
-	Name      string `json:"name"`
-	Version   string `json:"version"`
-	Commit    string `json:"commit"`
+// ImplementationInfo identifies the server software build advertised
+// at GET /v1/server.
+type ImplementationInfo struct {
+	// Name is the implementation identifier ("spivot-server").
+	Name string `json:"name"`
+	// Version is the release version injected at build time.
+	Version string `json:"version"`
+	// Commit is the short git commit hash the binary was built from.
+	Commit string `json:"commit"`
+	// BuildTime is the UTC build timestamp (RFC 3339).
 	BuildTime string `json:"build_time"`
 }
 
-type protocolInfo struct {
-	Name    string `json:"name"`
+// ProtocolInfo identifies the OpenCaravan wire-format version this
+// server implements.
+type ProtocolInfo struct {
+	// Name is the protocol identifier ("OpenCaravan").
+	Name string `json:"name"`
+	// Version is the OpenCaravan wire-format version. Pre-1.0, a
+	// bump signals "expect change"; 1.0 freezes the wire format.
 	Version string `json:"version"`
 }
 
-// serverCapabilities is a convenience projection from ServerPolicyDocument plus
+// ServerCapabilities is a convenience projection from ServerPolicyDocument plus
 // concrete implementation state. Keep policy-backed fields derived in
 // serverCapabilitiesFromPolicy so the advertised policy remains the source of
 // truth.
-type serverCapabilities struct {
-	Registration registrationCapabilities `json:"registration"`
-	Journeys     journeyCapabilities      `json:"journeys"`
-	Data         dataCapabilities         `json:"data"`
+type ServerCapabilities struct {
+	// Registration describes how users join this server.
+	Registration RegistrationCapabilities `json:"registration"`
+	// Journeys describes the journey behavior this server supports.
+	Journeys JourneyCapabilities `json:"journeys"`
+	// Data describes data retention and storage behavior.
+	Data DataCapabilities `json:"data"`
 }
 
-type registrationCapabilities struct {
+// RegistrationCapabilities describes how users join this server.
+type RegistrationCapabilities struct {
+	// Mode identifies the registration model ("invite_only").
 	Mode string `json:"mode"`
 	// MintPolicy advertises who may mint server_registration invites via
 	// POST /v1/client-apps/invites (denied | admin-only | any-user). It
@@ -130,16 +159,33 @@ type registrationCapabilities struct {
 	MintPolicy string `json:"mint_policy"`
 }
 
-type journeyCapabilities struct {
-	InviteOnly          bool `json:"invite_only"`
-	InviteLinks         bool `json:"invite_links"`
-	InviteUseLimits     bool `json:"invite_use_limits"`
+// JourneyCapabilities describes the journey behavior this server
+// supports.
+type JourneyCapabilities struct {
+	// InviteOnly reports whether journeys are discoverable only by
+	// invitation.
+	InviteOnly bool `json:"invite_only"`
+	// InviteLinks reports whether journeys can create shareable
+	// invite links.
+	InviteLinks bool `json:"invite_links"`
+	// InviteUseLimits reports whether invite use counts are
+	// supported.
+	InviteUseLimits bool `json:"invite_use_limits"`
+	// DeletionTimePerItem reports whether retained data deletion is
+	// selected per journey via its deletion time.
 	DeletionTimePerItem bool `json:"deletion_time_per_item"`
 }
 
-type dataCapabilities struct {
-	SQLiteStorage       bool `json:"sqlite_storage"`
-	TelemetryStorage    bool `json:"telemetry_storage"`
+// DataCapabilities describes data retention and storage behavior.
+type DataCapabilities struct {
+	// SQLiteStorage reports whether the server persists to SQLite.
+	SQLiteStorage bool `json:"sqlite_storage"`
+	// TelemetryStorage reports whether individual telemetry samples
+	// are expanded into queryable storage (Phase 5 stores only the
+	// batch envelope).
+	TelemetryStorage bool `json:"telemetry_storage"`
+	// ImageResourceUpload reports whether uploaded image resources
+	// are accepted and served.
 	ImageResourceUpload bool `json:"image_resource_upload"`
 }
 
@@ -166,19 +212,19 @@ func DefaultServerPolicyDocument() ServerPolicyDocument {
 	}
 }
 
-func (s *Server) serverInfo() serverInfoResponse {
+func (s *Server) serverInfo() ServerInfoResponse {
 	policy := serverPolicyDocumentFromSnapshot(s.cfg.PolicySnapshot)
 
-	return serverInfoResponse{
+	return ServerInfoResponse{
 		Name:      "Spivot Server",
 		PublicURL: s.publicURLString(),
-		Implementation: implementationInfo{
+		Implementation: ImplementationInfo{
 			Name:      "spivot-server",
 			Version:   buildinfo.Version,
 			Commit:    buildinfo.GitCommit,
 			BuildTime: buildinfo.BuildTime,
 		},
-		Protocol: protocolInfo{
+		Protocol: ProtocolInfo{
 			Name:    "OpenCaravan",
 			Version: openCaravanProtocolVersion,
 		},
@@ -190,8 +236,8 @@ func (s *Server) serverInfo() serverInfoResponse {
 // capabilities builds the advertised capabilities projection from the
 // (immutable, hashed) policy document plus mutable runtime config — the
 // invite mint policy. Keeping the mint policy here rather than in the
-// policy document is deliberate: see registrationCapabilities.MintPolicy.
-func (s *Server) capabilities(policy ServerPolicyDocument) serverCapabilities {
+// policy document is deliberate: see RegistrationCapabilities.MintPolicy.
+func (s *Server) capabilities(policy ServerPolicyDocument) ServerCapabilities {
 	caps := serverCapabilitiesFromPolicy(policy)
 	mintPolicy := s.cfg.InviteMintPolicy
 	if mintPolicy == "" {
@@ -213,18 +259,18 @@ func serverPolicyDocumentFromSnapshot(snapshot ServerPolicySnapshot) ServerPolic
 	return policy
 }
 
-func serverCapabilitiesFromPolicy(policy ServerPolicyDocument) serverCapabilities {
-	return serverCapabilities{
-		Registration: registrationCapabilities{
+func serverCapabilitiesFromPolicy(policy ServerPolicyDocument) ServerCapabilities {
+	return ServerCapabilities{
+		Registration: RegistrationCapabilities{
 			Mode: policy.Registration.Mode,
 		},
-		Journeys: journeyCapabilities{
+		Journeys: JourneyCapabilities{
 			InviteOnly:          policy.Journeys.Visibility == policyJourneyVisibilityInviteOnly,
 			InviteLinks:         policy.Journeys.InviteLinks,
 			InviteUseLimits:     policy.Journeys.InviteUseLimits,
 			DeletionTimePerItem: policy.Data.RetentionControl == policyRetentionJourneyDeletionTime,
 		},
-		Data: dataCapabilities{
+		Data: DataCapabilities{
 			SQLiteStorage:       true,
 			TelemetryStorage:    false,
 			ImageResourceUpload: false,

@@ -1,0 +1,3254 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Spivot Server API",
+    "version": "0.1.0",
+    "description": "Native HTTP API of Spivot Server, the Go backend for the Spivot iOS app, speaking the OpenCaravan protocol.\n\nThis document is generated from the Go source (route table + contract structs) by internal/tools/openapigen; it cannot drift from the implementation. The `x-spivot-auth` extension on each operation records the enforced authentication posture, derived from the same table that wires the middleware."
+  },
+  "tags": [
+    {
+      "name": "System",
+      "description": "Service identity, health, readiness, and build metadata."
+    },
+    {
+      "name": "Identity",
+      "description": "Client-app enrollment, session macaroons, and server-registration invites."
+    },
+    {
+      "name": "Journeys",
+      "description": "Journey lifecycle and telemetry."
+    },
+    {
+      "name": "Journey Vehicles",
+      "description": "Journey-scoped vehicle bundles, ACL revisions, and driver attestations."
+    },
+    {
+      "name": "Garages",
+      "description": "Account-scoped garage containers: revisions, ownership, vehicles, and invites."
+    }
+  ],
+  "paths": {
+    "/": {
+      "get": {
+        "operationId": "serverRoot",
+        "summary": "Server identity banner",
+        "tags": [
+          "System"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RootResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-spivot-auth": {
+          "posture": "public"
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "healthCheck",
+        "summary": "Liveness probe",
+        "tags": [
+          "System"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-spivot-auth": {
+          "posture": "public"
+        }
+      }
+    },
+    "/readyz": {
+      "get": {
+        "operationId": "readinessCheck",
+        "summary": "Readiness probe",
+        "tags": [
+          "System"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadinessResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-spivot-auth": {
+          "posture": "public"
+        }
+      }
+    },
+    "/v1/server": {
+      "get": {
+        "operationId": "serverInfo",
+        "summary": "Server capabilities and policy snapshot",
+        "tags": [
+          "System"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServerInfoResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-spivot-auth": {
+          "posture": "public"
+        }
+      }
+    },
+    "/v1/version": {
+      "get": {
+        "operationId": "serverVersion",
+        "summary": "Build and runtime version details",
+        "tags": [
+          "System"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VersionResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-spivot-auth": {
+          "posture": "public"
+        }
+      }
+    },
+    "/v1/client-apps/enroll": {
+      "post": {
+        "operationId": "clientAppEnroll",
+        "summary": "Enroll a client app with a server-registration invite",
+        "tags": [
+          "Identity"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClientAppEnrollmentRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientAppEnrollmentResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-spivot-auth": {
+          "posture": "public"
+        }
+      }
+    },
+    "/v1/sessions": {
+      "post": {
+        "operationId": "sessionCreate",
+        "summary": "Issue a session macaroon",
+        "tags": [
+          "Identity"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "mutualTLS": []
+          }
+        ],
+        "x-spivot-auth": {
+          "posture": "identity"
+        }
+      }
+    },
+    "/v1/client-apps/invites": {
+      "post": {
+        "operationId": "clientAppInviteCreate",
+        "summary": "Mint a server-registration invite",
+        "tags": [
+          "Identity"
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClientAppInviteCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientAppInviteResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "mutualTLS": []
+          }
+        ],
+        "x-spivot-auth": {
+          "posture": "identity"
+        }
+      },
+      "get": {
+        "operationId": "clientAppInviteList",
+        "summary": "List invites minted by the caller",
+        "tags": [
+          "Identity"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientAppInviteListResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "mutualTLS": []
+          }
+        ],
+        "x-spivot-auth": {
+          "posture": "identity"
+        }
+      }
+    },
+    "/v1/journeys": {
+      "post": {
+        "operationId": "journeyCreate",
+        "summary": "Create a journey",
+        "tags": [
+          "Journeys"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JourneyCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JourneyResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "mutualTLS": []
+          }
+        ],
+        "x-spivot-auth": {
+          "posture": "identity"
+        }
+      }
+    },
+    "/v1/journeys/{id}": {
+      "get": {
+        "operationId": "journeyGet",
+        "summary": "Fetch a journey",
+        "tags": [
+          "Journeys"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Journey identifier; must match the session macaroon's journey caveat."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JourneyResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "macaroonSession": []
+          }
+        ],
+        "x-spivot-auth": {
+          "posture": "session",
+          "session_action": "journey.read",
+          "journey_path_param": "id"
+        }
+      }
+    },
+    "/v1/journeys/{id}/telemetry": {
+      "post": {
+        "operationId": "telemetryBatchRecord",
+        "summary": "Record a telemetry batch",
+        "tags": [
+          "Journeys"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Journey identifier; must match the session macaroon's journey caveat."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TelemetryBatchRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TelemetryBatchResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "macaroonSession": []
+          }
+        ],
+        "x-spivot-auth": {
+          "posture": "session",
+          "session_action": "telemetry.write",
+          "journey_path_param": "id"
+        }
+      }
+    },
+    "/v1/journeys/{id}/vehicles": {
+      "post": {
+        "operationId": "journeyVehicleCreate",
+        "summary": "Upload a journey vehicle bundle",
+        "tags": [
+          "Journey Vehicles"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Journey identifier; must match the session macaroon's journey caveat."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JourneyVehicleCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JourneyVehicleResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "macaroonSession": []
+          }
+        ],
+        "x-spivot-auth": {
+          "posture": "session",
+          "session_action": "journey.write",
+          "journey_path_param": "id"
+        }
+      },
+      "get": {
+        "operationId": "journeyVehicleList",
+        "summary": "List journey vehicles",
+        "tags": [
+          "Journey Vehicles"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Journey identifier; must match the session macaroon's journey caveat."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JourneyVehicleListResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "macaroonSession": []
+          }
+        ],
+        "x-spivot-auth": {
+          "posture": "session",
+          "session_action": "journey.read",
+          "journey_path_param": "id"
+        }
+      }
+    },
+    "/v1/journeys/{id}/vehicles/{vid}": {
+      "get": {
+        "operationId": "journeyVehicleGet",
+        "summary": "Fetch a journey vehicle",
+        "tags": [
+          "Journey Vehicles"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Journey identifier; must match the session macaroon's journey caveat."
+          },
+          {
+            "name": "vid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JourneyVehicleResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "macaroonSession": []
+          }
+        ],
+        "x-spivot-auth": {
+          "posture": "session",
+          "session_action": "journey.read",
+          "journey_path_param": "id"
+        }
+      }
+    },
+    "/v1/journeys/{id}/vehicles/{vid}/acl-revisions": {
+      "post": {
+        "operationId": "journeyVehicleACLAppend",
+        "summary": "Append a signed vehicle ACL revision",
+        "tags": [
+          "Journey Vehicles"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Journey identifier; must match the session macaroon's journey caveat."
+          },
+          {
+            "name": "vid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VehicleACL"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JourneyVehicleACLRevisionResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "macaroonSession": []
+          }
+        ],
+        "x-spivot-auth": {
+          "posture": "session",
+          "session_action": "journey.write",
+          "journey_path_param": "id"
+        }
+      }
+    },
+    "/v1/journeys/{id}/vehicles/{vid}/revisions": {
+      "post": {
+        "operationId": "journeyVehicleRevisionAppend",
+        "summary": "Append a signed vehicle metadata revision",
+        "tags": [
+          "Journey Vehicles"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Journey identifier; must match the session macaroon's journey caveat."
+          },
+          {
+            "name": "vid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Vehicle"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JourneyVehicleRevisionResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "macaroonSession": []
+          }
+        ],
+        "x-spivot-auth": {
+          "posture": "session",
+          "session_action": "journey.write",
+          "journey_path_param": "id"
+        }
+      }
+    },
+    "/v1/journeys/{id}/vehicles/{vid}/driver-attestations": {
+      "post": {
+        "operationId": "driverAttestationRecord",
+        "summary": "Record a signed driver attestation",
+        "tags": [
+          "Journey Vehicles"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Journey identifier; must match the session macaroon's journey caveat."
+          },
+          {
+            "name": "vid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DriverAttestation"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DriverAttestationResponse"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DriverAttestationResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "macaroonSession": []
+          }
+        ],
+        "x-spivot-auth": {
+          "posture": "session",
+          "session_action": "journey.write",
+          "journey_path_param": "id"
+        }
+      },
+      "get": {
+        "operationId": "driverAttestationList",
+        "summary": "List driver attestations",
+        "tags": [
+          "Journey Vehicles"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Journey identifier; must match the session macaroon's journey caveat."
+          },
+          {
+            "name": "vid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DriverAttestationListResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "macaroonSession": []
+          }
+        ],
+        "x-spivot-auth": {
+          "posture": "session",
+          "session_action": "journey.read",
+          "journey_path_param": "id"
+        }
+      }
+    },
+    "/v1/journeys/{id}/vehicles/{vid}/current-driver": {
+      "get": {
+        "operationId": "currentDriverGet",
+        "summary": "Resolve the driver in effect at a point in time",
+        "tags": [
+          "Journey Vehicles"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Journey identifier; must match the session macaroon's journey caveat."
+          },
+          {
+            "name": "vid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CurrentDriverResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "macaroonSession": []
+          }
+        ],
+        "x-spivot-auth": {
+          "posture": "session",
+          "session_action": "journey.read",
+          "journey_path_param": "id"
+        }
+      }
+    },
+    "/v1/garages": {
+      "post": {
+        "operationId": "garageCreate",
+        "summary": "Create a garage from a signed Garage payload",
+        "tags": [
+          "Garages"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Garage"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GarageResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "mutualTLS": []
+          }
+        ],
+        "x-spivot-auth": {
+          "posture": "identity"
+        }
+      },
+      "get": {
+        "operationId": "garageList",
+        "summary": "List the caller's garages",
+        "tags": [
+          "Garages"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GarageListResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "mutualTLS": []
+          }
+        ],
+        "x-spivot-auth": {
+          "posture": "identity"
+        }
+      }
+    },
+    "/v1/garages/{id}": {
+      "get": {
+        "operationId": "garageGet",
+        "summary": "Fetch a garage",
+        "tags": [
+          "Garages"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GarageResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "mutualTLS": []
+          }
+        ],
+        "x-spivot-auth": {
+          "posture": "identity"
+        }
+      }
+    },
+    "/v1/garages/{id}/revisions": {
+      "post": {
+        "operationId": "garageRevisionAppend",
+        "summary": "Append a signed garage revision",
+        "tags": [
+          "Garages"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Garage"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GarageRevisionAppendResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "mutualTLS": []
+          }
+        ],
+        "x-spivot-auth": {
+          "posture": "identity"
+        }
+      }
+    },
+    "/v1/garages/{id}/ownership-acceptances": {
+      "post": {
+        "operationId": "garageOwnershipAccept",
+        "summary": "Accept garage ownership",
+        "tags": [
+          "Garages"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GarageOwnershipAcceptance"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GarageOwnershipAcceptanceResponse"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GarageOwnershipAcceptanceResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "mutualTLS": []
+          }
+        ],
+        "x-spivot-auth": {
+          "posture": "identity"
+        }
+      }
+    },
+    "/v1/garages/{id}/vehicles": {
+      "post": {
+        "operationId": "garageVehicleCreate",
+        "summary": "Add a signed garage vehicle",
+        "tags": [
+          "Garages"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GarageVehicle"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GarageVehicleResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "mutualTLS": []
+          }
+        ],
+        "x-spivot-auth": {
+          "posture": "identity"
+        }
+      },
+      "get": {
+        "operationId": "garageVehicleList",
+        "summary": "List garage vehicles",
+        "tags": [
+          "Garages"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GarageVehicleListResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "mutualTLS": []
+          }
+        ],
+        "x-spivot-auth": {
+          "posture": "identity"
+        }
+      }
+    },
+    "/v1/garages/{id}/vehicles/{vid}": {
+      "get": {
+        "operationId": "garageVehicleGet",
+        "summary": "Fetch a garage vehicle",
+        "tags": [
+          "Garages"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "vid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GarageVehicleResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "mutualTLS": []
+          }
+        ],
+        "x-spivot-auth": {
+          "posture": "identity"
+        }
+      }
+    },
+    "/v1/garages/{id}/vehicles/{vid}/revisions": {
+      "post": {
+        "operationId": "garageVehicleRevisionAppend",
+        "summary": "Append a signed garage vehicle revision",
+        "tags": [
+          "Garages"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "vid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GarageVehicle"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GarageVehicleResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "mutualTLS": []
+          }
+        ],
+        "x-spivot-auth": {
+          "posture": "identity"
+        }
+      }
+    },
+    "/v1/garages/{id}/invites": {
+      "post": {
+        "operationId": "garageInviteCreate",
+        "summary": "Mint a garage invite",
+        "tags": [
+          "Garages"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GarageInviteCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GarageInviteResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "mutualTLS": []
+          }
+        ],
+        "x-spivot-auth": {
+          "posture": "identity"
+        }
+      },
+      "get": {
+        "operationId": "garageInviteList",
+        "summary": "List garage invites",
+        "tags": [
+          "Garages"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GarageInviteListResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "mutualTLS": []
+          }
+        ],
+        "x-spivot-auth": {
+          "posture": "identity"
+        }
+      }
+    },
+    "/v1/garages/{id}/invites/{inviteId}/revoke": {
+      "post": {
+        "operationId": "garageInviteRevoke",
+        "summary": "Revoke a garage invite",
+        "tags": [
+          "Garages"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "inviteId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          }
+        },
+        "security": [
+          {
+            "mutualTLS": []
+          }
+        ],
+        "x-spivot-auth": {
+          "posture": "identity"
+        }
+      }
+    },
+    "/v1/garage-invites/redeem": {
+      "post": {
+        "operationId": "garageInviteRedeem",
+        "summary": "Redeem a garage invite token",
+        "tags": [
+          "Garages"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GarageInviteRedeemRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GarageInviteRedeemResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "mutualTLS": []
+          }
+        ],
+        "x-spivot-auth": {
+          "posture": "identity"
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "mutualTLS": {
+        "type": "mutualTLS",
+        "description": "An enrolled client-app certificate, presented directly via mTLS or forwarded by a trusted edge proxy. Obtained from `clientAppEnroll`."
+      },
+      "macaroonSession": {
+        "type": "http",
+        "scheme": "macaroon",
+        "description": "`Authorization: Macaroon <token>` — a base64url session macaroon minted by `sessionCreate`, carrying user/client-app/action caveats and, for journey-scoped operations, a journey caveat that must match the journey named in the request path."
+      }
+    },
+    "schemas": {
+      "RootResponse": {
+        "description": "RootResponse is the identity banner served at GET /.",
+        "type": "object",
+        "properties": {
+          "name": {
+            "description": "Name is the human-readable server product name.",
+            "type": "string"
+          },
+          "version": {
+            "description": "Version is the running spivot-server release version.",
+            "type": "string"
+          },
+          "status": {
+            "description": "Status is \"ok\" whenever the process is serving requests.",
+            "type": "string"
+          },
+          "public_url": {
+            "description": "PublicURL is the canonical URL served by the edge proxy.\nOmitted when no public URL is configured.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "version",
+          "status"
+        ]
+      },
+      "HealthResponse": {
+        "description": "HealthResponse is the liveness payload served at GET /health.",
+        "type": "object",
+        "properties": {
+          "status": {
+            "description": "Status is \"healthy\" whenever the process is serving requests.",
+            "type": "string"
+          },
+          "version": {
+            "description": "Version is the running spivot-server release version.",
+            "type": "string"
+          },
+          "uptime": {
+            "description": "Uptime is the process uptime as a Go duration string.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "version",
+          "uptime"
+        ]
+      },
+      "ReadinessResponse": {
+        "description": "ReadinessResponse is the readiness payload served at GET /readyz.\nStatus is \"ready\" with a 200 when the backing store answers a ping\n(or none is wired), \"unready\" with a 503 when it does not.",
+        "type": "object",
+        "properties": {
+          "status": {
+            "description": "Status is \"ready\" or \"unready\".",
+            "type": "string"
+          },
+          "version": {
+            "description": "Version is the running spivot-server release version.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "version"
+        ]
+      },
+      "ServerInfoResponse": {
+        "description": "ServerInfoResponse is the discovery document served at GET\n/v1/server: who this server is, what implementation and protocol\nversion it runs, what capabilities it advertises, and the policy\nsnapshot journeys created here are pinned to.",
+        "type": "object",
+        "properties": {
+          "name": {
+            "description": "Name is the human-readable server product name.",
+            "type": "string"
+          },
+          "public_url": {
+            "description": "PublicURL is the canonical URL served by the edge proxy.\nOmitted when no public URL is configured.",
+            "type": "string"
+          },
+          "implementation": {
+            "description": "Implementation identifies the server software build.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ImplementationInfo"
+              }
+            ]
+          },
+          "protocol": {
+            "description": "Protocol identifies the OpenCaravan wire-format version the\nserver speaks.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ProtocolInfo"
+              }
+            ]
+          },
+          "capabilities": {
+            "description": "Capabilities advertises what this deployment supports.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ServerCapabilities"
+              }
+            ]
+          },
+          "policy": {
+            "description": "Policy is the policy snapshot journeys created on this server\nare pinned to.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ServerPolicySnapshot"
+              }
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "implementation",
+          "protocol",
+          "capabilities",
+          "policy"
+        ]
+      },
+      "ImplementationInfo": {
+        "description": "ImplementationInfo identifies the server software build advertised\nat GET /v1/server.",
+        "type": "object",
+        "properties": {
+          "name": {
+            "description": "Name is the implementation identifier (\"spivot-server\").",
+            "type": "string"
+          },
+          "version": {
+            "description": "Version is the release version injected at build time.",
+            "type": "string"
+          },
+          "commit": {
+            "description": "Commit is the short git commit hash the binary was built from.",
+            "type": "string"
+          },
+          "build_time": {
+            "description": "BuildTime is the UTC build timestamp (RFC 3339).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "version",
+          "commit",
+          "build_time"
+        ]
+      },
+      "ProtocolInfo": {
+        "description": "ProtocolInfo identifies the OpenCaravan wire-format version this\nserver implements.",
+        "type": "object",
+        "properties": {
+          "name": {
+            "description": "Name is the protocol identifier (\"OpenCaravan\").",
+            "type": "string"
+          },
+          "version": {
+            "description": "Version is the OpenCaravan wire-format version. Pre-1.0, a\nbump signals \"expect change\"; 1.0 freezes the wire format.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "version"
+        ]
+      },
+      "ServerCapabilities": {
+        "description": "ServerCapabilities is a convenience projection from ServerPolicyDocument plus\nconcrete implementation state. Keep policy-backed fields derived in\nserverCapabilitiesFromPolicy so the advertised policy remains the source of\ntruth.",
+        "type": "object",
+        "properties": {
+          "registration": {
+            "description": "Registration describes how users join this server.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/RegistrationCapabilities"
+              }
+            ]
+          },
+          "journeys": {
+            "description": "Journeys describes the journey behavior this server supports.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/JourneyCapabilities"
+              }
+            ]
+          },
+          "data": {
+            "description": "Data describes data retention and storage behavior.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DataCapabilities"
+              }
+            ]
+          }
+        },
+        "required": [
+          "registration",
+          "journeys",
+          "data"
+        ]
+      },
+      "RegistrationCapabilities": {
+        "description": "RegistrationCapabilities describes how users join this server.",
+        "type": "object",
+        "properties": {
+          "mode": {
+            "description": "Mode identifies the registration model (\"invite_only\").",
+            "type": "string"
+          },
+          "mint_policy": {
+            "description": "MintPolicy advertises who may mint server_registration invites via\nPOST /v1/client-apps/invites (denied | admin-only | any-user). It\nis a runtime, server-wide capability deliberately kept OUT of the\ncontent-addressed policy document: the document's hash pins\njourney provenance, and a mutable authz toggle must not churn it.\nClients use this to show/hide an \"invite a user\" affordance; under\nadmin-only a non-admin still sees \"admin-only\" and learns \"not me\"\nonly on the 403 (a per-caller can_mint signal is future work).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode",
+          "mint_policy"
+        ]
+      },
+      "JourneyCapabilities": {
+        "description": "JourneyCapabilities describes the journey behavior this server\nsupports.",
+        "type": "object",
+        "properties": {
+          "invite_only": {
+            "description": "InviteOnly reports whether journeys are discoverable only by\ninvitation.",
+            "type": "boolean"
+          },
+          "invite_links": {
+            "description": "InviteLinks reports whether journeys can create shareable\ninvite links.",
+            "type": "boolean"
+          },
+          "invite_use_limits": {
+            "description": "InviteUseLimits reports whether invite use counts are\nsupported.",
+            "type": "boolean"
+          },
+          "deletion_time_per_item": {
+            "description": "DeletionTimePerItem reports whether retained data deletion is\nselected per journey via its deletion time.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "invite_only",
+          "invite_links",
+          "invite_use_limits",
+          "deletion_time_per_item"
+        ]
+      },
+      "DataCapabilities": {
+        "description": "DataCapabilities describes data retention and storage behavior.",
+        "type": "object",
+        "properties": {
+          "sqlite_storage": {
+            "description": "SQLiteStorage reports whether the server persists to SQLite.",
+            "type": "boolean"
+          },
+          "telemetry_storage": {
+            "description": "TelemetryStorage reports whether individual telemetry samples\nare expanded into queryable storage (Phase 5 stores only the\nbatch envelope).",
+            "type": "boolean"
+          },
+          "image_resource_upload": {
+            "description": "ImageResourceUpload reports whether uploaded image resources\nare accepted and served.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "sqlite_storage",
+          "telemetry_storage",
+          "image_resource_upload"
+        ]
+      },
+      "ServerPolicySnapshot": {
+        "description": "ServerPolicySnapshot describes the policy snapshot advertised by this server.",
+        "type": "object",
+        "properties": {
+          "id": {
+            "description": "ID is the server-local policy snapshot identifier.",
+            "type": "string"
+          },
+          "policy_hash": {
+            "description": "Hash is the server-local content hash of the internally normalized policy\ndocument. It is not an RFC 8785 JSON Canonicalization Scheme hash.",
+            "type": "string"
+          },
+          "created_time": {
+            "description": "CreatedTime is the RFC3339 UTC time when the snapshot was first recorded.",
+            "type": "string"
+          },
+          "document": {
+            "description": "Document is the internally normalized JSON policy document."
+          }
+        },
+        "required": [
+          "id",
+          "policy_hash",
+          "created_time",
+          "document"
+        ]
+      },
+      "VersionResponse": {
+        "description": "VersionResponse is the build/runtime detail served at GET\n/v1/version: the same information [buildinfo.RuntimeInfo] reports\non the CLI, as a typed wire contract.",
+        "type": "object",
+        "properties": {
+          "version": {
+            "description": "Version is the release version injected at build time.",
+            "type": "string"
+          },
+          "git_commit": {
+            "description": "GitCommit is the short commit hash the binary was built from.",
+            "type": "string"
+          },
+          "git_branch": {
+            "description": "GitBranch is the branch the binary was built from.",
+            "type": "string"
+          },
+          "build_time": {
+            "description": "BuildTime is the UTC build timestamp (RFC 3339).",
+            "type": "string"
+          },
+          "go_version": {
+            "description": "GoVersion is the Go toolchain that produced the binary.",
+            "type": "string"
+          },
+          "os": {
+            "description": "OS is the runtime operating system (GOOS).",
+            "type": "string"
+          },
+          "arch": {
+            "description": "Arch is the runtime architecture (GOARCH).",
+            "type": "string"
+          },
+          "uptime": {
+            "description": "Uptime is the process uptime as a Go duration string.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "git_commit",
+          "git_branch",
+          "build_time",
+          "go_version",
+          "os",
+          "arch",
+          "uptime"
+        ]
+      },
+      "ClientAppEnrollmentRequest": {
+        "description": "ClientAppEnrollmentRequest is the wire format an app sends to enroll a new\nClientApp and obtain its credentialing ClientAppEnrollment.\n\nThe app presents a one-shot InviteToken (server_registration scope), a\nCSR carrying its locally-generated public key, an optional human-readable\ndisplay name, and an optional KeyAttestation. The server validates the\ninvite, validates the CSR, signs the leaf certificate, and returns a\nClientAppEnrollmentResponse.",
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "invite_token": {
+            "type": "string"
+          },
+          "csr_pem": {
+            "description": "CSRPEM is the PEM-encoded PKCS#10 certificate signing request. The\nprotocol requires PKCS#10 with a P-256 ECDSA public key, but parsing\nand policy enforcement is implementation-level: this Validate only\nchecks that CSRPEM is a CERTIFICATE REQUEST PEM block.",
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "key_attestation": {
+            "description": "KeyAttestation is optional. When present, it proves the CSR's private\nkey resides in platform-managed hardware storage. Servers may make\nattestation required for some scopes.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/KeyAttestation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "type",
+          "version",
+          "invite_token",
+          "csr_pem"
+        ]
+      },
+      "KeyAttestation": {
+        "description": "KeyAttestation carries an opaque platform-specific attestation that the\nclient's signing key resides in hardware-backed storage.\n\nThe protocol declares the slot; it does not verify the data. Servers may\nrequire an attestation of a specific format for high-trust scopes and\ninvoke a format-specific verifier on the Data payload. Apps that lack\nhardware-backed storage omit KeyAttestation entirely.",
+        "type": "object",
+        "properties": {
+          "format": {
+            "type": "string"
+          },
+          "data": {
+            "description": "Data carries a format-specific payload encoded as RFC 4648 standard\nbase64 with padding. Standard base64 (rather than base64url) matches\nthe conventions of the major attestation toolchains on iOS and\nAndroid; WebAuthn callers that produce base64url-encoded attestations\nre-encode at this protocol boundary.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "format",
+          "data"
+        ]
+      },
+      "ClientAppEnrollmentResponse": {
+        "description": "ClientAppEnrollmentResponse is the server's reply to a successful\nClientAppEnrollmentRequest. It carries the freshly-issued enrollment record\nand the server's CA chain so the app can pin the issuer for future\nvalidations.",
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "enrollment": {
+            "description": "Enrollment is the issued certificate record. Enrollment.ID is also the\nnew ClientApp.ID; the app records both records under the same ID.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ClientAppEnrollment"
+              }
+            ]
+          },
+          "server_ca_chain": {
+            "description": "ServerCAChain is the chain of issuer certificates above the leaf in\nEnrollment.CertificateChain, root last. Apps pin the root for offline\npeer-to-peer validation against other enrolled apps on the same server.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "type",
+          "version",
+          "enrollment",
+          "server_ca_chain"
+        ]
+      },
+      "ClientAppEnrollment": {
+        "description": "ClientAppEnrollment is the cryptographic credential record paired with a\nClientApp. Each enrollment has the same ID as the ClientApp it credentials,\nso a ClientApp and a ClientAppEnrollment are two faces of one entity: the\nClientApp describes who/what the installation is, and the\nClientAppEnrollment carries the certificate chain that proves the\ninstallation controls a registered private key.\n\nThe public key is intentionally omitted from this record. It is already\ninside CertificateChain[0] and derivable. Callers that need the public key\noutside an enrollment context use PublicKey directly.",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          },
+          "certificate_chain": {
+            "description": "CertificateChain is the issued certificate chain, leaf first. The leaf\ncertificate's subject identifies the ClientApp and its public key is the\ndevice's signing key.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "issued_time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "not_after": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "user_id",
+          "certificate_chain",
+          "issued_time",
+          "not_after"
+        ]
+      },
+      "SessionRequest": {
+        "description": "SessionRequest is the wire format a client app sends, over an\nmTLS-authenticated transport, to request a session macaroon.\n\nJourneyID is optional; a session without a journey ID grants actions that\ndo not require a journey context (such as creating a journey or reading the\ncaller's own profile). LifetimeSeconds is a hint — the server may issue a\nmacaroon with a shorter lifetime than requested.",
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "journey_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "actions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "lifetime_seconds": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "required": [
+          "type",
+          "version",
+          "actions",
+          "lifetime_seconds"
+        ]
+      },
+      "SessionResponse": {
+        "description": "SessionResponse is the server's reply to a SessionRequest, carrying the\nissued macaroon and its expiration time.\n\nMacaroon carries the binary macaroon serialization defined by the macaroon\nspec (https://research.google/pubs/macaroons-cookies-with-contextual-caveats-for-decentralized-authorization/)\nencoded as unpadded base64url so it travels safely in HTTP headers, JSON\npayloads, and URL query strings without escaping. OpenCaravan defines only\nthe caveat predicate namespace used inside the macaroon (see CaveatKind and\nthe CaveatX builders); the macaroon binary format itself is out of scope\nfor this protocol package.\n\nThe ExpirationTime field duplicates the time<T caveat inside the macaroon\nso clients can show expiry without having to parse the macaroon body.",
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "macaroon": {
+            "type": "string"
+          },
+          "expiration_time": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "type",
+          "version",
+          "macaroon",
+          "expiration_time"
+        ]
+      },
+      "ClientAppInviteCreateRequest": {
+        "description": "ClientAppInviteCreateRequest is the optional POST body. An empty body\n(or no Content-Length) is valid and selects the defaults.",
+        "type": "object",
+        "properties": {
+          "expires_in_seconds": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "ClientAppInviteResponse": {
+        "description": "ClientAppInviteResponse is the wire shape for an issued invite.\n\nToken is populated ONLY on the create response — never on the list\npath, since the plaintext is stored only as a SHA-256 hash and is\nunrecoverable afterward. There is deliberately NO id or token_hash\nfield: token_hash is the secret redemption key and must never leave\nthe server, and exposing no public row handle is also what lets\nrevocation be cleanly deferred (there is nothing to revoke by).",
+        "type": "object",
+        "properties": {
+          "scope": {
+            "type": "string"
+          },
+          "created_by_user_id": {
+            "type": "string"
+          },
+          "token": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "used_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "scope",
+          "created_by_user_id",
+          "created_at",
+          "expires_at"
+        ]
+      },
+      "ClientAppInviteListResponse": {
+        "description": "ClientAppInviteListResponse is the envelope for the list endpoint.",
+        "type": "object",
+        "properties": {
+          "invites": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClientAppInviteResponse"
+            }
+          }
+        },
+        "required": [
+          "invites"
+        ]
+      },
+      "JourneyCreateRequest": {
+        "description": "JourneyCreateRequest is the minimal wire shape Phase 5 accepts\nfor journey creation. Future phases will extend this toward the\nfull [opencaravan.Journey] envelope as policy snapshots,\navatars, and feature flags become first-class.",
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "title"
+        ]
+      },
+      "JourneyResponse": {
+        "description": "JourneyResponse is what the Phase 5 GET and POST handlers\nreturn. A deliberate subset of [opencaravan.Journey]: enough\nfor a client to see the journey identity, state, and timestamps,\nwithout committing the server to fields it does not yet\npopulate meaningfully (origin server URL, deletion policy,\nbanner image, etc.). The shape is a server type — not aliased\nto opencaravan.Journey — so the protocol type can evolve\nindependently.",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "host_user_id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "visibility": {
+            "type": "string"
+          },
+          "creation_time": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "host_user_id",
+          "state",
+          "visibility",
+          "creation_time"
+        ]
+      },
+      "TelemetryBatchRequest": {
+        "description": "TelemetryBatchRequest is the wire shape POST\n/v1/journeys/{id}/telemetry accepts. Phase 5 stores the\nenvelope (client_batch_id + sample_count + payload digest)\nwithout expanding individual samples; future phases will\npromote Samples into per-row position_samples inserts.",
+        "type": "object",
+        "properties": {
+          "client_batch_id": {
+            "type": "string"
+          },
+          "samples": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PositionSample"
+            }
+          },
+          "driver_attestation_hash": {
+            "description": "DriverAttestationHash optionally links this batch to the\n[opencaravan.DriverAttestation] that was in effect when the\nsamples were captured. When set, the server persists it on\nthe telemetry_batches row so a future audit replay can\ndowngrade the chain of custody if the linked attestation\nlater fails verification. The protocol expects the\ncanonical \"sha256:<64 lowercase hex>\" shape, but the\ntelemetry endpoint accepts any non-empty string — strict\nshape enforcement is the audit replay's job.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "client_batch_id",
+          "samples"
+        ]
+      },
+      "PositionSample": {
+        "description": "PositionSample is one captured participant position update.",
+        "type": "object",
+        "properties": {
+          "journey_id": {
+            "type": "string"
+          },
+          "segment_id": {
+            "type": "string"
+          },
+          "segment_vehicle_id": {
+            "type": "string"
+          },
+          "journey_participant_id": {
+            "type": "string"
+          },
+          "client_app_id": {
+            "type": "string"
+          },
+          "client_sequence": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "capture_time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "latitude_e7": {
+            "type": "integer"
+          },
+          "longitude_e7": {
+            "type": "integer"
+          },
+          "altitude_mm": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "horizontal_accuracy_mm": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "vertical_accuracy_mm": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "speed_mm_s": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "heading_deg_e2": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "battery_level_permille": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "source": {
+            "type": "string"
+          },
+          "motion_state": {
+            "type": "string"
+          },
+          "client_metadata_revision": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "journey_id",
+          "segment_id",
+          "segment_vehicle_id",
+          "journey_participant_id",
+          "client_app_id",
+          "client_sequence",
+          "capture_time",
+          "latitude_e7",
+          "longitude_e7"
+        ]
+      },
+      "TelemetryBatchResponse": {
+        "description": "TelemetryBatchResponse is the ack the handler returns. Carries\nthe server-side batch id (so the client can correlate retries\nacross logs) and the count of samples the server acknowledged\nreceiving.",
+        "type": "object",
+        "properties": {
+          "batch_id": {
+            "type": "string"
+          },
+          "received_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "received_time": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "batch_id",
+          "received_count",
+          "received_time"
+        ]
+      },
+      "JourneyVehicleCreateRequest": {
+        "description": "JourneyVehicleCreateRequest is the wire shape for POST\n/v1/journeys/{id}/vehicles. With the OpenCaravan 0.2-draft\ntransition the journey-scoped Vehicle is metadata-only and the\nAuthorizedDrivers / EmergencyRule fields live on a separate\nVehicleACL bundle, so a participant joining a journey must\npublish BOTH signed bundles atomically: the Vehicle (metadata\nv=1) and the InitialACL (authorization v=1). The server stores\nthe canonical bytes of each verbatim and verifies both\nsignatures before accepting the create.",
+        "type": "object",
+        "properties": {
+          "vehicle": {
+            "$ref": "#/components/schemas/Vehicle"
+          },
+          "initial_acl": {
+            "$ref": "#/components/schemas/VehicleACL"
+          }
+        },
+        "required": [
+          "vehicle",
+          "initial_acl"
+        ]
+      },
+      "Vehicle": {
+        "description": "Vehicle is the journey-scoped, owner-signed metadata bundle for\na physical vehicle taking part in a trip: who owns the record,\nwhat the vehicle looks like, what photos to render, and the\nmonotonic revision counter the owner increments whenever any\nof that metadata changes.\n\nVehicle is intentionally opaque to the server. The protocol\nkeeps the vehicle's *descriptive* state — make/model/photos/\nnotes — in this signed bundle so any client that holds the\nbundle has the full picture, while the *authorization* state\n(who may drive in this journey, what the emergency fallback\nis) lives on the separate [VehicleACL] type. That split lets\nclients gossip a metadata change (a new photo, a corrected\nmodel year) independently of an authorization change (adding a\ndriver), which matters in the offline-first model where each\nkind of change has different timing and verification needs.\n\nThe journey-scoped Vehicle is constructed by copying display\nname, photos, make/model, and capacity from a [GarageVehicle]\nthe user has selected from their persistent garage, then\npublishing it fresh for this journey. There is no wire-level\nlink from Vehicle back to its GarageVehicle source.\n\nEach Vehicle value is one revision in a monotonic chain.\nRevisionVersion starts at 1 and is strictly increasing per ID.\nRevisions are signed by the OwnerUserID's enrolled client cert\n(any of the owner's enrolled apps may sign; edit authority is\nuser-scoped, not client-app-scoped). The server retains the\nfull revision history so a recipient can audit how a vehicle's\nmetadata evolved during the journey.",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "owner_user_id": {
+            "description": "OwnerUserID is the user whose enrolled client cert produced\nIntegrity. Permission to publish a new revision is scoped to\nthis user, not to a specific client_app.",
+            "type": "string"
+          },
+          "revision_version": {
+            "description": "RevisionVersion is the monotonic counter for this vehicle's\nmetadata bundle. Starts at 1, strictly increases per ID.\nIndependent of [VehicleACL.ACLVersion] — metadata and\nauthorization version separately.",
+            "type": "integer",
+            "format": "int64"
+          },
+          "revision_time": {
+            "description": "RevisionTime is when the owner signed this revision. Used by\nrecipients to render \"last updated\" and to break ties when\ntwo revisions arrive concurrently.",
+            "type": "string",
+            "format": "date-time"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "make": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "model_year": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "color": {
+            "type": "string"
+          },
+          "capacity": {
+            "description": "Capacity is the total number of possible occupants the\nvehicle can carry, including the driver. A sedan is 5; a\nseven-seat minivan with six seatbelts is 6.",
+            "type": "integer",
+            "format": "int64"
+          },
+          "avatar_blob": {
+            "description": "AvatarBlob references the compact / map-tile photo for this\nvehicle, content-addressed via [BlobRef]. The bytes are\nuploaded to the server's blob layer; multiple Vehicle\nrevisions referencing the same photo deduplicate by hash.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BlobRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "banner_blob": {
+            "description": "BannerBlob references the wide / detail-view photo, same\ncontent-addressed model as AvatarBlob.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BlobRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "notes": {
+            "description": "Notes is owner-authored free text. Surface in client UIs as\n\"owner notes\" or similar.",
+            "type": "string"
+          },
+          "integrity": {
+            "description": "Integrity is the owner's signature over CanonicalEncoding().\nOptional on a draft Vehicle that has not yet been signed;\nrequired on the wire — the server rejects unsigned uploads.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Integrity"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "owner_user_id",
+          "revision_version",
+          "revision_time",
+          "display_name",
+          "capacity"
+        ]
+      },
+      "BlobRef": {
+        "description": "BlobRef is a content-addressed reference to an immutable blob of\nbytes hosted (and replicated) by an OpenCaravan server. The hash\nis both the identifier and the integrity check — clients that\ndownload the bytes can recompute sha256 and reject mismatches\nwithout needing a separate digest field.\n\nBlobRef supersedes the URL-based [ImageResourceRef] for fields\nwhere the bytes themselves are protocol-replicated rather than\nhosted on an external CDN. Used for vehicle avatar/banner photos\ntoday; the same shape extends to journey photo galleries and\nother shared-media use cases without protocol churn.\n\nSize and ContentType are carried alongside the hash so a peer\nreceiving a bundle can render a placeholder (correct aspect\nratio, \"loading 2.3 MB photo…\") before downloading and can\nreject obviously-wrong responses (claimed 5 MB jpeg returns 200\nKB of HTML).",
+        "type": "object",
+        "properties": {
+          "hash": {
+            "description": "Hash is the content hash in the canonical \"sha256:<64-hex>\"\nformat used everywhere else in the protocol.",
+            "type": "string"
+          },
+          "size": {
+            "description": "Size is the byte length of the blob payload. Clients use this\nfor placeholders, range-fetch planning, and quota checks.",
+            "type": "integer",
+            "format": "int64"
+          },
+          "content_type": {
+            "description": "ContentType is the IANA media type the uploader supplied,\ne.g., \"image/jpeg\" or \"image/png\". Lower-cased on the wire.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "hash",
+          "size",
+          "content_type"
+        ]
+      },
+      "Integrity": {
+        "description": "Integrity describes the signature or message authentication data that makes\na protocol object tamper-evident.\n\nSignature covers the canonical encoding of the carrying object excluding the\nIntegrity field itself. Algorithm identifies the signature algorithm so a\nverifier can pick the correct primitive. KeyID identifies the issuer key a\nclient can use to retrieve the verification public key.\n\nThe same envelope is reused on every signed OpenCaravan object — journey\ninvites today, server policy snapshots and future federation introductions\nnext — so implementations can share a single signature-verification helper\nrather than re-implementing per object kind.",
+        "type": "object",
+        "properties": {
+          "algorithm": {
+            "type": "string"
+          },
+          "key_id": {
+            "type": "string"
+          },
+          "signature": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "algorithm",
+          "signature"
+        ]
+      },
+      "VehicleACL": {
+        "description": "VehicleACL is the owner-signed payload published whenever the\nauthorized-drivers list on a Vehicle changes. Each successive VehicleACL\nfor a given vehicle carries a strictly higher ACLVersion, and a server\nor peer verifier retains every published VehicleACL so a DriverAttestation\ncan validate against the ACL version that was current at its EffectiveTime\nrather than whatever ACL exists \"now.\"\n\nDecoupling attestation validity from later ACL revisions is the load-bearing\npiece of the offline-tolerant model: a driver who attested at an earlier\nversion is not retroactively unauthorized by a later revocation, and a\ndriver who was authorized at attestation time stays authorized when their\nattestation finally syncs.",
+        "type": "object",
+        "properties": {
+          "vehicle_id": {
+            "type": "string"
+          },
+          "owner_user_id": {
+            "type": "string"
+          },
+          "acl_version": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "authorized_drivers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "emergency_rule": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VehicleEmergencyRule"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "effective_time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "integrity": {
+            "description": "Integrity is the owner's signature over CanonicalEncoding().",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Integrity"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "vehicle_id",
+          "owner_user_id",
+          "acl_version",
+          "authorized_drivers",
+          "effective_time"
+        ]
+      },
+      "VehicleEmergencyRule": {
+        "description": "VehicleEmergencyRule names the owner-published fallback semantics for when\nno AuthorizedDrivers participant is available to drive at a waypoint.\nThe protocol records the rule so a future server-side or peer verifier can\napply the same policy across implementations.",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "description": "Kind names which fallback policy applies.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "JourneyVehicleResponse": {
+        "description": "JourneyVehicleResponse is the wire shape the journey-vehicle\nhandlers return. Includes the head-pointer projection\n(id/journey/owner/version pointers) AND the latest Vehicle\nmetadata bundle decoded from canonical_payload_json so clients\ndon't need a separate revision fetch to render the display\nname, photos, capacity, etc. The bundle is exposed verbatim —\nno per-field projection — so clients see whatever the protocol\nversion supports.\n\nKept as a server type (not an alias for [opencaravan.Vehicle])\nso the protocol type can evolve independently from the\nserver's public API surface.",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "journey_id": {
+            "type": "string"
+          },
+          "owner_user_id": {
+            "type": "string"
+          },
+          "current_revision_version": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "current_acl_version": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "vehicle": {
+            "$ref": "#/components/schemas/Vehicle"
+          },
+          "received_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "journey_id",
+          "owner_user_id",
+          "current_revision_version",
+          "current_acl_version",
+          "vehicle",
+          "received_at"
+        ]
+      },
+      "JourneyVehicleListResponse": {
+        "description": "JourneyVehicleListResponse is the envelope returned by\n`GET /v1/journeys/{id}/vehicles`. The envelope shape lets future\nphases add pagination metadata or filter cursors without changing\nthe field name \"vehicles\" that clients already index against.",
+        "type": "object",
+        "properties": {
+          "vehicles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/JourneyVehicleResponse"
+            }
+          }
+        },
+        "required": [
+          "vehicles"
+        ]
+      },
+      "JourneyVehicleACLRevisionResponse": {
+        "description": "JourneyVehicleACLRevisionResponse is what the ACL append handler\nreturns: the revision metadata the client needs to confirm the\nversion landed and to render an \"ACL changed at $time\" entry in a\nvehicle history view.",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "journey_vehicle_id": {
+            "type": "string"
+          },
+          "acl_version": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "effective_time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "emergency_rule": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VehicleEmergencyRule"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "integrity": {
+            "$ref": "#/components/schemas/Integrity"
+          },
+          "received_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "journey_vehicle_id",
+          "acl_version",
+          "effective_time",
+          "integrity",
+          "received_at"
+        ]
+      },
+      "JourneyVehicleRevisionResponse": {
+        "description": "JourneyVehicleRevisionResponse is what the metadata revision\nappend handler returns: the revision metadata plus the decoded\nVehicle bundle that's now current. Symmetric with\n[JourneyVehicleACLRevisionResponse] but for the metadata side.",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "journey_vehicle_id": {
+            "type": "string"
+          },
+          "revision_version": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "revision_time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "vehicle": {
+            "$ref": "#/components/schemas/Vehicle"
+          },
+          "received_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "journey_vehicle_id",
+          "revision_version",
+          "revision_time",
+          "vehicle",
+          "received_at"
+        ]
+      },
+      "DriverAttestation": {
+        "description": "DriverAttestation is the per-handoff signed payload a journey participant\nproduces when taking over driving a vehicle at a waypoint. It is the unit\nof offline-tolerant authorization: a participant signs the attestation with\ntheir enrolled client cert, gossips it to other passengers over a peer\ntransport, and any device that later reaches the server uploads the\naccumulated batch.\n\nThe server replays each attestation: it verifies Integrity against the\ndriver's enrolled cert, looks up the [VehicleACL] for ACLVersionConsulted,\nand checks that DriverUserID is in that ACL's AuthorizedDrivers list. An\nattestation against a since-revoked ACL is honored if the ACL was valid\nat the attestation's recorded version; a non-ACL driver is recorded with\na downgraded trust flag when the vehicle's emergency rule permits it,\nrejected as an ACL violation otherwise. The server never deletes the\nrecorded payload — chain of custody is information, not a gate.\n\nPriorAttestationHash optionally chains to the previous attestation the\ndriver knew about (typically gossiped from the prior driver before they\nwent offline). It is sha256:<lowercase hex of the SHA-256 of the prior\nattestation's CanonicalEncoding>. Two attestations sharing the same\nPriorAttestationHash signal a fork that the server flags and surfaces;\nwhen missing or unresolvable, ordering falls back to EffectiveTime.",
+        "type": "object",
+        "properties": {
+          "vehicle_id": {
+            "type": "string"
+          },
+          "segment_id": {
+            "type": "string"
+          },
+          "driver_user_id": {
+            "type": "string"
+          },
+          "effective_time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "acl_version_consulted": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "prior_attestation_hash": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "integrity": {
+            "description": "Integrity is the driver's signature over CanonicalEncoding().",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Integrity"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "vehicle_id",
+          "segment_id",
+          "driver_user_id",
+          "effective_time",
+          "acl_version_consulted"
+        ]
+      },
+      "DriverAttestationResponse": {
+        "description": "DriverAttestationResponse is the wire shape the\ndriver-attestation handlers return. A deliberate subset of\n[opencaravan.DriverAttestation] augmented with the\nserver-computed trust_flag and fork-detection metadata.",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "journey_vehicle_id": {
+            "type": "string"
+          },
+          "segment_id": {
+            "type": "string"
+          },
+          "driver_user_id": {
+            "type": "string"
+          },
+          "effective_time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "acl_version_consulted": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "prior_attestation_hash": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "trust_flag": {
+            "type": "string"
+          },
+          "integrity": {
+            "$ref": "#/components/schemas/Integrity"
+          },
+          "received_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "fork_siblings": {
+            "description": "ForkSiblings names other attestations that share this\nattestation's prior_attestation_hash. Populated only on the\nPOST response so the submitting client can immediately see\nwhen their handoff conflicts with a peer's; the list\nincludes the just-recorded record so a single-element list\nmeans \"you're the only claimant on this predecessor.\"",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DriverAttestationForkSibling"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "journey_vehicle_id",
+          "segment_id",
+          "driver_user_id",
+          "effective_time",
+          "acl_version_consulted",
+          "trust_flag",
+          "integrity",
+          "received_at"
+        ]
+      },
+      "DriverAttestationForkSibling": {
+        "description": "DriverAttestationForkSibling is a compact descriptor of a fork\nsibling: enough to identify who else claimed the same\npredecessor and when, without exposing the full payload.",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "driver_user_id": {
+            "type": "string"
+          },
+          "effective_time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "trust_flag": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "driver_user_id",
+          "effective_time",
+          "trust_flag"
+        ]
+      },
+      "DriverAttestationListResponse": {
+        "description": "DriverAttestationListResponse is the envelope returned by the\nGET handler. Envelope shape so future phases can add pagination\nor filter metadata without breaking clients indexing on\n\"attestations\".",
+        "type": "object",
+        "properties": {
+          "attestations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DriverAttestationResponse"
+            }
+          }
+        },
+        "required": [
+          "attestations"
+        ]
+      },
+      "CurrentDriverResponse": {
+        "description": "CurrentDriverResponse is what the current-driver endpoint\nreturns. Carries the attestation the server picked as \"in\neffect at the queried time\" plus any fork siblings that share\nthe picked attestation's prior_attestation_hash — so clients\ncan render \"right now you're being attributed to driver X, but\nalso driver Y has a competing claim on the same predecessor.\"\n\nAsOf echoes the resolved query timestamp so the response is\nauditable when the caller didn't supply one (server used\ntime.Now()).",
+        "type": "object",
+        "properties": {
+          "as_of": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "attestation": {
+            "$ref": "#/components/schemas/DriverAttestationResponse"
+          },
+          "fork_siblings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DriverAttestationForkSibling"
+            }
+          }
+        },
+        "required": [
+          "as_of",
+          "attestation"
+        ]
+      },
+      "Garage": {
+        "description": "Garage is the account-scoped, persistent, multi-owner container that holds\na user's library of [GarageVehicle] entries. A user with a single account\nusually has a single garage; users in a household share a single garage by\nhaving multiple Owners. A user may participate in multiple garages — one\nhousehold garage shared with their spouse, one project-car garage shared\nwith weekend track buddies, and so on.\n\nEach Garage value is one revision in a monotonic chain. Revisions are\nsigned by any current Owner, so any owner may add or remove other owners,\nrename the garage, or otherwise edit the container. The server retains the\nfull revision history; the current state is the latest revision whose\ninvited Owners have all accepted (pending acceptances are visible to the\ninvitee but the revision is not yet active).\n\nOwnership additions require recipient consent via [GarageOwnershipAcceptance]\n— a co-owner cannot be added unilaterally, which prevents an attacker\nfrom spamming unwanted entries into another user's garage. Ownership\nremovals are unilateral: any current owner may remove any other owner.\nThis matches the household trust model; the protocol's answer to a lost\nor compromised account is \"an existing co-owner removes it from the\ngarage\" rather than \"no one can ever remove this account.\"",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "revision_version": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "revision_time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "owners": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GarageOwner"
+            }
+          },
+          "signed_by": {
+            "type": "string"
+          },
+          "integrity": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Integrity"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "revision_version",
+          "revision_time",
+          "owners",
+          "signed_by"
+        ]
+      },
+      "GarageOwner": {
+        "description": "GarageOwner names one user's ownership stake in a Garage. AcceptedTime is\nnil while the invitation is pending; non-nil once the recipient has\npublished a matching [GarageOwnershipAcceptance].\n\nA garage revision in which a new owner is added with AcceptedTime nil\nrepresents a pending invitation: the recipient sees it in their app and\nmay accept or decline; non-recipients do not see the garage at all.\nOnce the recipient accepts, a subsequent revision updates AcceptedTime\n(or the server materializes the accepted state without a new revision —\nsee docs/vehicles.md for the wire-level options).",
+        "type": "object",
+        "properties": {
+          "user_id": {
+            "type": "string"
+          },
+          "added_time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "accepted_time": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "user_id",
+          "added_time"
+        ]
+      },
+      "GarageResponse": {
+        "description": "GarageResponse is the wire shape the garage handlers return.\nOwners is the materialized current owner list (accepted +\npending); clients render pending invitations with reduced\naffordance until acceptance.",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "current_revision_version": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "current_revision_time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "owners": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GarageOwnerResponse"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "current_revision_version",
+          "current_revision_time",
+          "created_at",
+          "owners"
+        ]
+      },
+      "GarageOwnerResponse": {
+        "description": "GarageOwnerResponse is the wire shape of one materialized\nowner row. AcceptedTime is nil while the invitation is pending.",
+        "type": "object",
+        "properties": {
+          "user_id": {
+            "type": "string"
+          },
+          "added_time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "accepted_time": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "user_id",
+          "added_time"
+        ]
+      },
+      "GarageListResponse": {
+        "description": "GarageListResponse is the envelope for GET /v1/garages.",
+        "type": "object",
+        "properties": {
+          "garages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GarageResponse"
+            }
+          }
+        },
+        "required": [
+          "garages"
+        ]
+      },
+      "GarageRevisionAppendResponse": {
+        "description": "GarageRevisionAppendResponse is what the revision POST returns —\nthe revision metadata plus the new garage head state so the\nclient doesn't need to follow up with a GET.",
+        "type": "object",
+        "properties": {
+          "revision_id": {
+            "type": "string"
+          },
+          "garage_id": {
+            "type": "string"
+          },
+          "revision_version": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "revision_time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "integrity": {
+            "$ref": "#/components/schemas/Integrity"
+          },
+          "received_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "garage": {
+            "$ref": "#/components/schemas/GarageResponse"
+          }
+        },
+        "required": [
+          "revision_id",
+          "garage_id",
+          "revision_version",
+          "revision_time",
+          "integrity",
+          "received_at",
+          "garage"
+        ]
+      },
+      "GarageOwnershipAcceptance": {
+        "description": "GarageOwnershipAcceptance is the signed acknowledgement a newly-invited\nuser publishes to accept a pending garage co-ownership invitation. The\nacceptance binds to a specific Garage revision (the revision in which\nthe recipient was first added with AcceptedTime nil); replaying it\nagainst a different revision is rejected on a version mismatch.",
+        "type": "object",
+        "properties": {
+          "garage_id": {
+            "type": "string"
+          },
+          "revision_version_accepted": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "accepter_user_id": {
+            "type": "string"
+          },
+          "accepted_time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "integrity": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Integrity"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "garage_id",
+          "revision_version_accepted",
+          "accepter_user_id",
+          "accepted_time"
+        ]
+      },
+      "GarageOwnershipAcceptanceResponse": {
+        "description": "GarageOwnershipAcceptanceResponse is what the acceptance POST\nreturns — the recorded acceptance metadata plus the updated\ngarage state.",
+        "type": "object",
+        "properties": {
+          "acceptance_id": {
+            "type": "string"
+          },
+          "garage_id": {
+            "type": "string"
+          },
+          "revision_version_accepted": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "accepted_time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "integrity": {
+            "$ref": "#/components/schemas/Integrity"
+          },
+          "received_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "garage": {
+            "$ref": "#/components/schemas/GarageResponse"
+          }
+        },
+        "required": [
+          "acceptance_id",
+          "garage_id",
+          "revision_version_accepted",
+          "accepted_time",
+          "integrity",
+          "received_at",
+          "garage"
+        ]
+      },
+      "GarageVehicle": {
+        "description": "GarageVehicle is one vehicle entry in a [Garage]'s library. Persistent\nacross journeys (unlike the journey-scoped [Vehicle]), and editable by\nany current accepted owner of its containing garage.\n\nGarageVehicle carries the vehicle's identity — what it is, what it looks\nlike, who knows what about it — at the household level. The per-journey\nauthorization model (who may drive it in a particular trip) lives on the\njourney-scoped [Vehicle] that participants upload when joining a journey.\nA client's \"import this car into the journey\" action copies relevant\nmetadata from a GarageVehicle into a fresh Vehicle at upload time; there\nis no wire-level link between the two on a journey participant's view, so\nnon-owner participants cannot correlate the same garage car appearing in\nmultiple journeys. Cross-journey history aggregation for an owner's own\nview is downstream of this PR.\n\nEach GarageVehicle value is one revision in a monotonic chain. Revisions\nare signed by any current accepted owner of the containing garage; any\nowner may edit any vehicle in the garage. The server retains the full\nrevision history.",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "garage_id": {
+            "type": "string"
+          },
+          "revision_version": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "revision_time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "make": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "model_year": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "color": {
+            "type": "string"
+          },
+          "capacity": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "avatar_blob": {
+            "description": "AvatarBlob references the compact / map-tile photo via\nthe protocol's content-addressed blob layer. See [BlobRef].",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BlobRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "banner_blob": {
+            "description": "BannerBlob references the wide / detail-view photo via the\ncontent-addressed blob layer.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BlobRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "notes": {
+            "type": "string"
+          },
+          "signed_by": {
+            "description": "SignedBy names which current garage owner produced Integrity. The\nserver cross-checks against the named garage's owner list at\nRevisionTime to confirm the signer was an accepted owner then.",
+            "type": "string"
+          },
+          "integrity": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Integrity"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "garage_id",
+          "revision_version",
+          "revision_time",
+          "display_name",
+          "capacity",
+          "signed_by"
+        ]
+      },
+      "GarageVehicleResponse": {
+        "description": "GarageVehicleResponse is the wire shape the garage vehicle\nhandlers return. Includes the head-pointer projection plus the\nlatest GarageVehicle bundle decoded from canonical_payload_json\nso clients see whatever fields the protocol version supports\nwithout per-attribute projection on the server side.",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "garage_id": {
+            "type": "string"
+          },
+          "current_revision_version": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "garage_vehicle": {
+            "$ref": "#/components/schemas/GarageVehicle"
+          },
+          "received_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "garage_id",
+          "current_revision_version",
+          "garage_vehicle",
+          "received_at"
+        ]
+      },
+      "GarageVehicleListResponse": {
+        "description": "GarageVehicleListResponse is the envelope for GET\n/v1/garages/{id}/vehicles. Envelope shape so future phases can\nadd filter metadata.",
+        "type": "object",
+        "properties": {
+          "vehicles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GarageVehicleResponse"
+            }
+          }
+        },
+        "required": [
+          "vehicles"
+        ]
+      },
+      "GarageInviteCreateRequest": {
+        "description": "GarageInviteCreateRequest is the POST body for issuing an invite.\nAll fields are optional and have sensible defaults.",
+        "type": "object",
+        "properties": {
+          "expires_in_seconds": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "max_redemptions": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "GarageInviteResponse": {
+        "description": "GarageInviteResponse is the wire shape for a garage invite.\nToken is populated ONLY on the create response — never on list\nor any subsequent read, since the plaintext is stored only as a\nSHA-256 hash.",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "garage_id": {
+            "type": "string"
+          },
+          "created_by_user_id": {
+            "type": "string"
+          },
+          "token": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "max_redemptions": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "redemption_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "revoked_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "garage_id",
+          "created_by_user_id",
+          "created_at",
+          "expires_at",
+          "max_redemptions",
+          "redemption_count"
+        ]
+      },
+      "GarageInviteListResponse": {
+        "description": "GarageInviteListResponse is the envelope for the list endpoint.",
+        "type": "object",
+        "properties": {
+          "invites": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GarageInviteResponse"
+            }
+          }
+        },
+        "required": [
+          "invites"
+        ]
+      },
+      "GarageInviteRedeemRequest": {
+        "description": "GarageInviteRedeemRequest is the POST body for the redeem\nendpoint. Token is in the body (not the URL path) so it doesn't\nleak into access logs, proxy logs, or browser history.",
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "token"
+        ]
+      },
+      "GarageInviteRedeemResponse": {
+        "description": "GarageInviteRedeemResponse is what the redeem handler returns:\nthe redemption metadata plus the updated garage state so the\nclient can render \"you're in\" without a follow-up GET.",
+        "type": "object",
+        "properties": {
+          "redemption_id": {
+            "type": "string"
+          },
+          "garage_invite_id": {
+            "type": "string"
+          },
+          "redeemed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "garage": {
+            "$ref": "#/components/schemas/GarageResponse"
+          }
+        },
+        "required": [
+          "redemption_id",
+          "garage_invite_id",
+          "redeemed_at",
+          "garage"
+        ]
+      }
+    }
+  }
+}
