@@ -1,0 +1,23 @@
+# golangci-lint v2 configuration.
+#
+# Introduced with issue #43 phase 2 to give the AGENTS.md GoDoc
+# convention teeth: exported symbols carry the reader-facing contract,
+# so an undocumented one fails lint module-wide — the same rule the
+# OpenAPI generator applies to contract fields (warn today, error at
+# the capstone).
+version: "2"
+
+linters:
+  # Keep the standard set (errcheck, govet, ineffassign, staticcheck,
+  # unused) and add revive for the documentation rules.
+  default: standard
+  enable:
+    - revive
+  settings:
+    revive:
+      rules:
+        # exported: every exported symbol needs a doc comment that
+        # starts with the symbol's name.
+        - name: exported
+        # package-comments: every package needs a package comment.
+        - name: package-comments

@@ -62,7 +62,9 @@ Actions to catch what could have been caught locally.
 - **Documentation**: see the [Documentation](#documentation) section
   below. The short version: GoDoc is a product surface, not commentary,
   and the bar differs for exported (full contract) vs unexported
-  (rationale where it earns its place).
+  (rationale where it earns its place). `.golangci.yml` enforces the
+  exported half: an undocumented exported symbol fails `just lint`
+  (revive `exported` + `package-comments`).
 - **Provider pattern**: new integrations should sit behind a small
   interface owned by the consuming package, especially when external
   services or vendor APIs are involved.
@@ -111,6 +113,14 @@ source — never hand-edit `internal/server/api/spec/openapi.{json,yaml}`.
 - After touching routes or contract structs, run `just generate` and
   commit the regenerated artifacts. `just ci` fails when the committed
   artifacts are stale (`generate-check`).
+- Undocumented contract fields are a lint-level warning today: the
+  generator prints a count, and `-missing-docs=error` lists every
+  offender (the issue #43 backfill worklist). The capstone flips CI
+  to error once the backfill lands, so document fields as you touch
+  them.
+- Route coverage is pinned by tests: every table route must resolve
+  to its own mux pattern, spec paths must equal table paths, and
+  session routes must vanish when the macaroon stack is not wired.
 - The server serves the committed artifacts in-process:
   `/openapi.json`, `/openapi.yaml`, and the Scalar explorer at
   `/docs/` (vendored, offline-capable — see `internal/server/docs`).

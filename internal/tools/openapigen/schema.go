@@ -26,6 +26,11 @@ type schemaBuilder struct {
 	schemas *omap                   // components/schemas, first-encounter order
 	names   map[reflect.Type]string // assigned component names
 	byName  map[string]reflect.Type // collision detection
+	// undocumented accumulates "pkg.Type.Field" for every emitted
+	// property whose Go field has no doc comment — the worklist for
+	// the issue #43 missing-doc rule, reported by main at the
+	// -missing-docs policy level.
+	undocumented []string
 }
 
 func newSchemaBuilder(docs *docIndex) *schemaBuilder {
@@ -199,7 +204,11 @@ func (b *schemaBuilder) collectStructFields(t reflect.Type, properties *omap, re
 		if err != nil {
 			return fmt.Errorf("field %s: %w", field.Name, err)
 		}
-		if doc := b.docs.fieldDoc(t.PkgPath(), t.Name(), field.Name); doc != "" {
+		doc := b.docs.fieldDoc(t.PkgPath(), t.Name(), field.Name)
+		if doc == "" && t.Name() != "" {
+			b.undocumented = append(b.undocumented, t.String()+"."+field.Name)
+		}
+		if doc != "" {
 			// A $ref must not carry siblings in every renderer;
 			// wrap documented refs so the description survives.
 			if _, isRef := fieldSchema.get("$ref"); isRef {

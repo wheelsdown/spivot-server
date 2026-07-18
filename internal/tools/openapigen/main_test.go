@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"github.com/wheelsdown/spivot-server/internal/server/api"
 	"reflect"
 	"strings"
 	"testing"
@@ -149,7 +150,7 @@ func TestYAMLFromJSONPreservesOrder(t *testing.T) {
 // table or an unsupported contract type can never reach the commit
 // stage with stale artifacts.
 func TestGenerateEndToEnd(t *testing.T) {
-	jsonBytes, yamlBytes, err := generate()
+	res, err := generate()
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
@@ -160,7 +161,7 @@ func TestGenerateEndToEnd(t *testing.T) {
 			Schemas map[string]any `json:"schemas"`
 		} `json:"components"`
 	}
-	if err := json.Unmarshal(jsonBytes, &doc); err != nil {
+	if err := json.Unmarshal(res.JSON, &doc); err != nil {
 		t.Fatalf("generated JSON does not parse: %v", err)
 	}
 	if doc.OpenAPI != "3.1.0" {
@@ -169,7 +170,51 @@ func TestGenerateEndToEnd(t *testing.T) {
 	if len(doc.Paths) == 0 || len(doc.Components.Schemas) == 0 {
 		t.Errorf("empty paths (%d) or schemas (%d)", len(doc.Paths), len(doc.Components.Schemas))
 	}
-	if !strings.HasPrefix(string(yamlBytes), "# Code generated") {
+	if !strings.HasPrefix(string(res.YAML), "# Code generated") {
 		t.Error("yaml missing generated-code header")
+	}
+}
+
+// TestSpecPathsMatchRouteTable pins the spec ↔ table seam of the
+// issue #43 route-coverage assertion: the generated document's paths
+// must be exactly the route table's paths — nothing dropped, nothing
+// invented, and the contract meta-surface (/openapi.json, /docs/)
+// deliberately absent.
+func TestSpecPathsMatchRouteTable(t *testing.T) {
+	res, err := generate()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	var doc struct {
+		Paths map[string]map[string]any `json:"paths"`
+	}
+	if err := json.Unmarshal(res.JSON, &doc); err != nil {
+		t.Fatalf("generated JSON does not parse: %v", err)
+	}
+
+	wantOps := map[string]bool{}
+	for _, rt := range api.Routes() {
+		wantOps[strings.ToLower(rt.Method)+" "+rt.Path] = true
+	}
+	gotOps := map[string]bool{}
+	for path, item := range doc.Paths {
+		for method := range item {
+			gotOps[method+" "+path] = true
+		}
+	}
+	for op := range wantOps {
+		if !gotOps[op] {
+			t.Errorf("table operation %q missing from spec paths", op)
+		}
+	}
+	for op := range gotOps {
+		if !wantOps[op] {
+			t.Errorf("spec operation %q has no route-table entry", op)
+		}
+	}
+	for _, meta := range []string{"/openapi.json", "/openapi.yaml", "/docs/"} {
+		if _, ok := doc.Paths[meta]; ok {
+			t.Errorf("meta-surface path %q leaked into the spec", meta)
+		}
 	}
 }
