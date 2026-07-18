@@ -216,7 +216,7 @@ func ValidateRoutes(routes []Route) error {
 		}
 
 		if rt.Response == nil && (len(rt.ResponseStatuses) != 1 || rt.ResponseStatuses[0] != http.StatusNoContent) {
-			return fmt.Errorf("route %s: nil Response requires exactly one 204 success status", id)
+			return fmt.Errorf("route %s: nil Response requires ResponseStatuses of exactly [204]", id)
 		}
 	}
 	return nil

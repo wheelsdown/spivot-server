@@ -218,7 +218,10 @@ func TestSpecPathsMatchRouteTable(t *testing.T) {
 	// default response.
 	for path, item := range doc.Paths {
 		for method, op := range item {
-			raw, _ := json.Marshal(op)
+			raw, err := json.Marshal(op)
+			if err != nil {
+				t.Fatalf("re-marshal operation %s %s: %v", method, path, err)
+			}
 			var parsed struct {
 				Responses map[string]struct {
 					Content map[string]any `json:"content"`
