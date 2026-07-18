@@ -30,15 +30,15 @@ func TestValidateRoutesRejectsMalformedEntries(t *testing.T) {
 	// exactly one way.
 	valid := func() Route {
 		return Route{
-			Method:          http.MethodGet,
-			Path:            "/v1/widgets/{id}",
-			OperationID:     "widgetGet",
-			Summary:         "Fetch a widget",
-			Tags:            []string{tagSystem},
-			Auth:            AuthIdentity,
-			Response:        RootResponse{},
-			SuccessStatuses: []int{http.StatusOK},
-			handler:         bindHandler((*Server).handleRoot),
+			Method:           http.MethodGet,
+			Path:             "/v1/widgets/{id}",
+			OperationID:      "widgetGet",
+			Summary:          "Fetch a widget",
+			Tags:             []string{tagSystem},
+			Auth:             AuthIdentity,
+			Response:         RootResponse{},
+			ResponseStatuses: []int{http.StatusOK},
+			handler:          bindHandler((*Server).handleRoot),
 		}
 	}
 
@@ -53,7 +53,7 @@ func TestValidateRoutesRejectsMalformedEntries(t *testing.T) {
 		{"missing summary", func(r *Route) { r.Summary = "" }, "missing Summary"},
 		{"missing tags", func(r *Route) { r.Tags = nil }, "missing Tags"},
 		{"unknown tag", func(r *Route) { r.Tags = []string{"Widgets"} }, "no RouteTags entry"},
-		{"missing statuses", func(r *Route) { r.SuccessStatuses = nil }, "missing SuccessStatuses"},
+		{"missing statuses", func(r *Route) { r.ResponseStatuses = nil }, "missing ResponseStatuses"},
 		{"missing handler", func(r *Route) { r.handler = nil }, "missing handler binding"},
 		{"unknown posture", func(r *Route) { r.Auth = AuthPosture("token") }, "unknown auth posture"},
 		{"session metadata on identity route", func(r *Route) { r.JourneyPathParam = "id" }, "session metadata"},

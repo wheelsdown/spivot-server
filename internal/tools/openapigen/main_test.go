@@ -213,6 +213,30 @@ func TestSpecPathsMatchRouteTable(t *testing.T) {
 			t.Errorf("spec operation %q has no route-table entry", op)
 		}
 	}
+
+	// Every operation must carry the shared problem-envelope
+	// default response.
+	for path, item := range doc.Paths {
+		for method, op := range item {
+			raw, _ := json.Marshal(op)
+			var parsed struct {
+				Responses map[string]struct {
+					Content map[string]any `json:"content"`
+				} `json:"responses"`
+			}
+			if err := json.Unmarshal(raw, &parsed); err != nil {
+				t.Fatalf("parse operation %s %s: %v", method, path, err)
+			}
+			def, ok := parsed.Responses["default"]
+			if !ok {
+				t.Errorf("operation %s %s missing default problem response", method, path)
+				continue
+			}
+			if _, ok := def.Content["application/problem+json"]; !ok {
+				t.Errorf("operation %s %s default response is not application/problem+json", method, path)
+			}
+		}
+	}
 	for _, meta := range []string{"/openapi.json", "/openapi.yaml", "/docs/"} {
 		if _, ok := doc.Paths[meta]; ok {
 			t.Errorf("meta-surface path %q leaked into the spec", meta)
