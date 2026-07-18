@@ -9,16 +9,25 @@ import (
 	"time"
 )
 
+// Server is the lifecycle contract the app runs: start serving until
+// the context ends, then shut down gracefully. Satisfied by
+// [api.Server]; defined here so the lifecycle wiring does not depend
+// on the HTTP package.
 type Server interface {
+	// Start begins serving and blocks until the server stops.
 	Start(context.Context) error
+	// Shutdown gracefully stops the server, honoring the context
+	// deadline.
 	Shutdown(context.Context) error
 }
 
+// App runs a [Server] through a signal-aware serve/shutdown cycle.
 type App struct {
 	server Server
 	logger *slog.Logger
 }
 
+// New creates an App around the supplied server and logger.
 func New(server Server, logger *slog.Logger) *App {
 	return &App{
 		server: server,
@@ -26,6 +35,9 @@ func New(server Server, logger *slog.Logger) *App {
 	}
 }
 
+// Serve runs the server until ctx is canceled, then performs a
+// graceful shutdown bounded at 30 seconds. It returns nil on a clean
+// stop and the server's error otherwise.
 func (a *App) Serve(ctx context.Context) error {
 	go func() {
 		<-ctx.Done()

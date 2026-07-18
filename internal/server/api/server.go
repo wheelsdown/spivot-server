@@ -418,6 +418,20 @@ func NewServer(cfg Config, logger *slog.Logger) *Server {
 //     dimension surfaces on the access log line.
 //  5. The route mux, registered from the table.
 func (s *Server) Handler() http.Handler {
+	h := s.withLogging(s.buildMux())
+	if s.cfg.MacaroonVerifier != nil {
+		h = middleware.AttachSession(s.cfg.MacaroonVerifier, s.logger)(h)
+	}
+	if s.cfg.IdentityStore != nil {
+		h = middleware.AttachIdentity(s.cfg.IdentityStore, s.cfg.Proxy, s.logger)(h)
+	}
+	return s.withRequestInfo(h)
+}
+
+// buildMux constructs the route mux from the table. Extracted from
+// [Server.Handler] so the route-coverage test can interrogate pattern
+// matching via [http.ServeMux.Handler] without executing handlers.
+func (s *Server) buildMux() *http.ServeMux {
 	routes := Routes()
 	// Fail closed: a table that fails validation (unknown posture,
 	// incoherent session metadata, colliding registrations) must
@@ -453,15 +467,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /openapi.yaml", s.handleOpenAPIYAML)
 	mux.Handle("GET /docs/{$}", docs.PageHandler("/openapi.json"))
 	mux.Handle("GET /docs/"+docs.ScalarAssetName, docs.ScalarAssetHandler())
-
-	h := s.withLogging(mux)
-	if s.cfg.MacaroonVerifier != nil {
-		h = middleware.AttachSession(s.cfg.MacaroonVerifier, s.logger)(h)
-	}
-	if s.cfg.IdentityStore != nil {
-		h = middleware.AttachIdentity(s.cfg.IdentityStore, s.cfg.Proxy, s.logger)(h)
-	}
-	return s.withRequestInfo(h)
+	return mux
 }
 
 // Start begins serving HTTP requests until the server shuts down.
