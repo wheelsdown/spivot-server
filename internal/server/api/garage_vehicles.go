@@ -20,17 +20,28 @@ import (
 // so clients see whatever fields the protocol version supports
 // without per-attribute projection on the server side.
 type GarageVehicleResponse struct {
-	ID                     string                    `json:"id"`
-	GarageID               string                    `json:"garage_id"`
-	CurrentRevisionVersion int                       `json:"current_revision_version"`
-	GarageVehicle          opencaravan.GarageVehicle `json:"garage_vehicle"`
-	ReceivedAt             time.Time                 `json:"received_at"`
+	// ID is the vehicle's identifier as claimed by the signed
+	// bundle, scoped to the garage.
+	ID string `json:"id" openapi:"format=uuid,readOnly"`
+	// GarageID is the garage whose library holds the vehicle.
+	GarageID string `json:"garage_id" openapi:"format=uuid,readOnly"`
+	// CurrentRevisionVersion is the head pointer of the vehicle's
+	// revision chain (monotonically increasing).
+	CurrentRevisionVersion int `json:"current_revision_version" openapi:"readOnly"`
+	// GarageVehicle is the latest signed bundle, decoded from the
+	// stored canonical bytes verbatim.
+	GarageVehicle opencaravan.GarageVehicle `json:"garage_vehicle" openapi:"readOnly"`
+	// ReceivedAt is when the server accepted the vehicle's
+	// original create.
+	ReceivedAt time.Time `json:"received_at" openapi:"readOnly"`
 }
 
 // GarageVehicleListResponse is the envelope for GET
 // /v1/garages/{id}/vehicles. Envelope shape so future phases can
 // add filter metadata.
 type GarageVehicleListResponse struct {
+	// Vehicles is every vehicle in the garage's library, oldest
+	// first.
 	Vehicles []GarageVehicleResponse `json:"vehicles"`
 }
 

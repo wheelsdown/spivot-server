@@ -26,8 +26,13 @@ const maxGarageInviteLifetime = 30 * 24 * time.Hour
 // GarageInviteCreateRequest is the POST body for issuing an invite.
 // All fields are optional and have sensible defaults.
 type GarageInviteCreateRequest struct {
-	ExpiresInSeconds int `json:"expires_in_seconds,omitempty"`
-	MaxRedemptions   int `json:"max_redemptions,omitempty"`
+	// ExpiresInSeconds is the requested invite lifetime. Zero or
+	// omitted selects the 7-day default; values above the 30-day
+	// cap (2592000) are rejected with a 400.
+	ExpiresInSeconds int `json:"expires_in_seconds,omitempty" openapi:"example=604800"`
+	// MaxRedemptions is how many distinct redemptions the token
+	// permits. Zero or omitted selects single-use.
+	MaxRedemptions int `json:"max_redemptions,omitempty" openapi:"example=1"`
 }
 
 // GarageInviteResponse is the wire shape for a garage invite.
@@ -35,19 +40,41 @@ type GarageInviteCreateRequest struct {
 // or any subsequent read, since the plaintext is stored only as a
 // SHA-256 hash.
 type GarageInviteResponse struct {
-	ID              string     `json:"id"`
-	GarageID        string     `json:"garage_id"`
-	CreatedByUserID string     `json:"created_by_user_id"`
-	Token           string     `json:"token,omitempty"`
-	CreatedAt       time.Time  `json:"created_at"`
-	ExpiresAt       time.Time  `json:"expires_at"`
-	MaxRedemptions  int        `json:"max_redemptions"`
-	RedemptionCount int        `json:"redemption_count"`
-	RevokedAt       *time.Time `json:"revoked_at,omitempty"`
+	// ID is the invite's server-assigned identifier — the handle
+	// the revoke endpoint takes.
+	ID string `json:"id" openapi:"format=uuid,readOnly"`
+	// GarageID is the garage the invite grants ownership of.
+	GarageID string `json:"garage_id" openapi:"format=uuid,readOnly"`
+	// CreatedByUserID is the accepted owner who minted the invite.
+	CreatedByUserID string `json:"created_by_user_id" openapi:"format=uuid,readOnly"`
+	// Token is the plaintext invite token the invitee presents to
+	// POST /v1/garage-invites/redeem. Present only on the create
+	// response: the server stores a SHA-256 hash, so the plaintext
+	// is unrecoverable afterward and never appears on the list
+	// path.
+	Token string `json:"token,omitempty" openapi:"readOnly"`
+	// CreatedAt is when the invite was minted.
+	CreatedAt time.Time `json:"created_at" openapi:"readOnly"`
+	// ExpiresAt is when the invite stops being redeemable.
+	ExpiresAt time.Time `json:"expires_at" openapi:"readOnly"`
+	// MaxRedemptions is how many distinct redemptions the token
+	// permits.
+	MaxRedemptions int `json:"max_redemptions" openapi:"readOnly"`
+	// RedemptionCount is how many redemptions have been recorded
+	// so far. The invite is exhausted when it reaches
+	// max_redemptions.
+	RedemptionCount int `json:"redemption_count" openapi:"readOnly"`
+	// RevokedAt is when an owner revoked the invite. Omitted while
+	// the invite is not revoked; a revoked invite can no longer be
+	// redeemed regardless of expiry or remaining redemptions.
+	RevokedAt *time.Time `json:"revoked_at,omitempty" openapi:"readOnly"`
 }
 
 // GarageInviteListResponse is the envelope for the list endpoint.
 type GarageInviteListResponse struct {
+	// Invites is every invite ever issued for the garage,
+	// including expired, revoked, and exhausted rows. Token is
+	// never present here.
 	Invites []GarageInviteResponse `json:"invites"`
 }
 
@@ -55,10 +82,16 @@ type GarageInviteListResponse struct {
 // the redemption metadata plus the updated garage state so the
 // client can render "you're in" without a follow-up GET.
 type GarageInviteRedeemResponse struct {
-	RedemptionID   string         `json:"redemption_id"`
-	GarageInviteID string         `json:"garage_invite_id"`
-	RedeemedAt     time.Time      `json:"redeemed_at"`
-	Garage         GarageResponse `json:"garage"`
+	// RedemptionID is the server-assigned identifier of the
+	// recorded redemption.
+	RedemptionID string `json:"redemption_id" openapi:"format=uuid,readOnly"`
+	// GarageInviteID is the invite the token resolved to.
+	GarageInviteID string `json:"garage_invite_id" openapi:"format=uuid,readOnly"`
+	// RedeemedAt is when the server recorded the redemption.
+	RedeemedAt time.Time `json:"redeemed_at" openapi:"readOnly"`
+	// Garage is the garage's head state with the redeemer now an
+	// accepted owner — no follow-up GET needed.
+	Garage GarageResponse `json:"garage"`
 }
 
 // handleGarageInviteCreate implements POST /v1/garages/{id}/invites.
@@ -211,6 +244,9 @@ func (s *Server) handleGarageInviteRevoke(w http.ResponseWriter, r *http.Request
 // endpoint. Token is in the body (not the URL path) so it doesn't
 // leak into access logs, proxy logs, or browser history.
 type GarageInviteRedeemRequest struct {
+	// Token is the plaintext invite token as handed to the invitee
+	// by an owner. It is the entire proof of authority — any
+	// authenticated user holding it becomes an accepted owner.
 	Token string `json:"token"`
 }
 
