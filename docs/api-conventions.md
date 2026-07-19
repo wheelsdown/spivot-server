@@ -80,7 +80,7 @@ a new verb.
 
 ## The rename table
 
-Wire-level json field names do not change in this pass; these are
+Wire-level JSON field names do not change in this pass; these are
 schema (component), operationId, and path changes only. Contract
 version goes to `0.2.0`.
 
