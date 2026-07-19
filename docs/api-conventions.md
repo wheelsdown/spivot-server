@@ -78,11 +78,21 @@ a new verb.
   *is* its metadata); the authorization chain is the qualified
   `/acl-revisions`.
 
+## Compatibility posture
+
+**Backwards compatibility is explicitly a non-goal.** There are no
+legacy implementations to protect; the objective is an API surface
+that is correct and extensible, decided once. Schema names,
+operationIds, paths, and wire-level JSON field names all change
+wherever the better name exists — no aliases, no deprecation
+shims, no migration paths. Contract version goes to `0.2.0`; the
+compatibility ratchet starts at the 1.0 freeze, not before.
+
 ## The rename table
 
-Wire-level JSON field names do not change in this pass; these are
-schema (component), operationId, and path changes only. Contract
-version goes to `0.2.0`.
+The table lists schema (component), operationId, and path changes.
+JSON field renames are decided case-by-case during the pass under
+the same principles — the table is not exhaustive on fields.
 
 ### Models — system and identity
 
