@@ -27,6 +27,23 @@ Registry:
 docker pull ghcr.io/wheelsdown/spivot-server:latest
 ```
 
+Each release publishes the full cascade of floating and pinned tags,
+so operators choose their own update posture:
+
+| Tag                | Meaning                                          |
+|--------------------|--------------------------------------------------|
+| `0.1.2` / `v0.1.2` | exactly this release (immutable in practice)     |
+| `0.1`              | newest patch release of the 0.1 line             |
+| `0`                | newest release of the 0.x line                   |
+| `latest`           | newest stable release                            |
+| `sha-<short>`      | the exact commit build, for forensic pinning     |
+
+Pre-releases (`-rc.1` and friends) publish only their full version
+tag — they never move `latest` or the floating version tags. Note
+that pulling a floating tag caches it: a running host does not see a
+new release until it re-pulls (`docker compose pull`), even though
+the registry tag has moved.
+
 For production Docker Compose deployments behind an existing reverse
 proxy, see [docker-compose.md](docker-compose.md). For the canonical
 HTTP/3 + mTLS deployment recipe (Traefik in front, client cert
