@@ -41,11 +41,79 @@ Corollaries:
 - **List envelopes are `<Noun>List`.** They stay named types (the
   envelope lets future phases add pagination without breaking
   clients), but they earn no more name than that.
-- **One concept, one name.** The vehicle profile (make, model, year,
-  color, capacity, photos) exists once, as `Vehicle`. Putting a
-  vehicle in a garage or engaging it in a journey is a *placement* —
-  a thin signed statement referencing the vehicle — not a new
-  vehicle type. (Protocol 0.2 work, tracked upstream; see Staging.)
+- **One concept, one name.** The vehicle exists once, as `Vehicle`.
+  There is no `JourneyVehicle` and no `GarageVehicle` — not as a
+  model, not as an operationId. Containment is a relationship
+  expressed by paths and thin signed statements, never by forking
+  the entity. See "The vehicle topology" below.
+
+## The vehicle topology
+
+A vehicle is a platonic, atomic entity in OpenCaravan: a profile
+(display name, make, model, year, color, capacity, photos, notes)
+owned by a user, with its own signed revision chain, verifiable
+standalone. Garages contain vehicles; journeys engage them. Neither
+containment owns the vehicle or mints a new vehicle type.
+
+**Entity** — vehicles live at their own address, independent of any
+container:
+
+```
+vehicleCreate          POST /v1/vehicles
+vehicleList            GET  /v1/vehicles                  (the caller's)
+vehicleGet             GET  /v1/vehicles/{id}
+vehicleRevisionAppend  POST /v1/vehicles/{id}/revisions   (owner-signed)
+```
+
+The protocol `Vehicle` payload is already entity-shaped (owner,
+profile, revision chain) — it is the one vehicle model. The server's
+view is the one `VehicleRecord`.
+
+**Relationships** — two thin signed statements reference a vehicle by
+id; neither carries a copy of the profile:
+
+- `VehicleEngagement` — "I bring vehicle V to journey J", signed by
+  the engaging participant. Journey-scoped concerns (the ACL for this
+  trip, driver attestations, telemetry linkage) attach to the
+  engagement, addressed by the vehicle's id within the journey path.
+- `VehiclePlacement` — "vehicle V is in garage G's library", signed
+  by an accepted garage owner.
+
+`GarageVehicle` is deleted from the protocol. Its duplicated profile
+fields are the fracture this design removes.
+
+**Reads in context** return `VehicleRecord` — the same model
+everywhere — with a small context object describing the relationship
+(`EngagementContext`: journey id, current ACL version, engaged-by/at;
+`PlacementContext`: garage id, placed-by/at). Contextual reads use
+adjective-marked operationIds so no compound vehicle noun exists:
+
+```
+vehicleEngage       POST /v1/journeys/{id}/vehicles     body: vehicle_id + VehicleEngagement + initial VehicleACL
+engagedVehicleList  GET  /v1/journeys/{id}/vehicles
+engagedVehicleGet   GET  /v1/journeys/{id}/vehicles/{vid}
+vehicleACLAppend    POST /v1/journeys/{id}/vehicles/{vid}/acl-revisions
+driverAttestationRecord / driverAttestationList / currentDriverGet   (unchanged paths)
+
+vehiclePlace        POST /v1/garages/{id}/vehicles      body: vehicle_id + VehiclePlacement
+placedVehicleList   GET  /v1/garages/{id}/vehicles
+placedVehicleGet    GET  /v1/garages/{id}/vehicles/{vid}
+```
+
+Topology consequences, stated plainly:
+
+- **Vehicle revisions happen in one place** — `/v1/vehicles/{id}/revisions`,
+  owner-signed. The 0.1 garage-side revision endpoint (any accepted
+  owner edits the garage's copy) is deleted; garages contain
+  vehicles, they do not edit them. A profile update propagates to
+  every context because there is only one vehicle.
+- **Engage and place take references.** Clients create a vehicle
+  once, then engage/place it by id. The 0.1 create-inline-in-journey
+  flow is deleted with the rest of the compat surface.
+- **The engagement is where journey-vehicle features grow** (per-stage
+  assignments in the multi-stage journey phase attach to
+  `EngagementContext` / the engagement statement, not to a vehicle
+  subtype).
 
 ## The verb vocabulary
 
@@ -62,6 +130,8 @@ only from this table. `ValidateRoutes` enforces the suffix.
 | `Accept` | counter-sign a pending grant (ownership); idempotent replay 200  |
 | `Redeem` | consume a capability token; the token is the authority           |
 | `Revoke` | cancel an outstanding capability; idempotent                     |
+| `Engage` | bind an existing entity into a journey by signed statement       |
+| `Place`  | bind an existing entity into a garage by signed statement        |
 
 If an operation doesn't fit a verb, that's a design conversation, not
 a new verb.
@@ -75,8 +145,9 @@ a new verb.
   they act on a capability rather than address a resource, and
   `redeem` deliberately keeps its token out of the URL.
 - A vehicle's bare `/revisions` chain is its metadata (the vehicle
-  *is* its metadata); the authorization chain is the qualified
-  `/acl-revisions`.
+  *is* its metadata) and lives only at the entity's own address,
+  `/v1/vehicles/{id}/revisions`. The journey-scoped authorization
+  chain is the qualified `/acl-revisions` under the engagement path.
 
 ## Compatibility posture
 
@@ -116,18 +187,24 @@ the same principles — the table is not exhaustive on fields.
 
 ### Models — journeys and vehicles
 
-| Current                             | Proposed                  | Kind    |
-|-------------------------------------|---------------------------|---------|
-| `JourneyResponse`                   | `Journey`                 | native  |
-| `TelemetryBatchResponse`            | `TelemetryBatchReceipt`   | native  |
-| `JourneyVehicleResponse`            | `JourneyVehicleRecord`    | record  |
-| `JourneyVehicleListResponse`        | `JourneyVehicleList`      | native  |
-| `JourneyVehicleACLRevisionResponse` | `VehicleACLRecord`        | record  |
-| `JourneyVehicleRevisionResponse`    | `VehicleRevisionRecord`   | record  |
-| `DriverAttestationResponse`         | `DriverAttestationRecord` | record  |
-| `DriverAttestationForkSibling`      | `AttestationForkSibling`  | native  |
-| `DriverAttestationListResponse`     | `DriverAttestationList`   | native  |
-| `CurrentDriverResponse`             | `CurrentDriver`           | native  |
+| Current                             | Proposed                  | Kind      |
+|-------------------------------------|---------------------------|-----------|
+| `JourneyResponse`                   | `Journey`                 | native    |
+| `TelemetryBatchResponse`            | `TelemetryBatchReceipt`   | native    |
+| `JourneyVehicleResponse`            | `VehicleRecord` (+ `EngagementContext`) | record |
+| `GarageVehicleResponse`             | `VehicleRecord` (+ `PlacementContext`)  | record |
+| `JourneyVehicleListResponse` / `GarageVehicleListResponse` | `VehicleList` | native |
+| `JourneyVehicleCreateRequest`       | `VehicleEngageRequest`    | request   |
+| — *(new)*                           | `VehiclePlaceRequest`     | request   |
+| — *(new, protocol)*                 | `VehicleEngagement`       | statement |
+| — *(new, protocol)*                 | `VehiclePlacement`        | statement |
+| `GarageVehicle` *(protocol)*        | **deleted** — the fracture this pass removes | — |
+| `JourneyVehicleACLRevisionResponse` | `VehicleACLRecord`        | record    |
+| `JourneyVehicleRevisionResponse`    | `VehicleRevisionRecord`   | record    |
+| `DriverAttestationResponse`         | `DriverAttestationRecord` | record    |
+| `DriverAttestationForkSibling`      | `AttestationForkSibling`  | native    |
+| `DriverAttestationListResponse`     | `DriverAttestationList`   | native    |
+| `CurrentDriverResponse`             | `CurrentDriver`           | native    |
 
 ### Models — garages
 
@@ -138,11 +215,12 @@ the same principles — the table is not exhaustive on fields.
 | `GarageListResponse`                | `GarageList`                      | native  |
 | `GarageRevisionAppendResponse`      | `GarageRevisionRecord`            | record  |
 | `GarageOwnershipAcceptanceResponse` | `GarageOwnershipAcceptanceRecord` | record  |
-| `GarageVehicleResponse`             | `GarageVehicleRecord`             | record  |
-| `GarageVehicleListResponse`         | `GarageVehicleList`               | native  |
 | `GarageInviteResponse`              | `GarageInvite`                    | native  |
 | `GarageInviteListResponse`          | `GarageInviteList`                | native  |
 | `GarageInviteRedeemResponse`        | `GarageInviteRedemption`          | native  |
+
+(Garage vehicle models are covered by the vehicle topology above —
+they cease to exist as garage-flavored types.)
 
 ### Operations and paths
 
@@ -151,6 +229,17 @@ the same principles — the table is not exhaustive on fields.
 | `clientAppEnroll` / `POST /v1/client-apps/enroll` | `enrollmentCreate` / `POST /v1/enrollments` |
 | `clientAppInviteCreate` / `POST /v1/client-apps/invites` | `registrationInviteCreate` / `POST /v1/registration-invites` |
 | `clientAppInviteList` / `GET /v1/client-apps/invites` | `registrationInviteList` / `GET /v1/registration-invites` |
+| — *(new)* | `vehicleCreate` / `POST /v1/vehicles` |
+| — *(new)* | `vehicleList` / `GET /v1/vehicles` |
+| — *(new)* | `vehicleGet` / `GET /v1/vehicles/{id}` |
+| — *(new)* | `vehicleRevisionAppend` / `POST /v1/vehicles/{id}/revisions` |
+| `journeyVehicleCreate` | `vehicleEngage` (same path; body becomes a reference + engagement) |
+| `journeyVehicleList` / `journeyVehicleGet` | `engagedVehicleList` / `engagedVehicleGet` (same paths) |
+| `journeyVehicleACLAppend` | `vehicleACLAppend` (same path) |
+| `journeyVehicleRevisionAppend` / `POST …/journeys/{id}/vehicles/{vid}/revisions` | **deleted** — revisions live at `/v1/vehicles/{id}/revisions` |
+| `garageVehicleCreate` | `vehiclePlace` (same path; body becomes a reference + placement) |
+| `garageVehicleList` / `garageVehicleGet` | `placedVehicleList` / `placedVehicleGet` (same paths) |
+| `garageVehicleRevisionAppend` / `POST …/garages/{id}/vehicles/{vid}/revisions` | **deleted** — garages contain vehicles, they do not edit them |
 
 All other operationIds already follow `<resource><Verb>` with table
 verbs and keep their paths. `/v1/garage-invites/redeem` stays (see
@@ -169,16 +258,22 @@ the tag-group check:
 
 ## Staging
 
-1. **This document** — maintainer reviews the table; renames here are
-   the decision of record.
-2. **Server pass** (contract `0.2.0`): Go type renames + route table
-   updates + guardrails. Schema names follow Go type names through
-   the generator automatically; one PR, mechanical after the table is
-   agreed.
-3. **Upstream pass** (opencaravan-go, protocol 0.2): `SessionGrant` /
-   `EnrollmentGrant` renames, then the substantive redesign — the
-   platonic `Vehicle` entity plus signed placement payloads replacing
-   `GarageVehicle`'s duplicated profile. Spivot consumes the new
-   module and regenerates; the spec follows.
-4. **Then** the journey-expansion phase builds on the settled
-   vocabulary.
+One coordinated pass across both repos — nothing here is deferred to
+a later phase:
+
+1. **This document** — maintainer reviews; the tables above are the
+   decision of record.
+2. **opencaravan-go** (protocol 0.2): delete `GarageVehicle`; add
+   `VehicleEngagement` and `VehiclePlacement`; rename
+   `SessionResponse` → `SessionGrant` and
+   `ClientAppEnrollmentResponse` → `EnrollmentGrant`; field docs land
+   on every type this pass touches.
+3. **spivot-server** (contract 0.2.0), against the new module: the
+   full vehicle topology (`/v1/vehicles`, engage/place by reference,
+   contextual reads, single revision chain), every rename in the
+   tables, and the guardrails — in the same pass, not after it.
+   Storage schema changes as needed with **no data migration**
+   (pre-1.0 posture; the deployed pre-0.2 data set is expendable —
+   coordinate the reset with the operator, which is the one
+   deployment that exists).
+4. The journey-expansion phase starts only on the settled surface.
