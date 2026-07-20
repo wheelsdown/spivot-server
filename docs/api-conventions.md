@@ -305,4 +305,8 @@ a later phase:
    (pre-1.0 posture; the deployed pre-0.2 data set is expendable —
    coordinate the reset with the operator, which is the one
    deployment that exists).
-4. The journey-expansion phase starts only on the settled surface.
+4. The journey-expansion phase starts only on the settled surface,
+   scoped by the gap findings in
+   [api-use-cases.md](api-use-cases.md) — the walkthrough harness
+   that validates this surface against real tasks. New scenarios go
+   there first; the surface follows.
