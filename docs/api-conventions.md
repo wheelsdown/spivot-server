@@ -16,7 +16,7 @@ says which:
    `Integrity` envelope, signed by the participant with the authority
    to make them. They are the primary objects of the peer-coordinated
    design: any peer can verify them with no server in the path.
-   *Named as clean protocol nouns*: `Vehicle`, `VehicleACL`,
+   *Named as clean protocol nouns*: `Vehicle`, `DriverACL`,
    `DriverAttestation`, `Garage`, `GarageOwnershipAcceptance`.
 2. **Server records** — this server's view of a signed statement or
    chain of them: reception metadata (`received_at`), head pointers,
@@ -89,10 +89,10 @@ everywhere — with a small context object describing the relationship
 adjective-marked operationIds so no compound vehicle noun exists:
 
 ```
-vehicleEngage       POST /v1/journeys/{id}/vehicles     body: vehicle_id + VehicleEngagement + initial VehicleACL
+vehicleEngage       POST /v1/journeys/{id}/vehicles     body: vehicle_id + VehicleEngagement + initial DriverACL
 engagedVehicleList  GET  /v1/journeys/{id}/vehicles
 engagedVehicleGet   GET  /v1/journeys/{id}/vehicles/{vid}
-vehicleACLAppend    POST /v1/journeys/{id}/vehicles/{vid}/acl-revisions
+driverACLAppend     POST /v1/journeys/{id}/vehicles/{vid}/driver-acl-revisions
 driverAttestationRecord / driverAttestationList / currentDriverGet   (unchanged paths)
 
 vehiclePlace        POST /v1/garages/{id}/vehicles      body: vehicle_id + VehiclePlacement
@@ -100,11 +100,38 @@ placedVehicleList   GET  /v1/garages/{id}/vehicles
 placedVehicleGet    GET  /v1/garages/{id}/vehicles/{vid}
 ```
 
+**Revision supersession (decided: float).** Engagements and
+placements reference the vehicle by id and follow its head revision.
+A new revision *supersedes* prior revisions of that vehicle, which
+become semantically invalid for operations — operations always
+resolve the head; superseded revisions exist only for history and
+audit. Relationship statements record the `revision_version` observed
+at signing time as informational context (the `acl_version_consulted`
+pattern), so auditors can reconstruct what the signer saw without the
+reference ever pinning.
+
+**Administration is delegable.** A vehicle's creator must be able to
+share administration of the vehicle with other users. The vehicle
+entity carries its administrators (the creator is the founding
+administrator); a revision is valid when signed by an administrator
+as of the superseded head — the same signer-was-authorized-then rule
+garage revisions already use. "Owner" language narrows accordingly:
+administration of the entity is what's delegable; it is distinct from
+drive authorization.
+
+**Two authorization surfaces, two names.** Delegable *administration*
+(who may revise the vehicle) lives on the entity. *Drive
+authorization* (who may take the wheel on a given journey) is the
+journey-scoped chain attached to the engagement — today misleadingly
+named `VehicleACL`. It renames to **`DriverACL`** so each authority
+says what it governs; the attestation trust evaluator consults the
+`DriverACL`, and the path qualifier becomes `/driver-acl-revisions`.
+
 Topology consequences, stated plainly:
 
 - **Vehicle revisions happen in one place** — `/v1/vehicles/{id}/revisions`,
-  owner-signed. The 0.1 garage-side revision endpoint (any accepted
-  owner edits the garage's copy) is deleted; garages contain
+  administrator-signed. The 0.1 garage-side revision endpoint (any
+  accepted owner edits the garage's copy) is deleted; garages contain
   vehicles, they do not edit them. A profile update propagates to
   every context because there is only one vehicle.
 - **Engage and place take references.** Clients create a vehicle
@@ -147,7 +174,8 @@ a new verb.
 - A vehicle's bare `/revisions` chain is its metadata (the vehicle
   *is* its metadata) and lives only at the entity's own address,
   `/v1/vehicles/{id}/revisions`. The journey-scoped authorization
-  chain is the qualified `/acl-revisions` under the engagement path.
+  chain is the qualified `/driver-acl-revisions` under the
+  engagement path.
 
 ## Compatibility posture
 
@@ -199,7 +227,8 @@ the same principles — the table is not exhaustive on fields.
 | — *(new, protocol)*                 | `VehicleEngagement`       | statement |
 | — *(new, protocol)*                 | `VehiclePlacement`        | statement |
 | `GarageVehicle` *(protocol)*        | **deleted** — the fracture this pass removes | — |
-| `JourneyVehicleACLRevisionResponse` | `VehicleACLRecord`        | record    |
+| `VehicleACL` *(protocol)*           | `DriverACL` (journey-scoped drive authorization; distinct from delegable vehicle administration) | statement |
+| `JourneyVehicleACLRevisionResponse` | `DriverACLRecord`         | record    |
 | `JourneyVehicleRevisionResponse`    | `VehicleRevisionRecord`   | record    |
 | `DriverAttestationResponse`         | `DriverAttestationRecord` | record    |
 | `DriverAttestationForkSibling`      | `AttestationForkSibling`  | native    |
@@ -235,7 +264,7 @@ they cease to exist as garage-flavored types.)
 | — *(new)* | `vehicleRevisionAppend` / `POST /v1/vehicles/{id}/revisions` |
 | `journeyVehicleCreate` | `vehicleEngage` (same path; body becomes a reference + engagement) |
 | `journeyVehicleList` / `journeyVehicleGet` | `engagedVehicleList` / `engagedVehicleGet` (same paths) |
-| `journeyVehicleACLAppend` | `vehicleACLAppend` (same path) |
+| `journeyVehicleACLAppend` / `POST …/acl-revisions` | `driverACLAppend` / `POST …/driver-acl-revisions` |
 | `journeyVehicleRevisionAppend` / `POST …/journeys/{id}/vehicles/{vid}/revisions` | **deleted** — revisions live at `/v1/vehicles/{id}/revisions` |
 | `garageVehicleCreate` | `vehiclePlace` (same path; body becomes a reference + placement) |
 | `garageVehicleList` / `garageVehicleGet` | `placedVehicleList` / `placedVehicleGet` (same paths) |
